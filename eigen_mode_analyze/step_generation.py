@@ -16,7 +16,8 @@ from . import equations as eq
 logger = logging.getLogger("eigen_mode_analyze")
 
 
-def connect_solidworks():
+def connect_solidworks() -> Tuple[Optional[object], Optional[str]]:
+    """Returns (swApp, None) on success, or (None, reason) on failure."""
     import win32com.client
 
     try:
@@ -24,29 +25,57 @@ def connect_solidworks():
         swApp = win32com.client.Dispatch("SldWorks.Application")
         swApp.Visible = True
         swApp.SetUserPreferenceIntegerValue(278, 214)  # STEP export -> AP214
-        return swApp
+        return swApp, None
     except Exception as e:
         logger.error("Failed to connect to SolidWorks: %s", e)
-        return None
+        return None, str(e)
 
 
-def open_and_activate_assembly(swApp, assembly_path: str):
+def open_and_activate_assembly(swApp, assembly_path: str) -> Tuple[Optional[object], Optional[str]]:
+    """Returns (model, None) on success, or (None, reason) on failure.
+
+    Both OpenDoc6 and ActivateDoc3 report a numeric error/warning code via
+    their ByRef out-params -- SolidWorks' own explanation for why the
+    call didn't do what you asked (file already open elsewhere, a
+    read-only/rebuild/reference-not-found dialog waiting for a click on
+    the -- normally hidden -- SolidWorks window since this runs with
+    Visible=True, a future-version file, etc.). Each call needs its OWN
+    VARIANT for this -- reusing one between calls means the second call's
+    result overwrites the first's before anyone reads it, and no caller
+    here ever read either, so a failure just came back as an unexplained
+    None. This surfaces both codes instead of throwing them away.
+    """
     import pythoncom
     import win32com.client
 
     try:
         logger.info("Opening assembly: %s", assembly_path)
-        arg_err = win32com.client.VARIANT(pythoncom.VT_BYREF | pythoncom.VT_I4, 0)
-        arg_warn = win32com.client.VARIANT(pythoncom.VT_BYREF | pythoncom.VT_I4, 0)
-        swApp.OpenDoc6(assembly_path, 2, 1, "", arg_err, arg_warn)
-        logging_model = swApp.ActivateDoc3(assembly_path, False, 2, arg_err)
-        if not logging_model:
-            logger.error("Failed to activate assembly: %s", assembly_path)
-            return None
-        return logging_model
+        open_err = win32com.client.VARIANT(pythoncom.VT_BYREF | pythoncom.VT_I4, 0)
+        open_warn = win32com.client.VARIANT(pythoncom.VT_BYREF | pythoncom.VT_I4, 0)
+        swApp.OpenDoc6(assembly_path, 2, 1, "", open_err, open_warn)
+        if open_err.value:
+            logger.warning(
+                "OpenDoc6 reported error code %s (warning code %s) for %s -- see SolidWorks' "
+                "swFileLoadError_e/swFileLoadWarning_e enums for what the code means.",
+                open_err.value, open_warn.value, assembly_path,
+            )
+
+        activate_err = win32com.client.VARIANT(pythoncom.VT_BYREF | pythoncom.VT_I4, 0)
+        swModel = swApp.ActivateDoc3(assembly_path, False, 2, activate_err)
+        if not swModel:
+            reason = (
+                f"OpenDoc6 error={open_err.value}, warning={open_warn.value}; "
+                f"ActivateDoc3 error={activate_err.value}. If OpenDoc6's error is 0 but this still "
+                "failed, check the SolidWorks window itself (it's running Visible=True) for a "
+                "blocking dialog -- e.g. \"open read-only?\", a missing-reference prompt, or a "
+                "rebuild-on-open warning -- headless automation can't click through those."
+            )
+            logger.error("Failed to activate assembly %s: %s", assembly_path, reason)
+            return None, reason
+        return swModel, None
     except Exception as e:
         logger.error("Error opening/activating assembly: %s", e)
-        return None
+        return None, str(e)
 
 
 def rebuild_model(swModel) -> None:
@@ -122,14 +151,14 @@ def generate_step_files(
         return
 
     original_content = eq.read_file(equations_path)
-    swApp = connect_solidworks()
+    swApp, err = connect_solidworks()
     if not swApp:
-        raise RuntimeError("Could not connect to SolidWorks -- is it installed and licensed on this machine?")
+        raise RuntimeError(f"Could not connect to SolidWorks -- is it installed and licensed on this machine? ({err})")
 
-    swModel = open_and_activate_assembly(swApp, assembly_path)
+    swModel, err = open_and_activate_assembly(swApp, assembly_path)
     if not swModel:
         eq.write_file(equations_path, original_content)
-        raise RuntimeError(f"Could not open/activate assembly: {assembly_path}")
+        raise RuntimeError(f"Could not open/activate assembly {assembly_path}: {err}")
 
     try:
         for combo_id, params in pending.items():
