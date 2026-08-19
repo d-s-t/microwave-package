@@ -28,9 +28,9 @@ See docs/ARCHITECTURE.md (in the ansys-analyze-worker repo), section 8
 ("Authoring a Part 1 script"), for the full guide this script is meant
 to be a template for.
 
-Requires `ansys-analyze-worker` to be installed (`pip install -e
-path/to/ansys-analyze-worker`, or from requirements.txt in this repo) --
-see that repo's README.
+Requires `ansys-analyze-common` to be installed (`pip install
+"git+https://github.com/d-s-t/ansys-analyze-worker.git#subdirectory=common"`,
+or from requirements.txt in this repo) -- see that repo's README.
 """
 from __future__ import annotations
 
@@ -40,7 +40,7 @@ import os
 import re
 from typing import List, Optional
 
-from ansys_analyze_worker import queue_common
+from ansys_analyze_common import queue_common
 
 from ansys.aedt.core import Hfss  # noqa: E402
 
