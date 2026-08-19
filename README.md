@@ -1,11 +1,16 @@
 # pedestal_experiment
 
-Part 1 and Part 3 for the pedestal eigenmode experiment: builds the HFSS
-model + boundaries for each pedestal depth, queues the analysis, and
-later merges/plots the results. Part 2 -- the generic background worker
-that actually runs the analyses -- lives in its own repo,
+The client pipeline for the pedestal eigenmode experiment, in
+[`eigen_mode_analyze/`](eigen_mode_analyze/): one script (or a web UI on
+top of it) that, end to end, builds a SolidWorks STEP file per point in a
+parameter sweep, builds an AEDT model from each, queues them for
+analysis, waits for and monitors the worker's progress, and plots the
+combined results once they're in. Resumable at every stage.
+
+The worker -- the generic background service that actually runs the
+AEDT analyses -- lives in its own repo,
 [`ansys-analyze-worker`](https://github.com/d-s-t/ansys-analyze-worker),
-which this project depends on.
+which this project depends on for the shared task-queue schema.
 
 ## Install
 
@@ -13,12 +18,14 @@ which this project depends on.
 pip install -r requirements.txt
 ```
 
-This installs `ansys-analyze-worker` straight from GitHub (see
-`requirements.txt` for how to pin a specific version instead of tracking
-its default branch). This project only needs that package's
-`queue_common` module, so it pulls in the lightweight base install --
-none of the AEDT/tray-icon extras that only the worker itself (running on
-a different machine, in the common case) needs.
+This installs `ansys-analyze-common` (the shared queue schema) straight
+from GitHub -- see `requirements.txt` for how to pin a specific version
+instead of tracking its default branch -- plus `pywin32` (SolidWorks COM
+automation), `pyaedt`, `pandas`, `plotly`, and `Flask`.
+
+SolidWorks and AEDT (student version is enough for the model-building
+steps) both need to be installed and licensed on the machine that runs
+`eigen_mode_analyze`.
 
 ## Set the queue location
 
@@ -26,35 +33,76 @@ a different machine, in the common case) needs.
 setx ANSYS_ANALYZE_QUEUE_PATH "\\some\shared\path\ansys_queue"
 ```
 
-Both this project's scripts and `ansys-analyze-worker` (usually running
-on a different machine) need this pointed at the same shared location.
+Both this project and the worker (usually running on a different
+machine) need this pointed at the same shared location.
 
 ## Run
 
-On the student-version machine, per batch of STEP files:
+### Web UI
 
 ```
-python part1_build_model.py --step_dir pedestal_experiment --dim_file pedestal_experiment\dimensions.txt
+python -m eigen_mode_analyze.webapp
 ```
 
-On the full-license machine, keep the worker running (see
-`ansys-analyze-worker`'s README) -- it picks up tasks Part 1 queues
-automatically.
+Open <http://127.0.0.1:5000/>. Pick which parameter(s) from
+`base_parts/default.txt` to sweep and over what range, set the analysis
+settings, and start the run. The status page updates live as STEP files
+get built, models get queued, and the worker finishes each analysis --
+the plot appears there automatically once everything's done. Existing
+runs (including ones interrupted mid-way) are listed on the home page
+and can be resumed with one click.
 
-Check on progress or clean up failed runs from either machine:
-
-```
-python part3_plot_results.py --check_status
-python part3_plot_results.py --cleanup
-```
-
-Once some tasks are done, merge and plot:
+### Command line
 
 ```
-python part3_plot_results.py --runs -3:
+python -m eigen_mode_analyze.pipeline --sweep pedestal_depth=0:10:2
 ```
+
+`--sweep` is repeatable -- sweeping more than one parameter runs every
+combination of them (the cartesian product), so watch the combination
+count: each one is a full model build + analysis. To resume an
+interrupted run instead of starting a new one:
+
+```
+python -m eigen_mode_analyze.pipeline --resume run_20260819_140102
+```
+
+Run `python -m eigen_mode_analyze.pipeline --help` for every analysis
+setting (target frequency, mode count, materials, etc.).
+
+### If the queue share is unreachable
+
+Both entry points treat a temporarily-unreachable
+`ANSYS_ANALYZE_QUEUE_PATH` (dropped network share, VPN blip, ...) as
+something to wait out rather than a fatal error -- the pipeline pauses
+and retries until the share comes back, then continues from wherever it
+was. You can also just stop it (Ctrl-C, or close the web UI's process)
+and resume later with `--resume`/the web UI's Resume button; nothing
+already built or queued is lost.
+
+## Output
+
+Every run gets its own folder under `eigen_mode_analyze/runs/<run_id>/`:
+the generated STEP/AEDT files per combination (`models/<combo_id>/`),
+the run's resumable state (`state.json`, `run_config.json`), and the
+final combined CSV + interactive plot (`plots/`). This folder is
+git-ignored -- it's backed up elsewhere, not committed.
+
+## Extending
+
+- **New scripts for this experiment**: add them under `eigen_mode_analyze/`
+  alongside the existing modules (`equations.py`, `sweep.py`,
+  `step_generation.py`, `model_builder.py`, `monitor.py`, `results.py`,
+  `plotting.py`, `run_manager.py`) and wire them into `pipeline.py` /
+  `webapp.py` as needed.
+- **New analysis types**: see `ansys-analyze-worker`'s
+  `docs/ARCHITECTURE.md` section 6 -- add a handler there; this repo's
+  `task_type` (currently always `"eigenmode_chain"`, set in
+  `model_builder.build_and_queue`) just needs to name it.
+- **New sweepable parameters**: anything in `base_parts/default.txt`
+  with a plain numeric value (not a formula) is automatically offered in
+  the web UI and usable via `--sweep NAME=...` -- no code changes needed.
 
 See `ansys-analyze-worker`'s `docs/ARCHITECTURE.md` for the full design
-doc (task/result schema, queue layout, troubleshooting) and the guide
-these two scripts follow -- that's the canonical reference for how this
-project talks to the worker.
+doc (task/result schema, queue layout, troubleshooting) that this
+project's pipeline follows.

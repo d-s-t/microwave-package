@@ -1,0 +1,72 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Run {{ run.run_id }}</title>
+<style>
+  body{font-family:system-ui,sans-serif;max-width:900px;margin:2rem auto;padding:0 1rem;color:#222}
+  table{border-collapse:collapse;width:100%}
+  td,th{border:1px solid #ccc;padding:.4rem .6rem;text-align:left;font-size:.9em}
+  .status-done{color:#1a7f37;font-weight:600}
+  .status-failed{color:#c0392b;font-weight:600}
+  .status-in_progress{color:#b8860b;font-weight:600}
+  .status-pending,.status-None,.status-null{color:#777}
+  a.button,button{display:inline-block;padding:.5rem 1rem;background:#2E86AB;color:#fff;border:none;
+    border-radius:4px;text-decoration:none;cursor:pointer;font-size:1em}
+  a.button:hover,button:hover{background:#256a87}
+  iframe{width:100%;height:600px;border:1px solid #ccc;margin-top:1rem}
+</style>
+</head>
+<body>
+<p><a href="{{ url_for('index') }}">&larr; back</a></p>
+<h1>Run {{ run.run_id }}</h1>
+<p>Stage: <strong id="stage">{{ run.state.stage }}</strong>
+   -- <span id="running-indicator">{{ "running" if is_running else "not running" }}</span></p>
+
+{% if not is_running and run.state.stage != "complete" %}
+<form method="post" action="{{ url_for('resume_run', run_id=run.run_id) }}">
+  <button type="submit">Resume this run</button>
+</form>
+{% endif %}
+
+<table id="combo-table">
+<tr><th>Combination</th><th>Parameters</th><th>STEP</th><th>Analysis</th></tr>
+{% for combo_id, combo in run.state.combos.items() %}
+<tr>
+  <td>{{ combo_id }}</td>
+  <td>{{ combo.params }}</td>
+  <td class="status-{{ combo.step_status }}">{{ combo.step_status or "pending" }}</td>
+  <td class="status-{{ combo.queue_status }}">{{ combo.queue_status or "not queued" }}</td>
+</tr>
+{% endfor %}
+</table>
+
+{% if plot_exists %}
+<h2>Results</h2>
+<p><a class="button" href="{{ url_for('run_results_csv', run_id=run.run_id) }}">Download CSV</a></p>
+<iframe src="{{ url_for('run_plot', run_id=run.run_id) }}"></iframe>
+{% endif %}
+
+<script>
+// Polls the run's JSON status endpoint and reloads the whole page
+// whenever the stage changes or a plot has newly appeared -- simpler
+// and more robust than patching individual table cells in place, and
+// this page is refreshed infrequently enough (every few seconds) that
+// a full reload isn't disruptive.
+const initialStage = "{{ run.state.stage }}";
+const hadPlot = {{ "true" if plot_exists else "false" }};
+
+async function poll() {
+  const res = await fetch("{{ url_for('run_status_json', run_id=run.run_id) }}");
+  if (!res.ok) return;
+  const data = await res.json();
+  document.getElementById("stage").textContent = data.stage;
+  document.getElementById("running-indicator").textContent = data.is_running ? "running" : "not running";
+  if (data.stage !== initialStage || (data.stage === "complete" && !hadPlot)) {
+    location.reload();
+  }
+}
+setInterval(poll, 4000);
+</script>
+</body>
+</html>

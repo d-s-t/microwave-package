@@ -10,8 +10,12 @@
 #   git+https://github.com/d-s-t/ansys-analyze-worker.git@v0.1.0#subdirectory=common
 git+https://github.com/d-s-t/ansys-analyze-worker.git#subdirectory=common
 
-# Part 1 also drives AEDT directly, to build the model itself.
-# Part 3 needs pandas/matplotlib for merging results and plotting.
+# The client pipeline builds SolidWorks STEP files (pywin32, for COM
+# automation) and drives AEDT directly to build each model (pyaedt).
+pywin32==312
 pyaedt==1.0.0
+
+# Merging/plotting results and the web UI.
 pandas==3.0.5
-matplotlib==3.11.1
+plotly==6.9.0
+Flask==3.1.3

@@ -6,3 +6,7 @@ __pycache__/
 *.pyc
 .venv/
 venv/
+
+# Run outputs (generated STEP/AEDT files, state, plots) -- these are
+# backed up elsewhere, not committed.
+eigen_mode_analyze/runs/
