@@ -1,0 +1,8 @@
+# SolidWorks lock/temp files (created while a part is open)
+~$*.SLD*
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/

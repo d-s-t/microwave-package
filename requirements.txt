@@ -7,5 +7,5 @@
 # Part 1 also drives AEDT directly, to build the model itself.
 # Part 3 needs pandas/matplotlib for merging results and plotting.
 pyaedt==1.0.0
-pandas
-matplotlib
+pandas==3.0.5
+matplotlib==3.11.1
