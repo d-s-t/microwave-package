@@ -4,8 +4,8 @@ Part 1 and Part 3 for the pedestal eigenmode experiment: builds the HFSS
 model + boundaries for each pedestal depth, queues the analysis, and
 later merges/plots the results. Part 2 -- the generic background worker
 that actually runs the analyses -- lives in its own repo,
-[`ansys-analyze-worker`](../ansys-analyze-worker), which this project
-depends on.
+[`ansys-analyze-worker`](https://github.com/d-s-t/ansys-analyze-worker),
+which this project depends on.
 
 ## Install
 
@@ -13,9 +13,12 @@ depends on.
 pip install -r requirements.txt
 ```
 
-(this installs `ansys-analyze-worker` in editable mode from
-`../ansys-analyze-worker` by default -- see `requirements.txt` if that
-repo lives somewhere else on your machine)
+This installs `ansys-analyze-worker` straight from GitHub (see
+`requirements.txt` for how to pin a specific version instead of tracking
+its default branch). This project only needs that package's
+`queue_common` module, so it pulls in the lightweight base install --
+none of the AEDT/tray-icon extras that only the worker itself (running on
+a different machine, in the common case) needs.
 
 ## Set the queue location
 

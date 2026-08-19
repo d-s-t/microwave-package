@@ -31,9 +31,9 @@ queue housekeeping. Three things it can do:
 See docs/ARCHITECTURE.md (in the ansys-analyze-worker repo), section 9
 ("Authoring a Part 3 script").
 
-Requires `ansys-analyze-worker` to be installed (`pip install -e
-path/to/ansys-analyze-worker`, or from requirements.txt in this repo) --
-see that repo's README.
+Requires `ansys-analyze-common` to be installed (`pip install
+"git+https://github.com/d-s-t/ansys-analyze-worker.git#subdirectory=common"`,
+or from requirements.txt in this repo) -- see that repo's README.
 """
 from __future__ import annotations
 
@@ -45,7 +45,7 @@ import os
 import matplotlib.pyplot as plt
 import pandas as pd
 
-from ansys_analyze_worker import queue_common
+from ansys_analyze_common import queue_common
 
 
 def parse_run_selector(selector: str, available_runs: list) -> "set[int] | None":
