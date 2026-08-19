@@ -1,0 +1,11 @@
+# Installs the shared queue/worker package from its own repo, editable
+# so local edits there (and the tray app's "Reset") take effect
+# immediately without reinstalling. Adjust the path to wherever you
+# cloned ansys-analyze-worker (or replace with a git URL).
+-e ../ansys-analyze-worker
+
+# Part 1 also drives AEDT directly, to build the model itself.
+# Part 3 needs pandas/matplotlib for merging results and plotting.
+pyaedt==1.0.0
+pandas
+matplotlib

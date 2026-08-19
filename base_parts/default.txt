@@ -1,0 +1,44 @@
+﻿"pcb_length"= 40	' length of the chip in the direction of the feadline
+
+"pcb_side"= 40   	' length of the chip in the other direction
+
+"pcb_width"= 1
+
+"wall_width"= 1 	' minimal width from the box walls
+
+"route_width"= 1	' The width of the trace on the lid for not touching the signal roates.
+
+"route_clearence"= 0.4	' The clearence depth of the trace on the lid for not touching the signal roates.
+
+"route_chip_clearence"= 1
+
+"port_count"= 2
+
+"port_space"= 1.5
+
+"port_length"= 5.1
+
+"port_width"= 5.1
+
+"chip_length"= 6.3	' length of the chip in the direction of the feadline
+
+"chip_side"= 6.3	' length of the chip in the other direction
+
+"chip_width"= 0.4	' width of the chip
+
+"pedestal_depth"= 0	' depth of the pedestal under the chip
+
+"chip_leg"= 0.8 	' size of the legs the chip lay on in case there is pedestal
+
+"wing_length"= 10	' Mounting wing size
+
+"wing_width"= 1	' mounting wing width
+
+"bonding_clearence"= 1
+
+"box_height"= "wall_width" + "pedestal_depth" + "pcb_width"
+
+"box_length"= "pcb_length" + 2 * "wall_width"
+
+"box_side"= "pcb_side" + 2 * "wall_width"
+
