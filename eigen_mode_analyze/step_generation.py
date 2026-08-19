@@ -16,7 +16,8 @@ from . import equations as eq
 logger = logging.getLogger("eigen_mode_analyze")
 
 
-def connect_solidworks():
+def connect_solidworks() -> Tuple[Optional[object], Optional[str]]:
+    """Returns (swApp, None) on success, or (None, reason) on failure."""
     import win32com.client
 
     try:
@@ -24,10 +25,10 @@ def connect_solidworks():
         swApp = win32com.client.Dispatch("SldWorks.Application")
         swApp.Visible = True
         swApp.SetUserPreferenceIntegerValue(278, 214)  # STEP export -> AP214
-        return swApp
+        return swApp, None
     except Exception as e:
         logger.error("Failed to connect to SolidWorks: %s", e)
-        return None
+        return None, str(e)
 
 
 def open_and_activate_assembly(swApp, assembly_path: str) -> Tuple[Optional[object], Optional[str]]:
@@ -150,9 +151,9 @@ def generate_step_files(
         return
 
     original_content = eq.read_file(equations_path)
-    swApp = connect_solidworks()
+    swApp, err = connect_solidworks()
     if not swApp:
-        raise RuntimeError("Could not connect to SolidWorks -- is it installed and licensed on this machine?")
+        raise RuntimeError(f"Could not connect to SolidWorks -- is it installed and licensed on this machine? ({err})")
 
     swModel, err = open_and_activate_assembly(swApp, assembly_path)
     if not swModel:
