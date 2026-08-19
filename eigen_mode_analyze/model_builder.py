@@ -184,6 +184,11 @@ def build_and_queue(
             project_file=relative_project_file,
             output_dir=relative_output_dir,
             task_id=task_id,
+            # The project was just built with this solution type above --
+            # passing it through lets the worker skip auto-detecting it
+            # from the AEDT session when it reopens the project. See
+            # queue_common.build_task()'s docstring for why that matters.
+            solution_type="Eigenmode",
             parameters={
                 "start_min_freq_ghz": min_freq_ghz,
                 "target_max_freq_ghz": analysis_settings["target_max_freq"],
