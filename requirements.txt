@@ -1,8 +1,12 @@
-# Installs the shared queue/worker package from its own repo, editable
-# so local edits there (and the tray app's "Reset") take effect
-# immediately without reinstalling. Adjust the path to wherever you
-# cloned ansys-analyze-worker (or replace with a git URL).
--e ../ansys-analyze-worker
+# Installs the shared queue/worker package straight from GitHub (not on
+# PyPI). This only needs queue_common (pure stdlib), so the base install
+# with no extras is enough -- it won't pull in pyaedt/pystray/Pillow,
+# which only the worker itself (in its own repo) needs.
+#
+# Tracks the default branch by default. To pin a specific released
+# version instead, append @<tag> (or @<commit-sha>), e.g.:
+#   git+https://github.com/d-s-t/ansys-analyze-worker.git@v0.1.0
+git+https://github.com/d-s-t/ansys-analyze-worker.git
 
 # Part 1 also drives AEDT directly, to build the model itself.
 # Part 3 needs pandas/matplotlib for merging results and plotting.
