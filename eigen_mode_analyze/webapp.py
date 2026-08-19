@@ -58,6 +58,20 @@ def _start_pipeline_thread(run: Run) -> None:
     run.save()
 
     def _target():
+        # This thread (not Flask's main thread) is what drives
+        # step_generation.py's SolidWorks COM automation. COM requires
+        # each thread that uses it to call CoInitialize() itself first --
+        # Flask's main thread happens to get this for free as a side
+        # effect of other startup code, but a plain threading.Thread
+        # never does. Without it, win32com.client.Dispatch(...) can
+        # still succeed by *attaching* to an already-running SolidWorks
+        # instance (via the Running Object Table) -- which is why this
+        # can appear to work the first time -- but fails outright the
+        # moment SolidWorks isn't already open and COM actually has to
+        # launch a new instance for this thread.
+        import pythoncom
+
+        pythoncom.CoInitialize()
         try:
             run_pipeline(run, queue, log=logger.info, stop_event=stop_event)
         except Exception:
@@ -69,6 +83,8 @@ def _start_pipeline_thread(run: Run) -> None:
             run.state["stage"] = "error"
             run.state["error"] = traceback.format_exc()
             run.save()
+        finally:
+            pythoncom.CoUninitialize()
 
     thread = threading.Thread(target=_target, daemon=True, name=f"pipeline-{run.run_id}")
     _active_threads[run.run_id] = thread
