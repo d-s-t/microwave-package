@@ -12,7 +12,7 @@ git+https://github.com/d-s-t/ansys-analyze-worker.git#subdirectory=common
 
 # The client pipeline builds SolidWorks STEP files (pywin32, for COM
 # automation) and drives AEDT directly to build each model (pyaedt).
-pywin32
+pywin32==312
 pyaedt==1.0.0
 
 # Merging/plotting results and the web UI.
