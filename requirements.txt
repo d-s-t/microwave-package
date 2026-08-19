@@ -18,4 +18,4 @@ pyaedt==1.0.0
 # Merging/plotting results and the web UI.
 pandas==3.0.5
 plotly==6.9.0
-Flask==3.1.0
+Flask==3.1.3
