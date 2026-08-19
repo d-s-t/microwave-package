@@ -21,6 +21,7 @@ import logging
 import os
 import sys
 import threading
+import traceback
 from typing import Dict
 
 from flask import Flask, jsonify, redirect, render_template, request, send_from_directory, url_for
@@ -50,12 +51,23 @@ def _start_pipeline_thread(run: Run) -> None:
     stop_event = threading.Event()
     _stop_events[run.run_id] = stop_event
 
+    # Clear any error left over from a previous failed attempt at this
+    # run, so a stale traceback doesn't linger on the page while this
+    # (re)start is in progress.
+    run.state.pop("error", None)
+    run.save()
+
     def _target():
         try:
             run_pipeline(run, queue, log=logger.info, stop_event=stop_event)
         except Exception:
+            # Logged here for the server console, AND saved onto the
+            # run's state so the web UI itself can show what happened --
+            # previously this was only ever visible in the console,
+            # which is easy to miss if you're just watching the browser.
             logger.exception("Pipeline for run %s crashed", run.run_id)
             run.state["stage"] = "error"
+            run.state["error"] = traceback.format_exc()
             run.save()
 
     thread = threading.Thread(target=_target, daemon=True, name=f"pipeline-{run.run_id}")
@@ -133,6 +145,7 @@ def run_status_json(run_id):
     return jsonify({
         "run_id": run.run_id,
         "stage": run.state.get("stage"),
+        "error": run.state.get("error"),
         "is_running": _is_running(run_id),
         "combos": run.state["combos"],
     })
