@@ -48,16 +48,21 @@
 {% endif %}
 
 <script>
+// Polls the run's JSON status endpoint and reloads the whole page
+// whenever the stage changes or a plot has newly appeared -- simpler
+// and more robust than patching individual table cells in place, and
+// this page is refreshed infrequently enough (every few seconds) that
+// a full reload isn't disruptive.
+const initialStage = "{{ run.state.stage }}";
+const hadPlot = {{ "true" if plot_exists else "false" }};
+
 async function poll() {
   const res = await fetch("{{ url_for('run_status_json', run_id=run.run_id) }}");
   if (!res.ok) return;
   const data = await res.json();
   document.getElementById("stage").textContent = data.stage;
   document.getElementById("running-indicator").textContent = data.is_running ? "running" : "not running";
-  for (const [comboId, combo] of Object.entries(data.combos)) {
-    const row = document.getElementById("combo-table").querySelector(`tr td:first-child`);
-  }
-  if (data.stage === "complete" && !document.querySelector("iframe")) {
+  if (data.stage !== initialStage || (data.stage === "complete" && !hadPlot)) {
     location.reload();
   }
 }
