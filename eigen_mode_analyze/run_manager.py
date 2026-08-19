@@ -13,10 +13,36 @@ import datetime as _dt
 import json
 import os
 import tempfile
+import time
 from typing import Dict, List
 
 from . import paths
 from .sweep import SweepParameter, combinations, combo_id_for
+
+
+def _replace_with_retry(src: str, dst: str, attempts: int = 8, delay: float = 0.25) -> None:
+    """
+    os.replace() can transiently fail on Windows with PermissionError
+    (WinError 5, "Access is denied") if something else briefly has the
+    destination file open -- antivirus real-time scanning, a search
+    indexer, or (especially likely for a path under Documents\\, which
+    Windows often redirects to OneDrive by default) cloud sync grabbing
+    the file the instant it's created. This is essentially always
+    transient -- the lock clears within a fraction of a second -- so
+    retry a few times with a short backoff before giving up for real.
+    A run's local state file is written very frequently (after every
+    combo's every status change); it shouldn't be possible for one of
+    these to take down the whole run.
+    """
+    last_exc = None
+    for attempt in range(attempts):
+        try:
+            os.replace(src, dst)
+            return
+        except PermissionError as exc:
+            last_exc = exc
+            time.sleep(delay * (attempt + 1))
+    raise last_exc
 
 
 def _atomic_write_json(path: str, data: dict) -> None:
@@ -24,7 +50,7 @@ def _atomic_write_json(path: str, data: dict) -> None:
     try:
         with os.fdopen(fd, "w") as f:
             json.dump(data, f, indent=2, default=str)
-        os.replace(tmp_path, path)
+        _replace_with_retry(tmp_path, path)
     except Exception:
         if os.path.exists(tmp_path):
             os.remove(tmp_path)
