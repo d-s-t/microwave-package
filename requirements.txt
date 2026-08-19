@@ -1,12 +1,14 @@
-# Installs the shared queue/worker package straight from GitHub (not on
-# PyPI). This only needs queue_common (pure stdlib), so the base install
-# with no extras is enough -- it won't pull in pyaedt/pystray/Pillow,
-# which only the worker itself (in its own repo) needs.
+# Installs the shared queue schema package straight from GitHub (not on
+# PyPI) -- just the common/ subdirectory of ansys-analyze-worker, which
+# contains only queue_common (pure stdlib). This deliberately does NOT
+# install the worker/ subdirectory (the worker itself), so none of its
+# files or dependencies (pyaedt/pystray/Pillow) end up here.
 #
 # Tracks the default branch by default. To pin a specific released
-# version instead, append @<tag> (or @<commit-sha>), e.g.:
-#   git+https://github.com/d-s-t/ansys-analyze-worker.git@v0.1.0
-git+https://github.com/d-s-t/ansys-analyze-worker.git
+# version instead, add @<tag> (or @<commit-sha>) right before
+# #subdirectory=common, e.g.:
+#   git+https://github.com/d-s-t/ansys-analyze-worker.git@v0.1.0#subdirectory=common
+git+https://github.com/d-s-t/ansys-analyze-worker.git#subdirectory=common
 
 # Part 1 also drives AEDT directly, to build the model itself.
 # Part 3 needs pandas/matplotlib for merging results and plotting.
