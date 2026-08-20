@@ -73,7 +73,7 @@ def run_pipeline(run: Run, queue: "queue_common.QueuePaths", log=logger.info, st
     if stop_event is not None and stop_event.is_set():
         return
 
-    log("Stage 4/5: post-processing analyzed projects (one at a time)...")
+    log("Stage 4/5: post-processing analyzed projects...")
     run.set_stage("postprocessing")
     resilient_io.call_with_retry(
         postprocess.postprocess_run, run, queue, analysis_settings,

@@ -189,7 +189,7 @@ def build_and_queue(
         objects_dict = assign_materials_and_boundaries(hfss, analysis_settings["materials"])
         object_names = {key: obj.name for key, obj in objects_dict.items()}
 
-        setup = create_eigenmode_setup(hfss, dimensions_txt_content, analysis_settings)
+        create_eigenmode_setup(hfss, dimensions_txt_content, analysis_settings)
 
         hfss.save_project(project_path)
         hfss.close_project(name=hfss.project_name)
@@ -218,7 +218,6 @@ def build_and_queue(
                 "combo_id": combo_id,
                 "params": run.state["combos"][combo_id]["params"],
                 "source_step_file": os.path.abspath(step_path),
-                "setup_name": setup.name,
             },
         )
         task_path = queue_common.write_task_atomically(queue, task)

@@ -137,33 +137,31 @@ def postprocess_task(
     hfss = Hfss(**kwargs)
     try:
         setup_names = list(getattr(hfss, "setup_names", []) or [])
-        if len(setup_names) != 1:
-            raise RuntimeError(
-                f"Expected exactly one setup in the analyzed project, found {setup_names}."
-            )
-        setup_name = setup_names[0]
-        setup = hfss.get_setup(setup_name)
-
-        eigen_results = get_eigenmode_results(hfss, setup, log)
-        conv_error = str(get_convergence_data(setup))
+        if not setup_names:
+            raise RuntimeError("Analyzed project has no setup to post-process.")
 
         out_dir = task["output_dir"]
         modes_data: List[Dict[str, Any]] = []
-        for mode_result in eigen_results:
-            row = {
-                "setup": setup_name,
-                "mode": mode_result["mode"],
-                "freq_ghz": mode_result["freq_ghz"],
-                "q": mode_result["q"],
-                "convergence_error": conv_error,
-            }
-            mode_out_dir = os.path.join(out_dir, f"{setup_name}_Mode_{mode_result['mode']}")
-            os.makedirs(mode_out_dir, exist_ok=True)
-            pp_result = run_post_processing(
-                hfss, task, {"setup_name": setup_name, "mode": mode_result["mode"]}, mode_out_dir,
-            )
-            row.update(pp_result)
-            modes_data.append(row)
+        for setup_name in setup_names:
+            setup = hfss.get_setup(setup_name)
+            eigen_results = get_eigenmode_results(hfss, setup, log)
+            conv_error = str(get_convergence_data(setup))
+
+            for mode_result in eigen_results:
+                row = {
+                    "setup": setup_name,
+                    "mode": mode_result["mode"],
+                    "freq_ghz": mode_result["freq_ghz"],
+                    "q": mode_result["q"],
+                    "convergence_error": conv_error,
+                }
+                mode_out_dir = os.path.join(out_dir, f"{setup_name}_Mode_{mode_result['mode']}")
+                os.makedirs(mode_out_dir, exist_ok=True)
+                pp_result = run_post_processing(
+                    hfss, task, {"setup_name": setup_name, "mode": mode_result["mode"]}, mode_out_dir,
+                )
+                row.update(pp_result)
+                modes_data.append(row)
 
         return {"modes": modes_data, "num_modes_found": len(modes_data)}
     finally:
