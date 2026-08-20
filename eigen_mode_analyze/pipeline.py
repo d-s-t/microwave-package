@@ -19,7 +19,7 @@ from typing import Optional
 from ansys_analyze_common import queue_common
 
 from . import equations as eq
-from . import model_builder, paths, plotting, resilient_io, results, step_generation
+from . import model_builder, paths, plotting, postprocess, resilient_io, results, step_generation
 from .monitor import monitor_run
 from .run_manager import Run
 from .sweep import SweepParameter, expand_values
@@ -36,7 +36,7 @@ def run_pipeline(run: Run, queue: "queue_common.QueuePaths", log=logger.info, st
     analysis_settings = run.config["analysis_settings"]
     combos = {cid: c["params"] for cid, c in run.state["combos"].items()}
 
-    log("Stage 1/4: generating STEP files...")
+    log("Stage 1/5: generating STEP files...")
     run.set_stage("generating_steps")
     resilient_io.call_with_retry(
         step_generation.generate_step_files, combos, equations_path, assembly_path, run, log=log,
@@ -44,7 +44,7 @@ def run_pipeline(run: Run, queue: "queue_common.QueuePaths", log=logger.info, st
     if stop_event is not None and stop_event.is_set():
         return
 
-    log("Stage 2/4: building AEDT models and queuing analysis tasks...")
+    log("Stage 2/5: building AEDT models, creating setups, and queuing analysis tasks...")
     run.set_stage("building_models")
     resilient_io.wait_until_available(
         queue.root, on_wait=lambda p: log(f"Queue path {p} unreachable -- waiting for it to come back...")
@@ -67,13 +67,22 @@ def run_pipeline(run: Run, queue: "queue_common.QueuePaths", log=logger.info, st
             queue_root=queue.root, log=log,
         )
 
-    log("Stage 3/4: monitoring analysis progress...")
+    log("Stage 3/5: monitoring analysis progress...")
     run.set_stage("monitoring")
     monitor_run(run, queue, poll_seconds=analysis_settings.get("poll_seconds", 10.0), log=log, stop_event=stop_event)
     if stop_event is not None and stop_event.is_set():
         return
 
-    log("Stage 4/4: building combined results and plotting...")
+    log("Stage 4/5: post-processing analyzed projects...")
+    run.set_stage("postprocessing")
+    resilient_io.call_with_retry(
+        postprocess.postprocess_run, run, queue, analysis_settings,
+        queue_root=queue.root, log=log, stop_event=stop_event,
+    )
+    if stop_event is not None and stop_event.is_set():
+        return
+
+    log("Stage 5/5: building combined results and plotting...")
     run.set_stage("plotting")
     df = resilient_io.call_with_retry(results.build_combined_results, run, queue, queue_root=queue.root, log=log)
     plotting.plot_results(df, run, run.sweep_param_names, log=log)
@@ -84,7 +93,6 @@ def run_pipeline(run: Run, queue: "queue_common.QueuePaths", log=logger.info, st
 
 def build_analysis_settings(args: argparse.Namespace) -> dict:
     return {
-        "target_max_freq": args.target_max_freq,
         "modes": args.modes,
         "max_passes": args.max_passes,
         "min_passes": args.min_passes,
@@ -113,7 +121,6 @@ def parse_args() -> argparse.Namespace:
              "multiple parameters -- combinations are the cartesian product across all of them)",
     )
     parser.add_argument("--resume", type=str, default=None, help="Resume an existing run by its run_id instead of starting a new one")
-    parser.add_argument("--target-max-freq", type=float, default=20.0, help="Target maximum frequency in GHz")
     parser.add_argument("--modes", type=int, default=20)
     parser.add_argument("--max-passes", type=int, default=99)
     parser.add_argument("--min-passes", type=int, default=5)

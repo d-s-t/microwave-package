@@ -52,6 +52,8 @@ class Run:
                     "step_error": None,
                     "task_id": None,
                     "queue_status": None,
+                    "post_status": None,
+                    "post_error": None,
                 }
                 for combo in combos
             },
@@ -124,4 +126,7 @@ class Run:
     @property
     def is_complete(self) -> bool:
         combos = self.state["combos"]
-        return bool(combos) and all(c.get("queue_status") in ("done", "failed") for c in combos.values())
+        return bool(combos) and all(
+            c.get("queue_status") == "failed" or c.get("post_status") in ("done", "failed")
+            for c in combos.values()
+        )

@@ -47,10 +47,11 @@ python -m eigen_mode_analyze.webapp
 Open <http://127.0.0.1:5000/>. Pick which parameter(s) from
 `base_parts/default.txt` to sweep and over what range, set the analysis
 settings, and start the run. The status page updates live as STEP files
-get built, models get queued, and the worker finishes each analysis --
-the plot appears there automatically once everything's done. Existing
-runs (including ones interrupted mid-way) are listed on the home page
-and can be resumed with one click.
+get built, models get queued, the worker finishes each analysis, and
+this pipeline reopens each analyzed project to pull out its results (one
+at a time, never in parallel) -- the plot appears there automatically
+once everything's done. Existing runs (including ones interrupted
+mid-way) are listed on the home page and can be resumed with one click.
 
 ### Command line
 
@@ -68,7 +69,7 @@ python -m eigen_mode_analyze.pipeline --resume run_20260819_140102
 ```
 
 Run `python -m eigen_mode_analyze.pipeline --help` for every analysis
-setting (target frequency, mode count, materials, etc.).
+setting (mode count, pass counts, materials, etc.).
 
 ### If the queue share is unreachable
 
@@ -92,13 +93,18 @@ git-ignored -- it's backed up elsewhere, not committed.
 
 - **New scripts for this experiment**: add them under `eigen_mode_analyze/`
   alongside the existing modules (`equations.py`, `sweep.py`,
-  `step_generation.py`, `model_builder.py`, `monitor.py`, `results.py`,
-  `plotting.py`, `run_manager.py`) and wire them into `pipeline.py` /
-  `webapp.py` as needed.
+  `step_generation.py`, `model_builder.py`, `monitor.py`,
+  `post_processing.py`, `postprocess.py`, `results.py`, `plotting.py`,
+  `run_manager.py`) and wire them into `pipeline.py` / `webapp.py` as
+  needed.
 - **New analysis types**: see `ansys-analyze-worker`'s
   `docs/ARCHITECTURE.md` section 6 -- add a handler there; this repo's
-  `task_type` (currently always `"eigenmode_chain"`, set in
-  `model_builder.build_and_queue`) just needs to name it.
+  `task_type` (currently always `"eigenmode_analyze"`, set in
+  `model_builder.build_and_queue`) just needs to name it. Remember the
+  worker only ever runs a setup this repo already created (§8.1/§12 of
+  that doc) -- it never creates one, and it never post-processes the
+  result either (that's `postprocess.py`, run sequentially, one project
+  at a time, right after the worker finishes each task).
 - **New sweepable parameters**: anything in `base_parts/default.txt`
   with a plain numeric value (not a formula) is automatically offered in
   the web UI and usable via `--sweep NAME=...` -- no code changes needed.

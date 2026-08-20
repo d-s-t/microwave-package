@@ -1,9 +1,9 @@
 """
 AEDT model-building step: for each STEP file, build an HFSS Eigenmode
-model (geometry, materials, boundaries -- everything the student
-license covers), then queue it with the worker for analysis. Never
-creates an analysis setup or calls Analyze -- that's the worker's job,
-on the full license, in a different process entirely (see
+model (geometry, materials, boundaries, and its single analysis setup --
+everything the student license covers), then queue it with the worker for
+analysis. Never calls Analyze/analyze_setup itself -- that's the worker's
+job, on the full license, in a different process entirely (see
 ansys-analyze-worker's ARCHITECTURE.md section 8).
 """
 from __future__ import annotations
@@ -119,6 +119,28 @@ def assign_materials_and_boundaries(hfss, mat_settings: dict) -> Dict[str, objec
     return objects_dict
 
 
+SETUP_NAME = "Setup_1"
+
+
+def create_eigenmode_setup(hfss, dimensions_txt_content: str, analysis_settings: dict):
+    """Create the project's single Eigenmode setup. The student license
+    covers `create_setup` -- it's only `analyze`/`analyze_setup` that needs
+    the full license, which is why this still runs here (client side,
+    student version) and the worker only ever runs the setup this
+    produces, never creates one itself (see ARCHITECTURE.md section 8)."""
+    min_freq_ghz = calculate_min_freq(
+        dimensions_txt_content, safety_factor=analysis_settings["min_freq_safety_factor"]
+    )
+    setup = hfss.create_setup(name=SETUP_NAME)
+    setup.props["MinimumFrequency"] = f"{min_freq_ghz}GHz"
+    setup.props["NumModes"] = analysis_settings["modes"]
+    setup.props["MaximumPasses"] = analysis_settings["max_passes"]
+    setup.props["MinimumPasses"] = analysis_settings["min_passes"]
+    setup.props["MinimumConvergedPasses"] = analysis_settings["min_converged"]
+    setup.props["MaximumDeltaFreqPerPass"] = analysis_settings["max_delta_f"]
+    return setup
+
+
 def build_and_queue(
     combo_id: str,
     step_path: str,
@@ -132,8 +154,8 @@ def build_and_queue(
     log: Callable[[str], None] = logger.info,
 ) -> None:
     """Build an HFSS model from step_path, assign materials/boundaries,
-    and queue it for the worker. No-ops if this combo is already queued
-    (resume support)."""
+    create its (single) Eigenmode setup, and queue it for the worker to
+    analyze. No-ops if this combo is already queued (resume support)."""
     if run.state["combos"][combo_id].get("task_id"):
         log(f"{combo_id} already queued (task {run.state['combos'][combo_id]['task_id']}) -- skipping.")
         return
@@ -167,20 +189,18 @@ def build_and_queue(
         objects_dict = assign_materials_and_boundaries(hfss, analysis_settings["materials"])
         object_names = {key: obj.name for key, obj in objects_dict.items()}
 
+        create_eigenmode_setup(hfss, dimensions_txt_content, analysis_settings)
+
         hfss.save_project(project_path)
         hfss.close_project(name=hfss.project_name)
         hfss = None
 
-        min_freq_ghz = calculate_min_freq(
-            dimensions_txt_content, safety_factor=analysis_settings["min_freq_safety_factor"]
-        )
-
-        task_id = queue_common.new_task_id("eigenmode_chain")
+        task_id = queue_common.new_task_id("eigenmode_analyze")
         relative_project_file = queue_common.copy_project_to_queue(queue, task_id, combo_dir)
         relative_output_dir = queue_common.project_dir_for_task(task_id)
 
         task = queue_common.build_task(
-            task_type="eigenmode_chain",
+            task_type="eigenmode_analyze",
             project_file=relative_project_file,
             output_dir=relative_output_dir,
             task_id=task_id,
@@ -189,15 +209,6 @@ def build_and_queue(
             # from the AEDT session when it reopens the project. See
             # queue_common.build_task()'s docstring for why that matters.
             solution_type="Eigenmode",
-            parameters={
-                "start_min_freq_ghz": min_freq_ghz,
-                "target_max_freq_ghz": analysis_settings["target_max_freq"],
-                "modes": analysis_settings["modes"],
-                "max_passes": analysis_settings["max_passes"],
-                "min_passes": analysis_settings["min_passes"],
-                "min_converged": analysis_settings["min_converged"],
-                "max_delta_f": analysis_settings["max_delta_f"],
-            },
             objects=object_names,
             post_processing=[
                 {"op": "field_plot_surface", "params": {"object_key": "chip", "quantity": "Mag_E"}},

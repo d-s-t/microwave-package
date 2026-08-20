@@ -1,8 +1,9 @@
 """
 Builds/merges analysis results for a run into one combined table, from
-the worker's raw per-task result.json files (see ansys-analyze-worker's
-ARCHITECTURE.md sections 5 and 9 -- the worker deliberately doesn't build
-a CSV itself, that's the client pipeline's job).
+the client's own per-task client_result.json files (written by
+postprocess.py, right after it reopens each analyzed project -- see that
+module's docstring for why the worker itself no longer produces this
+data).
 """
 from __future__ import annotations
 
@@ -28,10 +29,14 @@ def build_combined_results(run, queue: "queue_common.QueuePaths", log: Callable[
             skipped.append((combo_id, "not queued"))
             continue
 
+        if combo.get("post_status") != "done":
+            skipped.append((combo_id, combo.get("post_status") or "not post-processed yet"))
+            continue
+
         output_dir = queue_common.resolve_path(queue, queue_common.project_dir_for_task(task_id))
-        result_path = os.path.join(output_dir, "result.json")
+        result_path = os.path.join(output_dir, "client_result.json")
         if not os.path.exists(result_path):
-            skipped.append((combo_id, "no result.json yet"))
+            skipped.append((combo_id, "no client_result.json yet"))
             continue
 
         with open(result_path) as f:
@@ -43,7 +48,7 @@ def build_combined_results(run, queue: "queue_common.QueuePaths", log: Callable[
 
         modes = summary.get("result", {}).get("modes")
         if not modes:
-            skipped.append((combo_id, "no mode data in result.json"))
+            skipped.append((combo_id, "no mode data in client_result.json"))
             continue
 
         df = pd.DataFrame(modes)
