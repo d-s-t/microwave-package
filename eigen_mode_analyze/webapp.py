@@ -116,7 +116,6 @@ def new_run():
         return redirect(url_for("index"))
 
     settings = {
-        "target_max_freq": float(request.form.get("target_max_freq", 20.0)),
         "modes": int(request.form.get("modes", 20)),
         "max_passes": int(request.form.get("max_passes", 99)),
         "min_passes": int(request.form.get("min_passes", 5)),

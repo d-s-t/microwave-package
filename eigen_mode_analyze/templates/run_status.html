@@ -39,13 +39,14 @@
 {% endif %}
 
 <table id="combo-table">
-<tr><th>Combination</th><th>Parameters</th><th>STEP</th><th>Analysis</th></tr>
+<tr><th>Combination</th><th>Parameters</th><th>STEP</th><th>Analysis</th><th>Post-processing</th></tr>
 {% for combo_id, combo in run.state.combos.items() %}
 <tr>
   <td>{{ combo_id }}</td>
   <td>{{ combo.params }}</td>
   <td class="status-{{ combo.step_status }}">{{ combo.step_status or "pending" }}</td>
   <td class="status-{{ combo.queue_status }}">{{ combo.queue_status or "not queued" }}</td>
+  <td class="status-{{ combo.post_status }}">{{ combo.post_status or "pending" }}</td>
 </tr>
 {% endfor %}
 </table>
