@@ -12,23 +12,10 @@ from __future__ import annotations
 import datetime as _dt
 import json
 import os
-import tempfile
 from typing import Dict, List
 
 from . import paths
 from .sweep import SweepParameter, combinations, combo_id_for
-
-
-def _atomic_write_json(path: str, data: dict) -> None:
-    fd, tmp_path = tempfile.mkstemp(prefix=".tmp_", suffix=".json", dir=os.path.dirname(path))
-    try:
-        with os.fdopen(fd, "w") as f:
-            json.dump(data, f, indent=2, default=str)
-        os.replace(tmp_path, path)
-    except Exception:
-        if os.path.exists(tmp_path):
-            os.remove(tmp_path)
-        raise
 
 
 class Run:
@@ -112,8 +99,10 @@ class Run:
     # -- persistence ----------------------------------------------------------
     def save(self) -> None:
         os.makedirs(self.run_dir, exist_ok=True)
-        _atomic_write_json(self.config_path, self.config)
-        _atomic_write_json(self.state_path, self.state)
+        with open(self.config_path, 'w') as f:
+            json.dump(self.config, f, indent=2, default=str)
+        with open(self.state_path, 'w') as f:
+            json.dump(self.state, f, indent=2, default=str)
 
     def set_stage(self, stage: str) -> None:
         self.state["stage"] = stage
