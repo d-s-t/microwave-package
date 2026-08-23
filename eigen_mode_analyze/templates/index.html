@@ -39,7 +39,16 @@
     font-weight:600}
   td label{cursor:pointer}
   td.value-cell{white-space:nowrap}
-  .unit{color:var(--muted);margin-left:.4rem;font-size:.9em}
+  .unit{color:var(--muted);margin-left:.4rem;font-size:.9em;display:inline-block;min-width:1.8rem}
+  /* micrometre fields are the ones you can mistype by a factor of 1000,
+     so their unit is called out rather than greyed away */
+  .unit-micron{color:var(--accent);font-weight:600}
+  h4{margin:1.6rem 0 .2rem}
+  h4 + p.muted{margin-top:0}
+  details.param-group{margin-top:1.4rem;border:1px solid var(--line-soft);border-radius:6px;
+    padding:.5rem .8rem}
+  details.param-group summary{cursor:pointer;font-weight:600}
+  details.param-group[open] summary{margin-bottom:.3rem}
   .load-form{display:flex;align-items:center;gap:.5rem;flex-wrap:wrap;margin:.5rem 0 1.5rem;
     padding:.6rem .8rem;border:1px solid var(--line-soft);border-radius:6px}
   .load-form button{padding:.3rem .7rem;font-size:.9em}
@@ -102,9 +111,11 @@
     start:stop:step ("0:10:2"). More than one box holding a range sweeps every combination of them
     (cartesian product) -- watch the combination count, since each one is a full model build +
     analysis. Click a drawing to see which dimension a parameter drives.</p>
+  {% macro parameter_rows(names) -%}
   <table>
     <tr><th>Drawing</th><th>Parameter</th><th>Value or range</th></tr>
-    {% for name, value in parameters.items() %}
+    {% for name in names %}
+    {% set value = parameters[name] %}
     {% set label = meta.label_for(name) %}
     {% set unit = meta.unit_for(name) %}
     <tr>
@@ -123,11 +134,26 @@
                value="{{ values.get(name, '') }}"
                placeholder="{{ meta.format_value(name, value) }}"
                aria-label="{{ label }}, currently {{ meta.format_value(name, value) }}{% if unit %} {{ unit }}{% endif %}">
-        <span class="unit">{{ unit or "" }}</span>
+        <span class="unit{% if meta.is_micron(name) %} unit-micron{% endif %}">{{ unit or "" }}</span>
       </td>
     </tr>
     {% endfor %}
   </table>
+  {%- endmacro %}
+
+  {% for group in groups %}
+    {% if group.collapsed %}
+    <details class="param-group">
+      <summary>{{ group.title }} <span class="muted">({{ group.names|length }})</span></summary>
+      <p class="muted">{{ group.hint }}</p>
+      {{ parameter_rows(group.names) }}
+    </details>
+    {% else %}
+    <h4>{{ group.title }}</h4>
+    <p class="muted">{{ group.hint }}</p>
+    {{ parameter_rows(group.names) }}
+    {% endif %}
+  {% endfor %}
 
   <h3>Analysis settings</h3>
   {% set materials = settings.materials or {} %}

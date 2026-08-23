@@ -10,6 +10,8 @@ import re
 from dataclasses import dataclass
 from typing import Dict, List, Tuple
 
+from . import parameter_meta
+
 
 @dataclass
 class SweepParameter:
@@ -80,10 +82,16 @@ def combinations(sweep_params: List[SweepParameter]) -> List[Dict[str, float]]:
 
 def combo_id_for(combo: Dict[str, float]) -> str:
     """A filesystem-safe, human-readable id for one combination, e.g.
-    "pedestal_depth-4_chip_side-6.3", used as its folder name."""
+    "pedestal_depth-4_chip_width-381um", used as its folder name.
+
+    Values are written in the unit the parameter is presented in, so the
+    id matches what was typed into the form -- the sub-millimetre ones
+    carry a `um` suffix to say so. The combo's own values stay in
+    millimetres; only this label changes.
+    """
     parts = []
     for name, value in combo.items():
         safe_name = re.sub(r"[^A-Za-z0-9_]+", "_", name)
-        safe_value = re.sub(r"[^A-Za-z0-9.]+", "_", f"{value:g}")
+        safe_value = re.sub(r"[^A-Za-z0-9.]+", "_", parameter_meta.combo_id_value(name, value))
         parts.append(f"{safe_name}-{safe_value}")
     return "_".join(parts) if parts else "default"

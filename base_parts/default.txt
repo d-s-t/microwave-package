@@ -2,7 +2,7 @@
 
 "pcb_side"= 20   	' length of the chip in the other direction
 
-"pcb_width"= 1
+"pcb_width"= 0.381	' thickness of the PCB (381 um)
 
 "wall_width"= 1 	' minimal width from the box walls
 
@@ -24,7 +24,7 @@
 
 "chip_side"= 6.3	' length of the chip in the other direction
 
-"chip_width"= 0.4	' width of the chip
+"chip_width"= 0.381	' thickness of the chip (381 um)
 
 "pedestal_depth"= 1	' depth of the pedestal under the chip
 

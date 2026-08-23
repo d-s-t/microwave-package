@@ -177,6 +177,7 @@ def index():
     return render_template(
         "index.html",
         parameters=parameters,
+        groups=parameter_meta.grouped(parameters),
         runs=runs,
         drawings=_parameter_drawings(),
         meta=parameter_meta,
@@ -206,6 +207,11 @@ def new_run():
             logger.warning("Ignoring %s=%r: %s", name, spec, exc)
             continue
         if values:
+            # The box is filled in using the unit the form shows, which
+            # for the sub-millimetre parameters is micrometres -- convert
+            # back to the millimetres the equations file speaks before
+            # anything downstream sees the numbers.
+            values = [parameter_meta.to_model(name, value) for value in values]
             requested.append(SweepParameter(name=name, values=values))
     sweep_params, parameter_defaults = split_swept_and_fixed(requested)
     if not sweep_params and not parameter_defaults:

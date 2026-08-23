@@ -16,6 +16,8 @@ import pandas as pd
 
 from ansys_analyze_common import queue_common
 
+from . import parameter_meta
+
 logger = logging.getLogger("eigen_mode_analyze")
 
 
@@ -52,8 +54,11 @@ def build_combined_results(run, queue: "queue_common.QueuePaths", log: Callable[
             continue
 
         df = pd.DataFrame(modes)
+        # Swept parameters are reported in the unit they were entered in,
+        # with the column named accordingly (`chip_width_um`), so the CSV
+        # says what its numbers mean. The run's own state stays in mm.
         for key, value in combo.get("params", {}).items():
-            df[key] = value
+            df[parameter_meta.column_name(key)] = parameter_meta.to_display(key, value)
         df["combo_id"] = combo_id
 
         csv_path = os.path.join(run.combo_dir(combo_id), "modes_results.csv")
