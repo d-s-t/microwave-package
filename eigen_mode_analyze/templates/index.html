@@ -4,23 +4,7 @@
 <meta charset="utf-8">
 <title>Eigenmode Analysis</title>
 <style>
-  /* Follows the reader's light/dark preference. `color-scheme` also lets the
-     browser theme the native form controls and scrollbars to match. */
-  :root{
-    color-scheme:light dark;
-    --bg:#fff; --fg:#222; --muted:#6b6b6b;
-    --line:#ccc; --line-soft:#ddd; --panel:#fff; --surface:#fff; --surface-hover:#eef6fa;
-    --accent:#2E86AB; --accent-hover:#256a87; --neutral:#666; --neutral-hover:#444;
-    --backdrop:rgba(0,0,0,.6);
-  }
-  @media (prefers-color-scheme:dark){
-    :root{
-      --bg:#16181c; --fg:#e6e6e6; --muted:#9aa0a6;
-      --line:#3a4047; --line-soft:#2c3137; --panel:#1f2227; --surface:#1b1e23; --surface-hover:#232b33;
-      --accent:#3f9dc9; --accent-hover:#5cb3dc; --neutral:#4a4f55; --neutral-hover:#5c6269;
-      --backdrop:rgba(0,0,0,.7);
-    }
-  }
+  /* Colour tokens and the theme switch live in _theme.html. */
   /* the bottom padding keeps the floating Start run button from ever
      covering the last row of the page */
   body{font-family:system-ui,sans-serif;max-width:900px;margin:2rem auto;padding:0 1rem 5.5rem;
@@ -98,6 +82,7 @@
 </style>
 </head>
 <body>
+{% include "_theme.html" %}
 <h1>Eigenmode Analysis</h1>
 
 <h2>Start a new run</h2>

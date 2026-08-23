@@ -17,6 +17,7 @@ CLI's --resume).
 """
 from __future__ import annotations
 
+import glob
 import logging
 import os
 import re
@@ -34,7 +35,7 @@ from markupsafe import Markup
 from ansys_analyze_common import queue_common
 
 from . import equations as eq
-from . import parameter_meta, paths, pipeline, plotting
+from . import parameter_meta, paths, pipeline, plotting, post_processing
 from .pipeline import run_pipeline
 from .run_manager import Run
 from .sweep import SweepParameter, expand_values, split_swept_and_fixed
@@ -267,9 +268,10 @@ def run_status(run_id):
         meta=parameter_meta,
         has_common_dimensions=os.path.exists(os.path.join(run.run_dir, "common_dimensions.txt")),
         axis_options=options,
-        default_x=plotting.DEFAULT_X,
-        default_y=(swept[0] if swept else "combo_id"),
+        default_x=(swept[0] if swept else "combo_id"),
+        default_y=plotting.DEFAULT_Y,
         disk_usage_mb=_run_disk_usage(run) / (1024 * 1024),
+        heatmap_combos=_chip_field_combos(run),
     )
 
 
@@ -376,6 +378,58 @@ def run_plot(run_id):
         x=request.args.get("x"),
         y=request.args.get("y"),
         color=request.args.get("color") or None,
+        dark=request.args.get("theme") == "dark",
+        plotlyjs_src=url_for("plotly_js"),
+    )
+    return Response(html, mimetype="text/html")
+
+
+def _chip_field_file(run, combo_id: str) -> Optional[str]:
+    """The chip's exported field samples for one combination, if post-
+    processing got that far. It lands in the per-mode folder, whose name
+    depends on the setup, so it is searched for rather than assumed."""
+    pattern = os.path.join(run.combo_dir(combo_id), "*", "chip_mag_E.fld")
+    matches = sorted(glob.glob(pattern))
+    return matches[0] if matches else None
+
+
+def _chip_field_combos(run) -> list:
+    return [c for c in run.state.get("combos", {}) if _chip_field_file(run, c)]
+
+
+def _chip_field_entries(run, combo_ids) -> list:
+    """Top-face samples per combination, ready to draw."""
+    entries = []
+    for combo_id in combo_ids:
+        path = _chip_field_file(run, combo_id)
+        if not path:
+            continue
+        try:
+            points = post_processing.read_field_points(path)
+        except OSError:
+            logger.warning("Could not read %s", path)
+            continue
+        if not points:
+            continue
+        axis = post_processing.thin_axis(points)
+        highest = max(c[axis] for c, _ in points)
+        extent = highest - min(c[axis] for c, _ in points)
+        band = extent * 0.02
+        top = [(c, v) for c, v in points if c[axis] >= highest - band]
+        entries.append({"label": combo_id, "points": top or points, "axis": axis})
+    return entries
+
+
+@app.route("/runs/<run_id>/heatmap")
+def run_heatmap(run_id):
+    """Chip top-face |E|, for one combination or all of them at once."""
+    run = Run.load(run_id)
+    wanted = request.args.get("combo") or "all"
+    available = _chip_field_combos(run)
+    combos = available if wanted == "all" else [c for c in available if c == wanted]
+
+    html = plotting.chip_heatmap_html(
+        _chip_field_entries(run, combos),
         dark=request.args.get("theme") == "dark",
         plotlyjs_src=url_for("plotly_js"),
     )

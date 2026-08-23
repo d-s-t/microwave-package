@@ -4,22 +4,7 @@
 <meta charset="utf-8">
 <title>Run {{ run.run_id }}</title>
 <style>
-  /* Same light/dark handling as the index page. */
-  :root{
-    color-scheme:light dark;
-    --bg:#fff; --fg:#222; --muted:#6b6b6b; --line:#ccc; --line-soft:#ddd;
-    --accent:#2E86AB; --accent-hover:#256a87;
-    --ok:#1a7f37; --bad:#c0392b; --busy:#b8860b;
-    --error-bg:#fdecea;
-  }
-  @media (prefers-color-scheme:dark){
-    :root{
-      --bg:#16181c; --fg:#e6e6e6; --muted:#9aa0a6; --line:#3a4047; --line-soft:#2c3137;
-      --accent:#3f9dc9; --accent-hover:#5cb3dc;
-      --ok:#4ac26b; --bad:#f0836f; --busy:#e0b341;
-      --error-bg:#2a1d1c;
-    }
-  }
+  /* Colour tokens and the theme switch live in _theme.html. */
   body{font-family:system-ui,sans-serif;max-width:900px;margin:2rem auto;padding:0 1rem;
     color:var(--fg);background:var(--bg)}
   a{color:var(--accent)}
@@ -36,6 +21,7 @@
   /* transparent so the figure sits on the page's own background in
      either theme -- the plot is rendered with a see-through canvas */
   iframe{width:100%;height:600px;border:1px solid var(--line);margin-top:1rem;background:transparent}
+  iframe.heatmap{height:680px}
   .axis-picker{display:flex;align-items:center;gap:.5rem;flex-wrap:wrap;margin:.75rem 0;
     padding:.6rem .8rem;border:1px solid var(--line-soft);border-radius:6px}
   .axis-picker label{font-weight:600;font-size:.9em}
@@ -54,6 +40,7 @@
 </style>
 </head>
 <body>
+{% include "_theme.html" %}
 <p><a href="{{ url_for('index') }}">&larr; back</a></p>
 <h1>Run {{ run.run_id }}</h1>
 <p>Stage: <strong id="stage">{{ run.state.stage }}</strong>
@@ -143,6 +130,21 @@
 {% endif %}
 <p><a class="button" href="{{ url_for('run_results_csv', run_id=run.run_id) }}">Download CSV</a></p>
 <iframe id="plot-frame" src="{{ url_for('run_plot', run_id=run.run_id) }}"></iframe>
+{% endif %}
+
+{% if heatmap_combos %}
+<h2>Chip field</h2>
+<div class="axis-picker">
+  <label for="heatmap-combo">|E| on the chip's top face</label>
+  <select id="heatmap-combo">
+    <option value="all">All variants (shared scale)</option>
+    {% for combo_id in heatmap_combos %}
+    <option value="{{ combo_id }}">{{ combo_id }}</option>
+    {% endfor %}
+  </select>
+  <span class="muted">{{ heatmap_combos|length }} variant(s) with field data</span>
+</div>
+<iframe id="heatmap-frame" class="heatmap"></iframe>
 {% endif %}
 
 {% if not is_running %}
@@ -244,14 +246,13 @@ setInterval(poll, 4000);
   var colour = document.getElementById("axis-color");
   if (!x || !y) { return; }
 
-  var darkQuery = window.matchMedia("(prefers-color-scheme: dark)");
   var base = "{{ url_for('run_plot', run_id=run.run_id) }}";
 
   function render() {
     var params = new URLSearchParams({
       x: x.value,
       y: y.value,
-      theme: darkQuery.matches ? "dark" : "light",
+      theme: window.themeIsDark() ? "dark" : "light",
     });
     if (colour && colour.value) { params.set("color", colour.value); }
     frame.src = base + "?" + params.toString();
@@ -271,10 +272,26 @@ setInterval(poll, 4000);
     });
   }
 
-  // Safari still only supports the deprecated addListener here
-  if (darkQuery.addEventListener) { darkQuery.addEventListener("change", render); }
-  else if (darkQuery.addListener) { darkQuery.addListener(render); }
+  window.addEventListener("themechange", render);
+  render();
+})();
 
+// --- chip field heatmaps ------------------------------------------
+(function () {
+  var frame = document.getElementById("heatmap-frame");
+  var picker = document.getElementById("heatmap-combo");
+  if (!frame || !picker) { return; }
+  var base = "{{ url_for('run_heatmap', run_id=run.run_id) }}";
+
+  function render() {
+    frame.src = base + "?" + new URLSearchParams({
+      combo: picker.value,
+      theme: window.themeIsDark() ? "dark" : "light",
+    }).toString();
+  }
+
+  picker.addEventListener("change", render);
+  window.addEventListener("themechange", render);
   render();
 })();
 </script>

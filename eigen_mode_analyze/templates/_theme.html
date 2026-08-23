@@ -1,0 +1,103 @@
+{# Shared colour tokens and the light/dark/system switch.
+
+   Three states, so an explicit choice has to beat the OS preference in
+   both directions: the light palette is defined on bare :root, the dark
+   one is applied both under prefers-color-scheme (unless the reader
+   picked light) and under an explicit data-theme="dark". #}
+<script>
+// Applied before anything is painted, so a chosen theme does not flash
+// the other one first.
+(function () {
+  try {
+    var choice = localStorage.getItem("eigenmode-theme") || "system";
+    if (choice !== "system") { document.documentElement.setAttribute("data-theme", choice); }
+  } catch (e) { /* private mode: fall back to the system theme */ }
+})();
+</script>
+<style>
+  :root{
+    color-scheme:light dark;
+    --bg:#fff; --fg:#222; --muted:#6b6b6b;
+    --line:#ccc; --line-soft:#ddd; --panel:#fff; --surface:#fff; --surface-hover:#eef6fa;
+    --accent:#2E86AB; --accent-hover:#256a87; --neutral:#666; --neutral-hover:#444;
+    --backdrop:rgba(0,0,0,.6);
+    --ok:#1a7f37; --bad:#c0392b; --busy:#b8860b; --error-bg:#fdecea;
+  }
+  @media (prefers-color-scheme:dark){
+    :root:not([data-theme="light"]){
+      color-scheme:dark;
+      --bg:#16181c; --fg:#e6e6e6; --muted:#9aa0a6;
+      --line:#3a4047; --line-soft:#2c3137; --panel:#1f2227; --surface:#1b1e23; --surface-hover:#232b33;
+      --accent:#3f9dc9; --accent-hover:#5cb3dc; --neutral:#4a4f55; --neutral-hover:#5c6269;
+      --backdrop:rgba(0,0,0,.7);
+      --ok:#4ac26b; --bad:#f0836f; --busy:#e0b341; --error-bg:#2a1d1c;
+    }
+  }
+  :root[data-theme="dark"]{
+    color-scheme:dark;
+    --bg:#16181c; --fg:#e6e6e6; --muted:#9aa0a6;
+    --line:#3a4047; --line-soft:#2c3137; --panel:#1f2227; --surface:#1b1e23; --surface-hover:#232b33;
+    --accent:#3f9dc9; --accent-hover:#5cb3dc; --neutral:#4a4f55; --neutral-hover:#5c6269;
+    --backdrop:rgba(0,0,0,.7);
+    --ok:#4ac26b; --bad:#f0836f; --busy:#e0b341; --error-bg:#2a1d1c;
+  }
+  :root[data-theme="light"]{ color-scheme:light; }
+
+  .theme-switch{position:fixed;top:.6rem;right:.8rem;z-index:30;display:flex;gap:2px;
+    padding:2px;border:1px solid var(--line-soft);border-radius:999px;background:var(--panel)}
+  .theme-switch button{background:transparent;color:var(--muted);border:none;cursor:pointer;
+    border-radius:999px;padding:.2rem .6rem;font-size:.8em}
+  .theme-switch button:hover{background:var(--surface-hover);color:var(--fg)}
+  .theme-switch button[aria-pressed="true"]{background:var(--accent);color:#fff}
+  @media (max-width:700px){ .theme-switch{position:static;margin:0 0 .5rem auto;width:max-content} }
+</style>
+
+<div class="theme-switch" role="group" aria-label="Colour theme">
+  <button type="button" data-theme-choice="light" title="Always light">Light</button>
+  <button type="button" data-theme-choice="dark" title="Always dark">Dark</button>
+  <button type="button" data-theme-choice="system" title="Follow the system setting">System</button>
+</div>
+
+<script>
+// `window.themeIsDark()` and the `themechange` event let anything that
+// cannot read CSS -- the plotly figures, which bake their colours in at
+// render time -- follow the same choice.
+(function () {
+  var KEY = "eigenmode-theme";
+  var systemDark = window.matchMedia("(prefers-color-scheme: dark)");
+
+  function stored() {
+    try { return localStorage.getItem(KEY) || "system"; } catch (e) { return "system"; }
+  }
+
+  window.themeIsDark = function () {
+    var choice = stored();
+    return choice === "dark" || (choice === "system" && systemDark.matches);
+  };
+
+  function apply(choice) {
+    var root = document.documentElement;
+    if (choice === "system") { root.removeAttribute("data-theme"); }
+    else { root.setAttribute("data-theme", choice); }
+    document.querySelectorAll("[data-theme-choice]").forEach(function (button) {
+      button.setAttribute("aria-pressed", String(button.dataset.themeChoice === choice));
+    });
+    window.dispatchEvent(new CustomEvent("themechange"));
+  }
+
+  document.querySelectorAll("[data-theme-choice]").forEach(function (button) {
+    button.addEventListener("click", function () {
+      var choice = button.dataset.themeChoice;
+      try { localStorage.setItem(KEY, choice); } catch (e) { /* not fatal */ }
+      apply(choice);
+    });
+  });
+
+  // only matters while following the system, but harmless either way
+  var onSystemChange = function () { if (stored() === "system") { apply("system"); } };
+  if (systemDark.addEventListener) { systemDark.addEventListener("change", onSystemChange); }
+  else if (systemDark.addListener) { systemDark.addListener(onSystemChange); }
+
+  apply(stored());
+})();
+</script>

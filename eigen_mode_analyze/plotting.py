@@ -32,7 +32,9 @@ RESULT_FIELDS: Dict[str, str] = {
     "vacuum_mag_E_mean": "Vacuum mean |E| (V/m)",
 }
 
-DEFAULT_X = "freq_ghz"
+# The sweep reads most naturally with the parameter you varied along the
+# bottom and the frequency it produced up the side.
+DEFAULT_Y = "freq_ghz"
 
 
 def axis_options(df: pd.DataFrame, sweep_param_names: List[str]) -> List[Dict[str, str]]:
@@ -87,8 +89,9 @@ def figure_html(
     def usable(column, fallback):
         return column if column in df.columns else fallback
 
-    x = usable(x, DEFAULT_X if DEFAULT_X in df.columns else options[0])
-    default_y = next((o for o in options if o != x), x)
+    x = usable(x, options[0])
+    default_y = DEFAULT_Y if DEFAULT_Y in df.columns and DEFAULT_Y != x else next(
+        (o for o in options if o != x), x)
     y = usable(y, default_y)
     if color and color not in df.columns:
         color = None
@@ -127,6 +130,98 @@ def figure_html(
     )
 
 
+def _interpolate(points, axis: int, resolution: int = 120):
+    """Turn scattered mesh-node samples into a grid that can be drawn as
+    a heatmap, over the two axes that are not the body's thin one."""
+    import numpy as np
+    from scipy.interpolate import griddata
+
+    across = [a for a in range(3) if a != axis]
+    # coordinates come out of AEDT in metres; millimetres read better
+    horizontal = np.array([c[across[0]] for c, _ in points]) * 1000.0
+    vertical = np.array([c[across[1]] for c, _ in points]) * 1000.0
+    values = np.array([v for _, v in points])
+
+    x = np.linspace(horizontal.min(), horizontal.max(), resolution)
+    y = np.linspace(vertical.min(), vertical.max(), resolution)
+    grid_x, grid_y = np.meshgrid(x, y)
+    grid_z = griddata((horizontal, vertical), values, (grid_x, grid_y), method="linear")
+    return x, y, grid_z, across
+
+
+def chip_heatmap_html(
+    entries: List[dict],
+    dark: bool = False,
+    plotlyjs_src: Optional[str] = None,
+    columns: int = 3,
+) -> str:
+    """Chip top-face |E| as a heatmap, for one variant or all of them.
+
+    Every panel is drawn against one shared colour axis, so the grid can
+    be read across variants -- a per-panel scale would make the weakest
+    and strongest chips look identical.
+    """
+    from plotly.subplots import make_subplots
+    import plotly.graph_objects as go
+
+    usable = [e for e in entries if e.get("points")]
+    if not usable:
+        return "<p>No chip field data in this run yet.</p>"
+
+    lowest = min(min(v for _, v in e["points"]) for e in usable)
+    highest = max(max(v for _, v in e["points"]) for e in usable)
+
+    count = len(usable)
+    cols = 1 if count == 1 else min(columns, count)
+    rows = (count + cols - 1) // cols
+
+    figure = make_subplots(
+        rows=rows, cols=cols,
+        subplot_titles=[e["label"] for e in usable],
+        horizontal_spacing=0.08, vertical_spacing=0.12 if rows > 1 else 0.0,
+    )
+
+    axis_names = None
+    for index, entry in enumerate(usable):
+        row, col = index // cols + 1, index % cols + 1
+        x, y, z, across = _interpolate(entry["points"], entry["axis"])
+        axis_names = ("xyz"[across[0]], "xyz"[across[1]])
+        figure.add_trace(
+            go.Heatmap(x=x, y=y, z=z, coloraxis="coloraxis",
+                       hovertemplate="%{x:.2f}, %{y:.2f} mm<br>|E| = %{z:.4g}<extra></extra>"),
+            row=row, col=col,
+        )
+        figure.update_xaxes(title_text=f"{axis_names[0]} (mm)", row=row, col=col,
+                            constrain="domain")
+        figure.update_yaxes(title_text=f"{axis_names[1]} (mm)", row=row, col=col,
+                            scaleanchor=f"x{'' if index == 0 else index + 1}", scaleratio=1)
+
+    figure.update_layout(
+        coloraxis=dict(
+            cmin=lowest, cmax=highest, colorscale="Turbo",
+            colorbar=dict(title="|E| (V/m)"),
+        ),
+        template="plotly_dark" if dark else "plotly_white",
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        height=max(320, 300 * rows),
+        margin=dict(l=60, r=30, t=50, b=50),
+        showlegend=False,
+    )
+
+    if not plotlyjs_src:
+        return figure.to_html(include_plotlyjs=True, full_html=True)
+    fragment = figure.to_html(include_plotlyjs=False, full_html=False)
+    scheme = "dark" if dark else "light"
+    return (
+        "<!doctype html><html><head><meta charset='utf-8'>"
+        f"<script src='{plotlyjs_src}'></script>"
+        "<style>html,body{margin:0;padding:0;background:transparent;"
+        f"color-scheme:{scheme}}}</style>"
+        f"</head><body>{fragment}</body></html>"
+    )
+
+
 def plot_results(df: pd.DataFrame, run, sweep_param_names: List[str], log=logger.info) -> Optional[str]:
     if df.empty:
         log("No data to plot.")
@@ -140,8 +235,8 @@ def plot_results(df: pd.DataFrame, run, sweep_param_names: List[str], log=logger
     swept = [parameter_meta.column_name(n) for n in sweep_param_names]
     html = figure_html(
         df, sweep_param_names,
-        x=DEFAULT_X,
-        y=swept[0] if swept else "combo_id",
+        x=swept[0] if swept else "combo_id",
+        y=DEFAULT_Y,
         color="chip_mag_E_max" if "chip_mag_E_max" in df.columns else (swept[1] if len(swept) > 1 else None),
     )
 
