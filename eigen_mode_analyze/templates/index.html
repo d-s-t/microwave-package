@@ -4,17 +4,57 @@
 <meta charset="utf-8">
 <title>Eigenmode Analysis</title>
 <style>
-  body{font-family:system-ui,sans-serif;max-width:900px;margin:2rem auto;padding:0 1rem;color:#222}
+  /* Follows the reader's light/dark preference. `color-scheme` also lets the
+     browser theme the native form controls and scrollbars to match. */
+  :root{
+    color-scheme:light dark;
+    --bg:#fff; --fg:#222; --muted:#6b6b6b;
+    --line:#ccc; --line-soft:#ddd; --panel:#fff; --surface:#fff; --surface-hover:#eef6fa;
+    --accent:#2E86AB; --accent-hover:#256a87; --neutral:#666; --neutral-hover:#444;
+    --backdrop:rgba(0,0,0,.6);
+  }
+  @media (prefers-color-scheme:dark){
+    :root{
+      --bg:#16181c; --fg:#e6e6e6; --muted:#9aa0a6;
+      --line:#3a4047; --line-soft:#2c3137; --panel:#1f2227; --surface:#1b1e23; --surface-hover:#232b33;
+      --accent:#3f9dc9; --accent-hover:#5cb3dc; --neutral:#4a4f55; --neutral-hover:#5c6269;
+      --backdrop:rgba(0,0,0,.7);
+    }
+  }
+  body{font-family:system-ui,sans-serif;max-width:900px;margin:2rem auto;padding:0 1rem;
+    color:var(--fg);background:var(--bg)}
   h1,h2,h3{margin-top:2rem}
   table{border-collapse:collapse;width:100%;margin-top:.5rem}
-  td,th{border:1px solid #ccc;padding:.4rem .6rem;text-align:left}
+  td,th{border:1px solid var(--line);padding:.4rem .6rem;text-align:left}
   input[type=text],input[type=number]{width:9rem;padding:.2rem}
-  fieldset{margin-bottom:1rem;border:1px solid #ddd;border-radius:6px}
+  fieldset{margin-bottom:1rem;border:1px solid var(--line-soft);border-radius:6px}
   label{display:inline-block;margin:.2rem 0}
-  .muted{color:#777;font-size:.9em}
-  a.button,button{display:inline-block;padding:.5rem 1rem;background:#2E86AB;color:#fff;border:none;
+  .muted{color:var(--muted);font-size:.9em}
+  a.button,button{display:inline-block;padding:.5rem 1rem;background:var(--accent);color:#fff;border:none;
     border-radius:4px;text-decoration:none;cursor:pointer;font-size:1em}
-  a.button:hover,button:hover{background:#256a87}
+  a.button:hover,button:hover{background:var(--accent-hover)}
+
+  /* Parameter drawings: a thumbnail per row that opens full size on click.
+     The SVGs are inlined and stroked in `currentColor`, so they inherit the
+     text colour and stay legible in either theme. */
+  td.drawing{width:5.5rem;text-align:center;padding:.2rem}
+  button.thumb{padding:2px;background:var(--surface);border:1px solid var(--line-soft);border-radius:4px;
+    cursor:zoom-in;display:block;width:100%;color:inherit}
+  button.thumb:hover{background:var(--surface-hover);border-color:var(--accent)}
+  button.thumb svg{display:block;width:100%;height:2.6rem}
+
+  #lightbox[hidden]{display:none}
+  #lightbox{position:fixed;inset:0;background:var(--backdrop);display:flex;align-items:center;
+    justify-content:center;padding:2rem;z-index:10}
+  #lightbox .panel{background:var(--panel);color:var(--fg);border:1px solid var(--line-soft);
+    border-radius:8px;padding:1rem 1.25rem;width:min(900px,95vw);max-height:90vh;
+    display:flex;flex-direction:column;gap:.5rem}
+  #lightbox header{display:flex;align-items:baseline;justify-content:space-between;gap:1rem}
+  #lightbox h3{margin:0;font-size:1.1rem}
+  #lightbox .figure{flex:1;min-height:0;display:flex;align-items:center;justify-content:center}
+  #lightbox .figure svg{width:100%;max-height:70vh}
+  #lightbox button.close{background:var(--neutral);padding:.3rem .7rem;font-size:.9em}
+  #lightbox button.close:hover{background:var(--neutral-hover)}
 </style>
 </head>
 <body>
@@ -28,10 +68,18 @@
     or start:stop:step ("0:10:2"). Checking more than one parameter sweeps every combination of them
     (cartesian product) -- watch the combination count, since each one is a full model build + analysis.</p>
   <table>
-    <tr><th></th><th>Parameter</th><th>Current value</th><th>Range to sweep</th></tr>
+    <tr><th></th><th>Drawing</th><th>Parameter</th><th>Current value</th><th>Range to sweep</th></tr>
     {% for name, value in parameters.items() %}
     <tr>
       <td><input type="checkbox" name="param_name" value="{{ name }}"></td>
+      <td class="drawing">
+        {% if name in drawings %}
+        <button type="button" class="thumb" data-name="{{ name }}" data-value="{{ value }}"
+                title="Click to enlarge {{ name }}" aria-label="Enlarge the {{ name }} drawing">
+          {{ drawings[name] }}
+        </button>
+        {% endif %}
+      </td>
       <td>{{ name }}</td>
       <td>{{ value }}</td>
       <td><input type="text" name="range_{{ name }}" placeholder="e.g. 0:10:2"></td>
@@ -78,5 +126,55 @@
 {% else %}
 <p class="muted">No runs yet.</p>
 {% endif %}
+
+<div id="lightbox" hidden>
+  <div class="panel" role="dialog" aria-modal="true" aria-labelledby="lightbox-title">
+    <header>
+      <h3 id="lightbox-title"></h3>
+      <button type="button" class="close">Close</button>
+    </header>
+    <div class="figure" id="lightbox-figure"></div>
+    <p class="muted" id="lightbox-value"></p>
+  </div>
+</div>
+
+<script>
+(function () {
+  var box = document.getElementById('lightbox');
+  var figure = document.getElementById('lightbox-figure');
+  var title = document.getElementById('lightbox-title');
+  var value = document.getElementById('lightbox-value');
+  var opener = null;
+
+  function open(button) {
+    var drawing = button.querySelector('svg');
+    if (!drawing) { return; }
+    opener = button;
+    title.textContent = button.dataset.name;
+    value.textContent = 'Current value: ' + button.dataset.value;
+    // show a copy, so the thumbnail stays in place in the table
+    figure.replaceChildren(drawing.cloneNode(true));
+    box.hidden = false;
+    box.querySelector('.close').focus();
+  }
+
+  function close() {
+    box.hidden = true;
+    figure.replaceChildren();
+    if (opener) { opener.focus(); opener = null; }
+  }
+
+  document.addEventListener('click', function (event) {
+    var thumb = event.target.closest('button.thumb');
+    if (thumb) { open(thumb); return; }
+    // clicking the backdrop (but not the panel) closes it
+    if (event.target === box || event.target.closest('#lightbox .close')) { close(); }
+  });
+
+  document.addEventListener('keydown', function (event) {
+    if (event.key === 'Escape' && !box.hidden) { close(); }
+  });
+})();
+</script>
 </body>
 </html>

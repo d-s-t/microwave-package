@@ -19,12 +19,14 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import sys
 import threading
 import traceback
 from typing import Dict
 
 from flask import Flask, jsonify, redirect, render_template, request, send_from_directory, url_for
+from markupsafe import Markup
 
 from ansys_analyze_common import queue_common
 
@@ -96,12 +98,53 @@ def _is_running(run_id: str) -> bool:
     return thread is not None and thread.is_alive()
 
 
+_XML_DECLARATION = re.compile(r"^\s*<\?xml.*?\?>\s*", re.S)
+_ROOT_SIZE_ATTRS = re.compile(r'\s(?:width|height)="[^"]*"')
+
+
+def _parameter_drawings() -> Dict[str, Markup]:
+    """Parameter name -> inline SVG markup for its drawing.
+
+    The SVGs are embedded in the page rather than linked as <img>, because
+    they draw themselves in `currentColor`: inlined they follow the page's
+    text colour and so stay visible in both the light and dark themes,
+    whereas inside an <img> they would render black on any background.
+
+    The fixed millimetre width/height the exporter writes on the root <svg>
+    is dropped as well, so CSS decides how big each one is drawn.
+    """
+    directory = paths.PARAMETER_DRAWINGS_DIR
+    if not directory.is_dir():
+        return {}
+
+    drawings: Dict[str, Markup] = {}
+    for svg in sorted(directory.glob("*.svg")):
+        try:
+            markup = _XML_DECLARATION.sub("", svg.read_text(encoding="utf-8"))
+        except OSError:
+            logger.warning("Could not read parameter drawing %s", svg)
+            continue
+        end_of_root_tag = markup.find(">")
+        if end_of_root_tag != -1:
+            markup = (
+                _ROOT_SIZE_ATTRS.sub("", markup[:end_of_root_tag])
+                + markup[end_of_root_tag:]
+            )
+        drawings[svg.stem] = Markup(markup)
+    return drawings
+
+
 @app.route("/")
 def index():
     content = eq.read_file(str(paths.DEFAULT_EQUATIONS_FILE))
     parameters = eq.get_numeric_parameters(content)
     runs = Run.list_runs()
-    return render_template("index.html", parameters=parameters, runs=runs)
+    return render_template(
+        "index.html",
+        parameters=parameters,
+        runs=runs,
+        drawings=_parameter_drawings(),
+    )
 
 
 @app.route("/runs/new", methods=["POST"])
