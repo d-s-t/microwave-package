@@ -52,6 +52,7 @@
   details.collapsible summary{cursor:pointer;font-weight:600}
   details.collapsible[open] summary{margin-bottom:.3rem}
   details.collapsible fieldset{margin-top:.6rem}
+  .setting-note{margin:.15rem 0 .5rem 1.6rem;max-width:46rem}
 
   /* Start run follows you down the form -- it is a long page and the
      button used to sit past the end of it. It stays inside the form, so
@@ -185,7 +186,11 @@
     <label>Max delta freq per pass (%) <input type="number" step="any" name="max_delta_f" value="{{ settings.max_delta_f }}"></label><br>
     <label>Starting-frequency safety factor <input type="number" step="any" name="min_freq_safety_factor" value="{{ settings.min_freq_safety_factor }}"></label><br>
     <label>AEDT version (blank = auto-detect) <input type="text" name="aedt_version" value="{{ settings.aedt_version or '' }}"></label><br>
-    <label><input type="checkbox" name="student_version" {% if settings.student_version %}checked{% endif %}> Use student version</label><br>
+    <label><input type="checkbox" name="student_version" {% if settings.student_version %}checked{% endif %}>
+      Student version -- the worker analyses on a separate machine</label><br>
+    <p class="muted setting-note">Also decides when results appear: with the worker on its own machine
+      each combination is post-processed as soon as it finishes, instead of waiting for the whole
+      sweep. Untick it when the worker runs here, so the two do not compete for the same AEDT.</p>
     <label><input type="checkbox" name="graphical" {% if settings.graphical %}checked{% endif %}> Show AEDT UI while building</label><br>
     <label>Queue poll interval (s) <input type="number" step="any" name="poll_seconds" value="{{ settings.poll_seconds }}"></label>
   </fieldset>

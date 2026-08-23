@@ -103,13 +103,37 @@ def run_pipeline(run: Run, queue: "queue_common.QueuePaths", log=logger.info, st
         monitor_thread.join(timeout=30)
         return
 
-    log("Stage 2/4: waiting for the remaining analyses to finish...")
-    run.set_stage("monitoring")
-    monitor_thread.join()
-    if stop_event is not None and stop_event.is_set():
-        return
+    # Post-processing drives a local AEDT session. When the worker has its
+    # own machine (which is what "student version" means here -- see the
+    # note on the setting in the web UI) nothing else is using AEDT on
+    # this one, so each combo is post-processed the moment its analysis
+    # lands rather than after the whole sweep. With the worker on this
+    # machine the two would be competing for the same AEDT, so it waits.
+    worker_is_remote = analysis_settings.get("student_version", True)
+    poll_seconds = analysis_settings.get("poll_seconds", 10.0)
 
-    log("Stage 3/4: post-processing analyzed projects...")
+    if worker_is_remote:
+        log("Stage 2/4: post-processing each analysis as it finishes...")
+        run.set_stage("postprocessing")
+        while monitor_thread.is_alive():
+            if stop_event is not None and stop_event.is_set():
+                return
+            resilient_io.call_with_retry(
+                postprocess.postprocess_run, run, queue, analysis_settings,
+                queue_root=queue.root, log=log, stop_event=stop_event, announce_idle=False,
+            )
+            monitor_thread.join(timeout=poll_seconds)
+        if stop_event is not None and stop_event.is_set():
+            return
+        log("Stage 3/4: post-processing whatever finished last...")
+    else:
+        log("Stage 2/4: waiting for the remaining analyses to finish...")
+        run.set_stage("monitoring")
+        monitor_thread.join()
+        if stop_event is not None and stop_event.is_set():
+            return
+        log("Stage 3/4: post-processing analyzed projects...")
+
     run.set_stage("postprocessing")
     resilient_io.call_with_retry(
         postprocess.postprocess_run, run, queue, analysis_settings,

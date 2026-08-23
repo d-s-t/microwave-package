@@ -20,6 +20,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+import shutil
 import sys
 import threading
 import traceback
@@ -268,7 +269,61 @@ def run_status(run_id):
         axis_options=options,
         default_x=plotting.DEFAULT_X,
         default_y=(swept[0] if swept else "combo_id"),
+        disk_usage_mb=_run_disk_usage(run) / (1024 * 1024),
     )
+
+
+def _run_disk_usage(run) -> int:
+    total = 0
+    for folder, _, files in os.walk(run.run_dir):
+        for name in files:
+            try:
+                total += os.path.getsize(os.path.join(folder, name))
+            except OSError:
+                pass
+    return total
+
+
+@app.route("/runs/<run_id>/delete", methods=["POST"])
+def delete_run(run_id):
+    """Delete a run's folder, and any queue files its tasks still have.
+
+    Guarded three ways, because there is no undo: the page asks first,
+    the form has to come back with the run's own id typed in, and a run
+    that is still going is refused outright.
+    """
+    if _is_running(run_id):
+        logger.warning("Refusing to delete run %s -- it is still running.", run_id)
+        return redirect(url_for("run_status", run_id=run_id))
+
+    if request.form.get("confirm_run_id", "").strip() != run_id:
+        logger.warning("Refusing to delete run %s -- confirmation did not match.", run_id)
+        return redirect(url_for("run_status", run_id=run_id))
+
+    try:
+        run = Run.load(run_id)
+    except (OSError, ValueError):
+        logger.warning("Cannot load run %s to delete it.", run_id)
+        return redirect(url_for("index"))
+
+    # anything of this run's still sitting in the queue goes too, so
+    # deleting a run really does leave nothing behind
+    queue = queue_common.QueuePaths.from_env("ANSYS_ANALYZE_QUEUE_PATH")
+    for combo in run.state.get("combos", {}).values():
+        task_id = combo.get("task_id")
+        if not task_id:
+            continue
+        try:
+            queue_common.remove_task(queue, task_id)
+            done_task_file = os.path.join(queue.done, f"{task_id}.task.json")
+            if os.path.exists(done_task_file):
+                os.remove(done_task_file)
+        except OSError as exc:
+            logger.warning("Could not clear queue files for task %s: %s", task_id, exc)
+
+    shutil.rmtree(run.run_dir, ignore_errors=True)
+    logger.info("Deleted run %s", run_id)
+    return redirect(url_for("index"))
 
 
 @app.route("/runs/<run_id>/common_dimensions.txt")

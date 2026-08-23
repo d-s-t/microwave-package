@@ -35,9 +35,21 @@ def build_combined_results(run, queue: "queue_common.QueuePaths", log: Callable[
             skipped.append((combo_id, combo.get("post_status") or "not post-processed yet"))
             continue
 
-        output_dir = queue_common.resolve_path(queue, queue_common.project_dir_for_task(task_id))
-        result_path = os.path.join(output_dir, "client_result.json")
-        if not os.path.exists(result_path):
+        # Post-processing moves each task's files into the run folder and
+        # clears the queue copy, so look there first; the queue path is
+        # still checked for anything not archived (yet, or because its
+        # transfer did not verify).
+        candidates = []
+        if combo.get("analysis_dir"):
+            candidates.append(combo["analysis_dir"])
+        candidates.append(queue_common.resolve_path(queue, queue_common.project_dir_for_task(task_id)))
+
+        result_path = next(
+            (os.path.join(d, "client_result.json")
+             for d in candidates if os.path.exists(os.path.join(d, "client_result.json"))),
+            None,
+        )
+        if result_path is None:
             skipped.append((combo_id, "no client_result.json yet"))
             continue
 

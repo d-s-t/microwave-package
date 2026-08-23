@@ -41,6 +41,14 @@
   .axis-picker label{font-weight:600;font-size:.9em}
   .axis-picker select{padding:.2rem}
   .axis-picker button{padding:.3rem .7rem;font-size:.85em}
+  .danger-zone{margin-top:2.5rem;border:1px solid var(--bad);border-radius:6px;padding:.5rem .8rem}
+  .danger-zone summary{cursor:pointer;font-weight:600;color:var(--bad)}
+  .danger-zone p{font-size:.9em}
+  .danger-zone code{word-break:break-all}
+  .danger-zone input{padding:.25rem;min-width:16rem}
+  button.danger{background:var(--bad)}
+  button.danger:hover{background:var(--bad);filter:brightness(1.15)}
+  button.danger:disabled{opacity:.5;cursor:not-allowed;filter:none}
   .error-box{background:var(--error-bg);border:1px solid var(--bad);border-radius:6px;padding:.75rem 1rem;margin:1rem 0}
   .error-box pre{white-space:pre-wrap;word-break:break-word;margin:.5rem 0 0;font-size:.85em}
 </style>
@@ -130,6 +138,42 @@
 <p><a class="button" href="{{ url_for('run_results_csv', run_id=run.run_id) }}">Download CSV</a></p>
 <iframe id="plot-frame" src="{{ url_for('run_plot', run_id=run.run_id) }}"></iframe>
 {% endif %}
+
+{% if not is_running %}
+<details class="danger-zone">
+  <summary>Delete this run</summary>
+  <p>This permanently removes <code>{{ run.run_dir }}</code>
+     ({{ "%.0f"|format(disk_usage_mb) }} MB, {{ run.state.combos|length }} combination(s)) --
+     its STEP files, analysed projects, results and plots -- along with anything these tasks
+     still have in the queue folder. It cannot be undone.</p>
+  <form method="post" action="{{ url_for('delete_run', run_id=run.run_id) }}" id="delete-form">
+    <label for="confirm_run_id">Type <strong>{{ run.run_id }}</strong> to confirm:</label>
+    <input type="text" id="confirm_run_id" name="confirm_run_id" autocomplete="off" spellcheck="false">
+    <button type="submit" class="danger" id="delete-button" disabled>Delete permanently</button>
+  </form>
+</details>
+{% endif %}
+
+<script>
+// The delete button stays disabled until the run's own id has been typed
+// in, and asks once more on submit -- there is no undo behind it.
+(function () {
+  var form = document.getElementById("delete-form");
+  if (!form) { return; }
+  var field = document.getElementById("confirm_run_id");
+  var button = document.getElementById("delete-button");
+  var expected = "{{ run.run_id }}";
+
+  field.addEventListener("input", function () {
+    button.disabled = field.value.trim() !== expected;
+  });
+  form.addEventListener("submit", function (event) {
+    if (!window.confirm("Permanently delete " + expected + " and all of its files?")) {
+      event.preventDefault();
+    }
+  });
+})();
+</script>
 
 <script>
 // Polls the run's JSON status endpoint and patches the per-combination

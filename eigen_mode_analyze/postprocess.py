@@ -21,7 +21,8 @@ import json
 import logging
 import os
 import re
-from typing import Any, Callable, Dict, List
+import shutil
+from typing import Any, Callable, Dict, List, Optional
 
 from ansys_analyze_common import queue_common
 
@@ -172,17 +173,79 @@ def postprocess_task(
             log("Failed to close project cleanly after post-processing.")
 
 
+def copy_tree_verified(source: str, destination: str) -> List[str]:
+    """Copy a folder and check every file arrived intact.
+
+    Returns the relative paths that did not make it (empty when the copy
+    is good). The caller only deletes the original once this comes back
+    empty -- the queue copy is the only copy until then.
+    """
+    shutil.copytree(source, destination, dirs_exist_ok=True)
+
+    missing = []
+    for folder, _, files in os.walk(source):
+        for name in files:
+            original = os.path.join(folder, name)
+            relative = os.path.relpath(original, source)
+            copied = os.path.join(destination, relative)
+            try:
+                same = os.path.getsize(copied) == os.path.getsize(original)
+            except OSError:
+                same = False
+            if not same:
+                missing.append(relative)
+    return missing
+
+
+def archive_task(run, queue: "queue_common.QueuePaths", combo_id: str, task_id: str,
+                 output_dir: str, log: Callable[[str], None]) -> Optional[str]:
+    """Move a finished task's files out of the queue and into the run.
+
+    The queue is working space: once everything a task produced is safely
+    in the run folder, its files there are removed. Nothing is deleted
+    unless the copy verified, so a failed transfer leaves the queue copy
+    as the surviving one.
+    """
+    archive_dir = os.path.join(run.combo_dir(combo_id), "analysis")
+    try:
+        missing = copy_tree_verified(output_dir, archive_dir)
+    except OSError as exc:
+        log(f"{combo_id}: could not copy analysis files out of the queue ({exc}); leaving them there.")
+        return None
+
+    if missing:
+        log(f"{combo_id}: {len(missing)} file(s) did not copy out of the queue "
+            f"(e.g. {missing[0]}); leaving the queue copy in place.")
+        return None
+
+    try:
+        queue_common.remove_task(queue, task_id)
+        done_task_file = os.path.join(queue.done, f"{task_id}.task.json")
+        if os.path.exists(done_task_file):
+            os.remove(done_task_file)
+    except OSError as exc:
+        log(f"{combo_id}: copied to the run folder but could not clear the queue ({exc}).")
+
+    log(f"{combo_id}: analysis files moved into the run folder.")
+    return archive_dir
+
+
 def postprocess_run(
     run,
     queue: "queue_common.QueuePaths",
     analysis_settings: dict,
     log: Callable[[str], None] = logger.info,
     stop_event=None,
-) -> None:
+    announce_idle: bool = True,
+) -> int:
     """For every combo whose worker task finished successfully, reopen its
     analyzed project and extract results -- one at a time, never in
     parallel (see module docstring). Resumable: skips combos already
-    post-processed."""
+    post-processed. Returns how many combos it handled, so a caller can
+    poll this while analyses are still coming in.
+
+    `announce_idle` is for that polling caller: it would otherwise log
+    "nothing to do" on every pass."""
     aedt_version = analysis_settings.get("aedt_version")
     student_version = analysis_settings.get("student_version", True)
     graphical = analysis_settings.get("graphical", False)
@@ -192,19 +255,22 @@ def postprocess_run(
         if combo.get("queue_status") == "done" and combo.get("post_status") != "done"
     ]
     if not todo:
-        log("Nothing to post-process -- every completed combo already has its results.")
-        return
+        if announce_idle:
+            log("Nothing to post-process -- every completed combo already has its results.")
+        return 0
 
     log(f"Post-processing {len(todo)} analyzed project(s)...")
+    handled = 0
     for combo_id in todo:
         if stop_event is not None and stop_event.is_set():
-            return
+            return handled
 
         task_id = run.state["combos"][combo_id]["task_id"]
         task = queue_common.read_task(queue, task_id)
         if task is None:
             log(f"{combo_id}: task {task_id} is no longer in the queue -- skipping.")
             run.update_combo(combo_id, post_status="failed", post_error="task file not found")
+            handled += 1
             continue
 
         task["project_file"] = queue_common.resolve_path(queue, task["project_file"])
@@ -218,7 +284,14 @@ def postprocess_run(
                 json.dump(client_result, f, indent=2, default=str)
             run.update_combo(combo_id, post_status="done")
             log(f"{combo_id}: post-processing done ({result['num_modes_found']} mode(s)).")
+            archive_dir = archive_task(run, queue, combo_id, task_id, task["output_dir"], log)
+            if archive_dir:
+                run.update_combo(combo_id, analysis_dir=archive_dir)
         except Exception as exc:
+            # The queue copy is deliberately left alone here: a combo that
+            # failed is the one you want to be able to open and look at.
             logger.exception("Post-processing failed for %s (task %s)", combo_id, task_id)
             run.update_combo(combo_id, post_status="failed", post_error=str(exc))
-            log(f"{combo_id}: post-processing failed -- {exc}")
+            log(f"{combo_id}: post-processing failed -- {exc} (its files are kept in the queue).")
+        handled += 1
+    return handled
