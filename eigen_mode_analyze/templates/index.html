@@ -27,6 +27,17 @@
   table{border-collapse:collapse;width:100%;margin-top:.5rem}
   td,th{border:1px solid var(--line);padding:.4rem .6rem;text-align:left}
   input[type=text],input[type=number]{width:9rem;padding:.2rem}
+  /* The range box doubles as the on/off switch the checkbox used to be:
+     empty means "hold this parameter at its current value", which is what
+     the placeholder shows -- so the placeholder has to stay readable, and
+     a filled-in box needs to look visibly active. */
+  /* italic so the current value reads as a hint, not as text already typed */
+  input::placeholder{color:var(--muted);opacity:1;font-style:italic}
+  input.range{width:11rem;background:var(--bg);color:var(--fg);
+    border:1px solid var(--line);border-radius:3px}
+  input.range:not(:placeholder-shown){border-color:var(--accent);background:var(--surface-hover);
+    font-weight:600}
+  td label{cursor:pointer}
   fieldset{margin-bottom:1rem;border:1px solid var(--line-soft);border-radius:6px}
   label{display:inline-block;margin:.2rem 0}
   .muted{color:var(--muted);font-size:.9em}
@@ -63,15 +74,15 @@
 <h2>Start a new run</h2>
 <form method="post" action="{{ url_for('new_run') }}">
   <h3>Sweep parameters</h3>
-  <p class="muted">Check a parameter and give it a range to sweep it; leave the rest unchecked to keep them
-    fixed at their current value. Range syntax: a single number ("4"), a comma list ("0,2,4,6,8,10"),
-    or start:stop:step ("0:10:2"). Checking more than one parameter sweeps every combination of them
-    (cartesian product) -- watch the combination count, since each one is a full model build + analysis.</p>
+  <p class="muted">Give a parameter a range to sweep it; leave its box empty to keep it fixed at its
+    current value, which is what the box shows in grey. Range syntax: a single number ("4"), a comma
+    list ("0,2,4,6,8,10"), or start:stop:step ("0:10:2"). Filling in more than one box sweeps every
+    combination of them (cartesian product) -- watch the combination count, since each one is a full
+    model build + analysis. Click a drawing to see which dimension a parameter drives.</p>
   <table>
-    <tr><th></th><th>Drawing</th><th>Parameter</th><th>Current value</th><th>Range to sweep</th></tr>
+    <tr><th>Drawing</th><th>Parameter</th><th>Range to sweep</th></tr>
     {% for name, value in parameters.items() %}
     <tr>
-      <td><input type="checkbox" name="param_name" value="{{ name }}"></td>
       <td class="drawing">
         {% if name in drawings %}
         <button type="button" class="thumb" data-name="{{ name }}" data-value="{{ value }}"
@@ -80,9 +91,9 @@
         </button>
         {% endif %}
       </td>
-      <td>{{ name }}</td>
-      <td>{{ value }}</td>
-      <td><input type="text" name="range_{{ name }}" placeholder="e.g. 0:10:2"></td>
+      <td><label for="range_{{ name }}">{{ name }}</label></td>
+      <td><input type="text" class="range" id="range_{{ name }}" name="range_{{ name }}"
+                 placeholder="{{ value }}" aria-label="Range to sweep {{ name }}, currently {{ value }}"></td>
     </tr>
     {% endfor %}
   </table>

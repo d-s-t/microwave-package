@@ -149,8 +149,12 @@ def index():
 
 @app.route("/runs/new", methods=["POST"])
 def new_run():
+    # A parameter is swept when its range box was filled in; an empty box
+    # means "leave it at its current value". The names are taken from the
+    # equations file rather than the form, so only real parameters count.
+    content = eq.read_file(str(paths.DEFAULT_EQUATIONS_FILE))
     sweep_params = []
-    for name in request.form.getlist("param_name"):
+    for name in eq.get_numeric_parameters(content):
         spec = request.form.get(f"range_{name}", "").strip()
         if not spec:
             continue
