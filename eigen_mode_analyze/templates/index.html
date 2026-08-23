@@ -21,7 +21,9 @@
       --backdrop:rgba(0,0,0,.7);
     }
   }
-  body{font-family:system-ui,sans-serif;max-width:900px;margin:2rem auto;padding:0 1rem;
+  /* the bottom padding keeps the floating Start run button from ever
+     covering the last row of the page */
+  body{font-family:system-ui,sans-serif;max-width:900px;margin:2rem auto;padding:0 1rem 5.5rem;
     color:var(--fg);background:var(--bg)}
   h1,h2,h3{margin-top:2rem}
   table{border-collapse:collapse;width:100%;margin-top:.5rem}
@@ -45,10 +47,22 @@
   .unit-micron{color:var(--accent);font-weight:600}
   h4{margin:1.6rem 0 .2rem}
   h4 + p.muted{margin-top:0}
-  details.param-group{margin-top:1.4rem;border:1px solid var(--line-soft);border-radius:6px;
+  details.collapsible{margin-top:1.4rem;border:1px solid var(--line-soft);border-radius:6px;
     padding:.5rem .8rem}
-  details.param-group summary{cursor:pointer;font-weight:600}
-  details.param-group[open] summary{margin-bottom:.3rem}
+  details.collapsible summary{cursor:pointer;font-weight:600}
+  details.collapsible[open] summary{margin-bottom:.3rem}
+  details.collapsible fieldset{margin-top:.6rem}
+
+  /* Start run follows you down the form -- it is a long page and the
+     button used to sit past the end of it. It stays inside the form, so
+     it still submits normally. */
+  button.start-run{position:fixed;right:1.5rem;bottom:1.5rem;z-index:20;
+    padding:.7rem 1.5rem;font-size:1.05em;border-radius:999px;
+    box-shadow:0 3px 14px rgba(0,0,0,.3)}
+  button.start-run:focus-visible{outline:3px solid var(--fg);outline-offset:2px}
+  @media (max-width:600px){
+    button.start-run{right:1rem;bottom:1rem}
+  }
   .load-form{display:flex;align-items:center;gap:.5rem;flex-wrap:wrap;margin:.5rem 0 1.5rem;
     padding:.6rem .8rem;border:1px solid var(--line-soft);border-radius:6px}
   .load-form button{padding:.3rem .7rem;font-size:.9em}
@@ -143,7 +157,7 @@
 
   {% for group in groups %}
     {% if group.collapsed %}
-    <details class="param-group">
+    <details class="collapsible">
       <summary>{{ group.title }} <span class="muted">({{ group.names|length }})</span></summary>
       <p class="muted">{{ group.hint }}</p>
       {{ parameter_rows(group.names) }}
@@ -155,8 +169,14 @@
     {% endif %}
   {% endfor %}
 
-  <h3>Analysis settings</h3>
   {% set materials = settings.materials or {} %}
+  <details class="collapsible">
+    <summary>Analysis settings
+      <span class="muted">({{ settings.modes }} mode{{ "" if settings.modes|int == 1 else "s" }},
+        {{ "student" if settings.student_version else "commercial" }} version)</span>
+    </summary>
+    <p class="muted">Carried over from the run you last started, so these usually need no
+      attention -- open this only to change how the solve itself runs.</p>
   <fieldset>
     <label>Modes <input type="number" name="modes" value="{{ settings.modes }}" max="20"></label><br>
     <label>Max passes <input type="number" name="max_passes" value="{{ settings.max_passes }}"></label><br>
@@ -177,8 +197,9 @@
     <label>Vacuum material <input type="text" name="mat_vacuum" value="{{ materials.mat_vacuum }}"></label><br>
     <label><input type="checkbox" name="perfect_e_box" {% if materials.perfect_e_box %}checked{% endif %}> Perfect E on box/lid/chip_lid</label>
   </fieldset>
+  </details>
 
-  <button type="submit">Start run</button>
+  <button type="submit" class="start-run">Start run</button>
 </form>
 
 <h2>Existing runs</h2>
