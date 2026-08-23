@@ -211,11 +211,19 @@ def build_and_queue(
             solution_type="Eigenmode",
             objects=object_names,
             post_processing=[
-                # max_mag_e / mean_mag_e for the chip -- the numbers the run
-                # page can plot. The two plot ops below only produce images.
-                {"op": "field_statistics", "params": {"object_key": "chip", "quantity": "Mag_E"}},
+                # The four numbers the run page plots. The chip's are taken
+                # on its top face only -- the surface the circuit is on --
+                # while the vacuum's cover the whole cavity volume.
+                {"op": "field_statistics", "params": {
+                    "object_key": "chip", "quantity": "Mag_E",
+                    "region": "top_surface", "key": "chip_mag_E",
+                }},
+                {"op": "field_statistics", "params": {
+                    "object_key": "vacuum", "quantity": "Mag_E",
+                    "region": "volume", "key": "vacuum_mag_E",
+                }},
+                # Best-effort picture of that same chip face.
                 {"op": "field_plot_surface", "params": {"object_key": "chip", "quantity": "Mag_E"}},
-                {"op": "field_plot_volume", "params": {"object_key": "vacuum", "quantity": "Mag_E"}},
             ],
             metadata={
                 "combo_id": combo_id,

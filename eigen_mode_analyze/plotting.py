@@ -26,8 +26,10 @@ logger = logging.getLogger("eigen_mode_analyze")
 RESULT_FIELDS: Dict[str, str] = {
     "freq_ghz": "Frequency (GHz)",
     "q": "Q factor",
-    "max_mag_e": "Max |E| (V/m)",
-    "mean_mag_e": "Mean |E| (V/m)",
+    "chip_mag_E_max": "Chip max |E| (V/m)",
+    "chip_mag_E_mean": "Chip mean |E| (V/m)",
+    "vacuum_mag_E_max": "Vacuum max |E| (V/m)",
+    "vacuum_mag_E_mean": "Vacuum mean |E| (V/m)",
 }
 
 DEFAULT_X = "freq_ghz"
@@ -140,7 +142,7 @@ def plot_results(df: pd.DataFrame, run, sweep_param_names: List[str], log=logger
         df, sweep_param_names,
         x=DEFAULT_X,
         y=swept[0] if swept else "combo_id",
-        color="max_mag_e" if "max_mag_e" in df.columns else (swept[1] if len(swept) > 1 else None),
+        color="chip_mag_E_max" if "chip_mag_E_max" in df.columns else (swept[1] if len(swept) > 1 else None),
     )
 
     plot_path = os.path.join(run.plots_dir, "modes_scatter_plot.html")

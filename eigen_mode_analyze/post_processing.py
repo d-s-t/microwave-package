@@ -31,7 +31,7 @@ via the task file -- no other code changes needed.
 from __future__ import annotations
 
 import os
-from typing import Any, Callable, Dict, List
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 
 def _object_name(task: Dict[str, Any], object_key: str):
@@ -56,8 +56,21 @@ def _resolve_object(hfss, task: Dict[str, Any], object_key: str):
 
 
 def _top_face(obj):
-    faces = sorted(obj.faces, key=lambda f: f.area, reverse=True)
-    return max(faces[:2], key=lambda f: f.center[2])
+    """The large face at the far end of the body's thinnest axis.
+
+    For a slab like the chip the two biggest faces are its top and
+    bottom; which axis separates them depends on how the part is
+    oriented, so it is taken from the bounding box (the thinnest
+    direction) rather than assumed to be z.
+    """
+    faces = sorted(obj.faces, key=lambda f: f.area, reverse=True)[:2]
+    try:
+        box = obj.bounding_box  # [xmin, ymin, zmin, xmax, ymax, zmax]
+        extents = [box[3] - box[0], box[4] - box[1], box[5] - box[2]]
+        axis = extents.index(min(extents))
+    except Exception:
+        axis = 2
+    return max(faces, key=lambda f: f.center[axis])
 
 
 def _solution_of(mode_context) -> str:
@@ -68,27 +81,62 @@ def _intrinsics_of(mode_context) -> Dict[str, str]:
     return {"Mode": str(mode_context["mode"]), "Phase": "0deg"}
 
 
-def read_field_file(path: str) -> List[float]:
-    """The field values out of an exported .fld file.
+def read_field_points(path: str) -> List[Tuple[List[float], float]]:
+    """The sample points out of an exported .fld file, as (xyz, value).
 
     The format is a header line followed by one row per sample point --
     the coordinates first and the field value last. Anything that does
     not parse as a row of numbers (headers, blank lines, trailing notes)
     is skipped rather than trusted to be absent.
     """
-    values: List[float] = []
+    points: List[Tuple[List[float], float]] = []
     with open(path, "r", errors="replace") as handle:
         for line in handle:
             parts = line.split()
-            if not parts:
+            if len(parts) < 2:
                 continue
             try:
                 row = [float(p) for p in parts]
             except ValueError:
                 continue  # header or comment
-            if row:
-                values.append(row[-1])
-    return values
+            points.append((row[:-1], row[-1]))
+    return points
+
+
+def thin_axis(points: List[Tuple[List[float], float]]) -> int:
+    """Which axis the sampled body is thinnest along.
+
+    The chip is a thin slab, so its smallest extent is its thickness
+    direction and the "top" face is the one at the far end of that axis.
+    Working it out from the exported points means this follows the part's
+    orientation instead of assuming the thickness runs along z.
+    """
+    axes = range(min(3, min(len(coords) for coords, _ in points)))
+    extents = [
+        max(coords[axis] for coords, _ in points) - min(coords[axis] for coords, _ in points)
+        for axis in axes
+    ]
+    return extents.index(min(extents))
+
+
+def top_surface_values(points: List[Tuple[List[float], float]],
+                       axis: Optional[int] = None,
+                       tolerance: float = 0.02) -> List[float]:
+    """Values on the outermost layer of samples along the thin axis.
+
+    `tolerance` is a fraction of the body's thickness, so it scales with
+    the part rather than assuming millimetres: samples within that much
+    of the highest coordinate count as being on the top face.
+    """
+    if not points:
+        return []
+    if axis is None:
+        axis = thin_axis(points)
+
+    coordinates = [coords[axis] for coords, _ in points]
+    highest, lowest = max(coordinates), min(coordinates)
+    band = (highest - lowest) * tolerance
+    return [value for coords, value in points if coords[axis] >= highest - band]
 
 
 def op_field_statistics(hfss, task, mode_context, params, out_dir) -> Dict[str, Any]:
@@ -99,38 +147,54 @@ def op_field_statistics(hfss, task, mode_context, params, out_dir) -> Dict[str, 
     a *plot* only writes its native formats -- there is no CSV of plotted
     values to read back.
 
-    Emits `max_<quantity>` / `mean_<quantity>`, e.g. max_mag_e. Use
-    `key_prefix` if you run this for more than one object, so the second
-    does not overwrite the first.
+    `region` picks what the statistics cover: "volume" for the whole
+    body, or "top_surface" for just the outermost layer of samples along
+    the body's thin axis -- which for the chip is the face the circuit is
+    on. Either way the export is of the volume; the top face is selected
+    from the sample coordinates afterwards, so it follows the part's
+    orientation rather than assuming which axis points up.
+
+    `key` names the outputs, e.g. key="chip_mag_E" emits chip_mag_E_max
+    and chip_mag_E_mean.
     """
     object_key = params["object_key"]
     quantity = params.get("quantity", "Mag_E")
-    prefix = params.get("key_prefix", "")
+    region = params.get("region", "volume")
+    key = params.get("key", f"{object_key}_{quantity.lower()}")
     obj_name = _object_name(task, object_key)
     if not obj_name:
         return {"skipped": True, "reason": f"object '{object_key}' not found"}
 
-    field_path = os.path.join(out_dir, f"{object_key}_{quantity.lower()}.fld")
-    hfss.post.fields_calculator.export(
-        quantity=quantity,
+    field_path = os.path.join(out_dir, f"{key}.fld")
+    # post.export_field_file, not fields_calculator.export: the latter maps
+    # the field onto a grid of points and needs a grid to be described, and
+    # without one it returns without writing anything -- which is why this
+    # used to report "no field file exported". This one writes the field at
+    # the body's own mesh nodes, each with its coordinates.
+    hfss.post.export_field_file(
+        quantity,
         solution=_solution_of(mode_context),
         output_file=field_path,
-        intrinsics=_intrinsics_of(mode_context),
         assignment=obj_name,
         objects_type=params.get("objects_type", "Vol"),
+        intrinsics=None,
     )
 
     if not os.path.exists(field_path):
         return {"skipped": True, "reason": f"no field file exported for '{object_key}'"}
 
-    values = read_field_file(field_path)
-    if not values:
+    points = read_field_points(field_path)
+    if not points:
         return {"skipped": True, "reason": f"no field values in {os.path.basename(field_path)}"}
 
+    values = top_surface_values(points) if region == "top_surface" else [v for _, v in points]
+    if not values:
+        return {"skipped": True, "reason": f"no {region} samples for '{object_key}'"}
+
     return {
-        f"{prefix}max_{quantity.lower()}": max(values),
-        f"{prefix}mean_{quantity.lower()}": sum(values) / len(values),
-        f"{prefix}field_path": field_path,
+        f"{key}_max": max(values),
+        f"{key}_mean": sum(values) / len(values),
+        f"{key}_samples": len(values),
     }
 
 

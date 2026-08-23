@@ -197,25 +197,42 @@ def copy_tree_verified(source: str, destination: str) -> List[str]:
     return missing
 
 
-def archive_task(run, queue: "queue_common.QueuePaths", combo_id: str, task_id: str,
-                 output_dir: str, log: Callable[[str], None]) -> Optional[str]:
-    """Move a finished task's files out of the queue and into the run.
+def bring_task_local(run, queue: "queue_common.QueuePaths", combo_id: str, task_id: str,
+                     output_dir: str, log: Callable[[str], None]) -> Optional[str]:
+    """Move a finished task's files off the share and into the run folder.
 
-    The queue is working space: once everything a task produced is safely
-    in the run folder, its files there are removed. Nothing is deleted
-    unless the copy verified, so a failed transfer leaves the queue copy
-    as the surviving one.
+    In order, each step only happening because the one before it worked:
+
+      1. copy the remote folder into a staging folder beside the combo,
+         and check every file arrived
+      2. clear the remote copy, now that a good local one exists
+      3. move the staged files into the combo folder, replacing what is
+         there
+
+    The staging step is the point of the exercise: a share that drops
+    halfway through a copy leaves a half-written staging folder, which is
+    thrown away, rather than a half-overwritten combo folder. Nothing
+    remote is deleted until the local copy has been verified.
+
+    Returns the combo folder once its files are local, or None if the
+    transfer did not complete -- in which case the remote copy is still
+    the good one and is left alone.
     """
-    archive_dir = os.path.join(run.combo_dir(combo_id), "analysis")
+    combo_dir = run.combo_dir(combo_id)
+    staging = os.path.join(combo_dir, ".incoming")
+
+    shutil.rmtree(staging, ignore_errors=True)
     try:
-        missing = copy_tree_verified(output_dir, archive_dir)
+        missing = copy_tree_verified(output_dir, staging)
     except OSError as exc:
-        log(f"{combo_id}: could not copy analysis files out of the queue ({exc}); leaving them there.")
+        log(f"{combo_id}: could not copy the analysed files off the queue ({exc}); leaving them there.")
+        shutil.rmtree(staging, ignore_errors=True)
         return None
 
     if missing:
-        log(f"{combo_id}: {len(missing)} file(s) did not copy out of the queue "
+        log(f"{combo_id}: {len(missing)} file(s) did not copy off the queue "
             f"(e.g. {missing[0]}); leaving the queue copy in place.")
+        shutil.rmtree(staging, ignore_errors=True)
         return None
 
     try:
@@ -224,10 +241,31 @@ def archive_task(run, queue: "queue_common.QueuePaths", combo_id: str, task_id: 
         if os.path.exists(done_task_file):
             os.remove(done_task_file)
     except OSError as exc:
-        log(f"{combo_id}: copied to the run folder but could not clear the queue ({exc}).")
+        log(f"{combo_id}: copied locally but could not clear the queue ({exc}).")
 
-    log(f"{combo_id}: analysis files moved into the run folder.")
-    return archive_dir
+    for entry in os.listdir(staging):
+        source = os.path.join(staging, entry)
+        target = os.path.join(combo_dir, entry)
+        if os.path.isdir(target):
+            shutil.rmtree(target, ignore_errors=True)
+        elif os.path.exists(target):
+            os.remove(target)
+        shutil.move(source, target)
+    shutil.rmtree(staging, ignore_errors=True)
+
+    log(f"{combo_id}: analysed files are now in the run folder.")
+    return combo_dir
+
+
+def find_project_file(folder: str, remote_project_file: str) -> Optional[str]:
+    """The local .aedt to open, now that the files have been brought over."""
+    expected = os.path.join(folder, os.path.basename(remote_project_file))
+    if os.path.exists(expected):
+        return expected
+    for name in sorted(os.listdir(folder)):
+        if name.lower().endswith(".aedt"):
+            return os.path.join(folder, name)
+    return None
 
 
 def postprocess_run(
@@ -273,25 +311,45 @@ def postprocess_run(
             handled += 1
             continue
 
-        task["project_file"] = queue_common.resolve_path(queue, task["project_file"])
-        task["output_dir"] = queue_common.resolve_path(queue, task["output_dir"])
+        remote_project_file = task["project_file"]
+        remote_output_dir = queue_common.resolve_path(queue, task["output_dir"])
 
-        log(f"{combo_id}: post-processing task {task_id}...")
+        # Everything is brought over the network first and AEDT is then
+        # pointed at the local copy: opening a solved project across a
+        # share is slow, and it was what put O:\ paths into the results.
+        log(f"{combo_id}: fetching analysed files for task {task_id}...")
+        local_dir = bring_task_local(run, queue, combo_id, task_id, remote_output_dir, log)
+        if local_dir is None:
+            run.update_combo(combo_id, post_status="failed",
+                             post_error="could not copy the analysed files off the queue")
+            handled += 1
+            continue
+
+        project_file = find_project_file(local_dir, remote_project_file)
+        if project_file is None:
+            run.update_combo(combo_id, post_status="failed",
+                             post_error=f"no .aedt project in {local_dir}")
+            log(f"{combo_id}: no .aedt project among the files that came over.")
+            handled += 1
+            continue
+
+        task["project_file"] = project_file
+        task["output_dir"] = local_dir
+
+        log(f"{combo_id}: post-processing {os.path.basename(project_file)}...")
         try:
             result = postprocess_task(task, aedt_version, student_version, graphical, log)
             client_result = {"status": "success", "task_id": task_id, "combo_id": combo_id, "result": result}
-            with open(os.path.join(task["output_dir"], "client_result.json"), "w") as f:
+            with open(os.path.join(local_dir, "client_result.json"), "w") as f:
                 json.dump(client_result, f, indent=2, default=str)
-            run.update_combo(combo_id, post_status="done")
+            run.update_combo(combo_id, post_status="done", analysis_dir=local_dir)
             log(f"{combo_id}: post-processing done ({result['num_modes_found']} mode(s)).")
-            archive_dir = archive_task(run, queue, combo_id, task_id, task["output_dir"], log)
-            if archive_dir:
-                run.update_combo(combo_id, analysis_dir=archive_dir)
         except Exception as exc:
-            # The queue copy is deliberately left alone here: a combo that
-            # failed is the one you want to be able to open and look at.
+            # The files are already local by this point, so a failure here
+            # is retryable without going back to the queue.
             logger.exception("Post-processing failed for %s (task %s)", combo_id, task_id)
-            run.update_combo(combo_id, post_status="failed", post_error=str(exc))
-            log(f"{combo_id}: post-processing failed -- {exc} (its files are kept in the queue).")
+            run.update_combo(combo_id, post_status="failed", post_error=str(exc),
+                             analysis_dir=local_dir)
+            log(f"{combo_id}: post-processing failed -- {exc} (its files are in {local_dir}).")
         handled += 1
     return handled
