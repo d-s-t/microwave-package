@@ -38,6 +38,11 @@
   input.range:not(:placeholder-shown){border-color:var(--accent);background:var(--surface-hover);
     font-weight:600}
   td label{cursor:pointer}
+  td.value-cell{white-space:nowrap}
+  .unit{color:var(--muted);margin-left:.4rem;font-size:.9em}
+  .load-form{display:flex;align-items:center;gap:.5rem;flex-wrap:wrap;margin:.5rem 0 1.5rem;
+    padding:.6rem .8rem;border:1px solid var(--line-soft);border-radius:6px}
+  .load-form button{padding:.3rem .7rem;font-size:.9em}
   fieldset{margin-bottom:1rem;border:1px solid var(--line-soft);border-radius:6px}
   label{display:inline-block;margin:.2rem 0}
   .muted{color:var(--muted);font-size:.9em}
@@ -72,52 +77,79 @@
 <h1>Eigenmode Analysis</h1>
 
 <h2>Start a new run</h2>
+
+<form method="get" action="{{ url_for('index') }}" class="load-form">
+  <label for="from_run">Start from an earlier run:</label>
+  <select id="from_run" name="from_run">
+    {% for r in runs %}
+    <option value="{{ r.run_id }}" {% if r.run_id == loaded_from %}selected{% endif %}>{{ r.run_id }}</option>
+    {% endfor %}
+  </select>
+  <button type="submit">Load its settings</button>
+  {% if loaded_from %}
+  <span class="muted">
+    {% if loaded_combo %}Loaded the settings and the values of <strong>{{ loaded_combo }}</strong> from {{ loaded_from }}.
+    {% else %}Loaded the settings from {{ loaded_from }}.{% endif %}
+  </span>
+  {% endif %}
+</form>
+
 <form method="post" action="{{ url_for('new_run') }}">
-  <h3>Sweep parameters</h3>
-  <p class="muted">Give a parameter a range to sweep it; leave its box empty to keep it fixed at its
-    current value, which is what the box shows in grey. Range syntax: a single number ("4"), a comma
-    list ("0,2,4,6,8,10"), or start:stop:step ("0:10:2"). Filling in more than one box sweeps every
-    combination of them (cartesian product) -- watch the combination count, since each one is a full
-    model build + analysis. Click a drawing to see which dimension a parameter drives.</p>
+  <h3>Parameters</h3>
+  <p class="muted">A box with one value pins that parameter for the run; a box with several values
+    sweeps it. Leave a box empty to keep the parameter at the equation file's own value, which is
+    what the box shows in grey. Syntax: a single number ("4"), a comma list ("0,2,4,6,8,10"), or
+    start:stop:step ("0:10:2"). More than one box holding a range sweeps every combination of them
+    (cartesian product) -- watch the combination count, since each one is a full model build +
+    analysis. Click a drawing to see which dimension a parameter drives.</p>
   <table>
-    <tr><th>Drawing</th><th>Parameter</th><th>Range to sweep</th></tr>
+    <tr><th>Drawing</th><th>Parameter</th><th>Value or range</th></tr>
     {% for name, value in parameters.items() %}
+    {% set label = meta.label_for(name) %}
+    {% set unit = meta.unit_for(name) %}
     <tr>
       <td class="drawing">
         {% if name in drawings %}
-        <button type="button" class="thumb" data-name="{{ name }}" data-value="{{ value }}"
-                title="Click to enlarge {{ name }}" aria-label="Enlarge the {{ name }} drawing">
+        <button type="button" class="thumb" data-name="{{ label }}"
+                data-value="{{ meta.format_value(name, value) }}{% if unit %} {{ unit }}{% endif %}"
+                title="Click to enlarge" aria-label="Enlarge the {{ label }} drawing">
           {{ drawings[name] }}
         </button>
         {% endif %}
       </td>
-      <td><label for="range_{{ name }}">{{ name }}</label></td>
-      <td><input type="text" class="range" id="range_{{ name }}" name="range_{{ name }}"
-                 placeholder="{{ value }}" aria-label="Range to sweep {{ name }}, currently {{ value }}"></td>
+      <td><label for="range_{{ name }}">{{ label }}</label></td>
+      <td class="value-cell">
+        <input type="text" class="range" id="range_{{ name }}" name="range_{{ name }}"
+               value="{{ values.get(name, '') }}"
+               placeholder="{{ meta.format_value(name, value) }}"
+               aria-label="{{ label }}, currently {{ meta.format_value(name, value) }}{% if unit %} {{ unit }}{% endif %}">
+        <span class="unit">{{ unit or "" }}</span>
+      </td>
     </tr>
     {% endfor %}
   </table>
 
   <h3>Analysis settings</h3>
+  {% set materials = settings.materials or {} %}
   <fieldset>
-    <label>Modes <input type="number" name="modes" value="20" max="20"></label><br>
-    <label>Max passes <input type="number" name="max_passes" value="99"></label><br>
-    <label>Min passes <input type="number" name="min_passes" value="5"></label><br>
-    <label>Min converged passes <input type="number" name="min_converged" value="3"></label><br>
-    <label>Max delta freq per pass (%) <input type="number" step="any" name="max_delta_f" value="1.0"></label><br>
-    <label>Starting-frequency safety factor <input type="number" step="any" name="min_freq_safety_factor" value="0.4"></label><br>
-    <label>AEDT version (blank = auto-detect) <input type="text" name="aedt_version"></label><br>
-    <label><input type="checkbox" name="student_version" checked> Use student version</label><br>
-    <label><input type="checkbox" name="graphical"> Show AEDT UI while building</label><br>
-    <label>Queue poll interval (s) <input type="number" step="any" name="poll_seconds" value="10"></label>
+    <label>Modes <input type="number" name="modes" value="{{ settings.modes }}" max="20"></label><br>
+    <label>Max passes <input type="number" name="max_passes" value="{{ settings.max_passes }}"></label><br>
+    <label>Min passes <input type="number" name="min_passes" value="{{ settings.min_passes }}"></label><br>
+    <label>Min converged passes <input type="number" name="min_converged" value="{{ settings.min_converged }}"></label><br>
+    <label>Max delta freq per pass (%) <input type="number" step="any" name="max_delta_f" value="{{ settings.max_delta_f }}"></label><br>
+    <label>Starting-frequency safety factor <input type="number" step="any" name="min_freq_safety_factor" value="{{ settings.min_freq_safety_factor }}"></label><br>
+    <label>AEDT version (blank = auto-detect) <input type="text" name="aedt_version" value="{{ settings.aedt_version or '' }}"></label><br>
+    <label><input type="checkbox" name="student_version" {% if settings.student_version %}checked{% endif %}> Use student version</label><br>
+    <label><input type="checkbox" name="graphical" {% if settings.graphical %}checked{% endif %}> Show AEDT UI while building</label><br>
+    <label>Queue poll interval (s) <input type="number" step="any" name="poll_seconds" value="{{ settings.poll_seconds }}"></label>
   </fieldset>
   <fieldset>
     <legend>Materials / boundaries</legend>
-    <label>Box material <input type="text" name="mat_box" value="aluminum"></label><br>
-    <label>PCB material <input type="text" name="mat_pcb" value="Rogers TMM 10i (tm)"></label><br>
-    <label>Chip material <input type="text" name="mat_chip" value="silicon"></label><br>
-    <label>Vacuum material <input type="text" name="mat_vacuum" value="vacuum"></label><br>
-    <label><input type="checkbox" name="perfect_e_box" checked> Perfect E on box/lid/chip_lid</label>
+    <label>Box material <input type="text" name="mat_box" value="{{ materials.mat_box }}"></label><br>
+    <label>PCB material <input type="text" name="mat_pcb" value="{{ materials.mat_pcb }}"></label><br>
+    <label>Chip material <input type="text" name="mat_chip" value="{{ materials.mat_chip }}"></label><br>
+    <label>Vacuum material <input type="text" name="mat_vacuum" value="{{ materials.mat_vacuum }}"></label><br>
+    <label><input type="checkbox" name="perfect_e_box" {% if materials.perfect_e_box %}checked{% endif %}> Perfect E on box/lid/chip_lid</label>
   </fieldset>
 
   <button type="submit">Start run</button>

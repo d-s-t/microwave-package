@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
+import threading
 from typing import Optional
 
 from ansys_analyze_common import queue_common
@@ -22,7 +23,7 @@ from . import equations as eq
 from . import model_builder, paths, plotting, postprocess, resilient_io, results, step_generation
 from .monitor import monitor_run
 from .run_manager import Run
-from .sweep import SweepParameter, expand_values
+from .sweep import SweepParameter, expand_values, split_swept_and_fixed
 
 logger = logging.getLogger("eigen_mode_analyze")
 
@@ -34,31 +35,18 @@ def run_pipeline(run: Run, queue: "queue_common.QueuePaths", log=logger.info, st
     equations_path = str(paths.DEFAULT_EQUATIONS_FILE)
     assembly_path = str(paths.DEFAULT_ASSEMBLY_FILE)
     analysis_settings = run.config["analysis_settings"]
+    parameter_defaults = run.config.get("parameter_defaults", {})
     combos = {cid: c["params"] for cid, c in run.state["combos"].items()}
-
-    log("Stage 1/5: generating STEP files...")
-    run.set_stage("generating_steps")
-    resilient_io.call_with_retry(
-        step_generation.generate_step_files, combos, equations_path, assembly_path, run, log=log,
-    )
-    if stop_event is not None and stop_event.is_set():
-        return
-
-    log("Stage 2/5: building AEDT models, creating setups, and queuing analysis tasks...")
-    run.set_stage("building_models")
-    resilient_io.wait_until_available(
-        queue.root, on_wait=lambda p: log(f"Queue path {p} unreachable -- waiting for it to come back...")
-    )
     aedt_version = analysis_settings.get("aedt_version")
-    for combo_id, combo in run.state["combos"].items():
-        if stop_event is not None and stop_event.is_set():
-            return
-        if combo.get("task_id"):
-            continue
-        if combo.get("step_status") != "done":
-            log(f"Skipping {combo_id} -- STEP generation did not succeed for it.")
-            continue
 
+    def queue_combo(combo_id: str) -> None:
+        """Build the AEDT model for one finished STEP and queue it."""
+        combo = run.state["combos"][combo_id]
+        if combo.get("task_id") or combo.get("step_status") != "done":
+            return
+        resilient_io.wait_until_available(
+            queue.root, on_wait=lambda p: log(f"Queue path {p} unreachable -- waiting for it to come back...")
+        )
         dimensions_txt_content = eq.read_file(f"{run.combo_dir(combo_id)}/dimensions.txt")
         resilient_io.call_with_retry(
             model_builder.build_and_queue,
@@ -67,13 +55,61 @@ def run_pipeline(run: Run, queue: "queue_common.QueuePaths", log=logger.info, st
             queue_root=queue.root, log=log,
         )
 
-    log("Stage 3/5: monitoring analysis progress...")
+    # Each model is queued the moment its STEP file exists, and a monitor
+    # thread watches the queue throughout -- so the combos that are
+    # already analysing report progress to the UI while the remaining
+    # geometry is still being built. The STEP files themselves are still
+    # produced one at a time: they share a single SolidWorks document.
+    log("Stage 1/4: generating STEP files, building AEDT models, and queuing analysis tasks...")
+    run.set_stage("generating_and_queuing")
+
+    queuing_finished = threading.Event()
+    monitor_thread = threading.Thread(
+        target=monitor_run,
+        args=(run, queue),
+        kwargs={
+            "poll_seconds": analysis_settings.get("poll_seconds", 10.0),
+            "log": log,
+            "stop_event": stop_event,
+            "more_expected": lambda: not queuing_finished.is_set(),
+        },
+        daemon=True,
+        name=f"monitor-{run.run_id}",
+    )
+    monitor_thread.start()
+
+    try:
+        resilient_io.call_with_retry(
+            step_generation.generate_step_files, combos, equations_path, assembly_path, run,
+            log=log, parameter_defaults=parameter_defaults, on_step_done=queue_combo,
+            stop_event=stop_event,
+        )
+        if stop_event is None or not stop_event.is_set():
+            # Anything whose STEP was already on disk from an earlier
+            # attempt never went through on_step_done, so it is queued here.
+            for combo_id, combo in run.state["combos"].items():
+                if stop_event is not None and stop_event.is_set():
+                    break
+                if combo.get("task_id"):
+                    continue
+                if combo.get("step_status") != "done":
+                    log(f"Skipping {combo_id} -- STEP generation did not succeed for it.")
+                    continue
+                queue_combo(combo_id)
+    finally:
+        queuing_finished.set()
+
+    if stop_event is not None and stop_event.is_set():
+        monitor_thread.join(timeout=30)
+        return
+
+    log("Stage 2/4: waiting for the remaining analyses to finish...")
     run.set_stage("monitoring")
-    monitor_run(run, queue, poll_seconds=analysis_settings.get("poll_seconds", 10.0), log=log, stop_event=stop_event)
+    monitor_thread.join()
     if stop_event is not None and stop_event.is_set():
         return
 
-    log("Stage 4/5: post-processing analyzed projects...")
+    log("Stage 3/4: post-processing analyzed projects...")
     run.set_stage("postprocessing")
     resilient_io.call_with_retry(
         postprocess.postprocess_run, run, queue, analysis_settings,
@@ -82,13 +118,36 @@ def run_pipeline(run: Run, queue: "queue_common.QueuePaths", log=logger.info, st
     if stop_event is not None and stop_event.is_set():
         return
 
-    log("Stage 5/5: building combined results and plotting...")
+    log("Stage 4/4: building combined results and plotting...")
     run.set_stage("plotting")
     df = resilient_io.call_with_retry(results.build_combined_results, run, queue, queue_root=queue.root, log=log)
     plotting.plot_results(df, run, run.sweep_param_names, log=log)
 
     run.set_stage("complete")
     log(f"Run {run.run_id} complete. Plots saved to {run.plots_dir}")
+
+
+# What a brand-new run uses when there is no earlier run to copy from.
+# Kept here so the web form and the CLI start from the same numbers.
+DEFAULT_ANALYSIS_SETTINGS = {
+    "modes": 20,
+    "max_passes": 99,
+    "min_passes": 5,
+    "min_converged": 3,
+    "max_delta_f": 1.0,
+    "min_freq_safety_factor": 0.4,
+    "aedt_version": None,
+    "student_version": True,
+    "graphical": False,
+    "poll_seconds": 10.0,
+    "materials": {
+        "mat_box": "aluminum",
+        "mat_pcb": "Rogers TMM 10i (tm)",
+        "mat_chip": "silicon",
+        "mat_vacuum": "vacuum",
+        "perfect_e_box": True,
+    },
+}
 
 
 def build_analysis_settings(args: argparse.Namespace) -> dict:
@@ -150,13 +209,21 @@ def main() -> None:
     else:
         if not args.sweep:
             raise SystemExit("Provide at least one --sweep NAME=SPEC, or --resume RUN_ID")
-        sweep_params = []
+        requested = []
         for item in args.sweep:
             if "=" not in item:
                 raise SystemExit(f"Invalid --sweep {item!r} -- expected NAME=SPEC")
             name, spec = item.split("=", 1)
-            sweep_params.append(SweepParameter(name=name, values=expand_values(spec)))
-        run = Run.create(sweep_params, build_analysis_settings(args))
+            requested.append(SweepParameter(name=name, values=expand_values(spec)))
+        # A --sweep given a single value pins that value for the run
+        # instead of becoming a (one-point) sweep dimension.
+        sweep_params, parameter_defaults = split_swept_and_fixed(requested)
+        if parameter_defaults:
+            logger.info(
+                "Pinned for this run: %s",
+                ", ".join(f"{n}={v:g}" for n, v in parameter_defaults.items()),
+            )
+        run = Run.create(sweep_params, build_analysis_settings(args), parameter_defaults)
         logger.info("Created run %s with %d combination(s)", run.run_id, len(run.state["combos"]))
 
     run_pipeline(run, queue)

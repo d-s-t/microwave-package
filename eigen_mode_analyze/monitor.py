@@ -26,36 +26,55 @@ def monitor_run(
     poll_seconds: float = 10.0,
     log: Callable[[str], None] = logger.info,
     stop_event=None,
+    more_expected: Optional[Callable[[], bool]] = None,
 ) -> None:
-    combos = run.state["combos"]
-    pending_ids = [
-        cid for cid, c in combos.items()
-        if c.get("task_id") and c.get("queue_status") not in TERMINAL_STATUSES
-    ]
-    if not pending_ids:
-        log("Nothing to monitor -- every combo is already done/failed, or has no queued task.")
-        return
+    """Track every queued task until it reaches a terminal status.
 
-    log(f"Monitoring {len(pending_ids)} task(s)...")
-    while pending_ids:
+    The pending set is re-read from the run on each pass instead of being
+    fixed up front, because this now runs alongside the stage that queues
+    the tasks: models appear one by one while earlier ones are already
+    being analysed. `more_expected` tells it whether that stage is still
+    going -- while it returns True the loop keeps waiting even with
+    nothing pending yet, and once it returns False the loop finishes as
+    soon as the outstanding tasks land.
+    """
+    announced = False
+    while True:
         if stop_event is not None and stop_event.is_set():
             log("Monitoring stopped.")
             return
 
-        resilient_io.wait_until_available(
-            queue.root,
-            poll_seconds=poll_seconds,
-            on_wait=lambda p: log(f"Queue path {p} is unreachable -- waiting for it to come back..."),
-        )
+        combos = run.state["combos"]
+        pending_ids = [
+            cid for cid, c in combos.items()
+            if c.get("task_id") and c.get("queue_status") not in TERMINAL_STATUSES
+        ]
+        still_queueing = bool(more_expected and more_expected())
 
-        still_pending = []
+        if not pending_ids and not still_queueing:
+            if announced:
+                log("All queued tasks finished.")
+            else:
+                log("Nothing to monitor -- every combo is already done/failed, or has no queued task.")
+            return
+
+        if pending_ids and not announced:
+            log(f"Monitoring {len(pending_ids)} task(s)...")
+            announced = True
+
+        if pending_ids:
+            resilient_io.wait_until_available(
+                queue.root,
+                poll_seconds=poll_seconds,
+                on_wait=lambda p: log(f"Queue path {p} is unreachable -- waiting for it to come back..."),
+            )
+
         for combo_id in pending_ids:
             task_id = combos[combo_id]["task_id"]
             try:
                 status = queue_common.get_task_status(queue, task_id)
             except OSError as exc:
                 log(f"Could not check status of {combo_id} ({exc}) -- will retry.")
-                still_pending.append(combo_id)
                 continue
 
             if status != combos[combo_id].get("queue_status"):
@@ -63,11 +82,4 @@ def monitor_run(
                 if status in TERMINAL_STATUSES:
                     log(f"{combo_id} (task {task_id}) -> {status}")
 
-            if status not in TERMINAL_STATUSES:
-                still_pending.append(combo_id)
-
-        pending_ids = still_pending
-        if pending_ids:
-            time.sleep(poll_seconds)
-
-    log("All queued tasks finished.")
+        time.sleep(poll_seconds)

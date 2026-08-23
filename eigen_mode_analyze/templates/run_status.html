@@ -4,18 +4,37 @@
 <meta charset="utf-8">
 <title>Run {{ run.run_id }}</title>
 <style>
-  body{font-family:system-ui,sans-serif;max-width:900px;margin:2rem auto;padding:0 1rem;color:#222}
+  /* Same light/dark handling as the index page. */
+  :root{
+    color-scheme:light dark;
+    --bg:#fff; --fg:#222; --muted:#6b6b6b; --line:#ccc; --line-soft:#ddd;
+    --accent:#2E86AB; --accent-hover:#256a87;
+    --ok:#1a7f37; --bad:#c0392b; --busy:#b8860b;
+    --error-bg:#fdecea;
+  }
+  @media (prefers-color-scheme:dark){
+    :root{
+      --bg:#16181c; --fg:#e6e6e6; --muted:#9aa0a6; --line:#3a4047; --line-soft:#2c3137;
+      --accent:#3f9dc9; --accent-hover:#5cb3dc;
+      --ok:#4ac26b; --bad:#f0836f; --busy:#e0b341;
+      --error-bg:#2a1d1c;
+    }
+  }
+  body{font-family:system-ui,sans-serif;max-width:900px;margin:2rem auto;padding:0 1rem;
+    color:var(--fg);background:var(--bg)}
+  a{color:var(--accent)}
   table{border-collapse:collapse;width:100%}
-  td,th{border:1px solid #ccc;padding:.4rem .6rem;text-align:left;font-size:.9em}
-  .status-done{color:#1a7f37;font-weight:600}
-  .status-failed{color:#c0392b;font-weight:600}
-  .status-in_progress{color:#b8860b;font-weight:600}
-  .status-pending,.status-None,.status-null{color:#777}
-  a.button,button{display:inline-block;padding:.5rem 1rem;background:#2E86AB;color:#fff;border:none;
+  td,th{border:1px solid var(--line);padding:.4rem .6rem;text-align:left;font-size:.9em}
+  .muted{color:var(--muted)}
+  .status-done{color:var(--ok);font-weight:600}
+  .status-failed{color:var(--bad);font-weight:600}
+  .status-in_progress,.status-running{color:var(--busy);font-weight:600}
+  .status-pending,.status-None,.status-null,.status-undefined{color:var(--muted)}
+  a.button,button{display:inline-block;padding:.5rem 1rem;background:var(--accent);color:#fff;border:none;
     border-radius:4px;text-decoration:none;cursor:pointer;font-size:1em}
-  a.button:hover,button:hover{background:#256a87}
-  iframe{width:100%;height:600px;border:1px solid #ccc;margin-top:1rem}
-  .error-box{background:#fdecea;border:1px solid #c0392b;border-radius:6px;padding:.75rem 1rem;margin:1rem 0}
+  a.button:hover,button:hover{background:var(--accent-hover)}
+  iframe{width:100%;height:600px;border:1px solid var(--line);margin-top:1rem;background:#fff}
+  .error-box{background:var(--error-bg);border:1px solid var(--bad);border-radius:6px;padding:.75rem 1rem;margin:1rem 0}
   .error-box pre{white-space:pre-wrap;word-break:break-word;margin:.5rem 0 0;font-size:.85em}
 </style>
 </head>
@@ -38,17 +57,41 @@
 </form>
 {% endif %}
 
+{% if run.config.parameter_defaults %}
+<p class="muted">Pinned for this run:
+  {% for name, value in run.config.parameter_defaults.items() %}
+  <strong>{{ meta.label_for(name) }}</strong> = {{ meta.format_value(name, value) }}{{ " " + meta.unit_for(name) if meta.unit_for(name) }}{{ ", " if not loop.last }}
+  {% endfor %}
+</p>
+{% endif %}
+{% if has_common_dimensions %}
+<p><a href="{{ url_for('run_common_dimensions', run_id=run.run_id) }}">common_dimensions.txt</a>
+   <span class="muted">-- the geometry every combination in this run shares</span></p>
+{% endif %}
+
 <table id="combo-table">
-<tr><th>Combination</th><th>Parameters</th><th>STEP</th><th>Analysis</th><th>Post-processing</th></tr>
+<thead>
+<tr><th>Combination</th><th>Parameters</th><th>STEP</th><th>Analysis</th><th>Post-processing</th><th></th></tr>
+</thead>
+<tbody>
 {% for combo_id, combo in run.state.combos.items() %}
-<tr>
+<tr data-combo="{{ combo_id }}">
   <td>{{ combo_id }}</td>
-  <td>{{ combo.params }}</td>
-  <td class="status-{{ combo.step_status }}">{{ combo.step_status or "pending" }}</td>
-  <td class="status-{{ combo.queue_status }}">{{ combo.queue_status or "not queued" }}</td>
-  <td class="status-{{ combo.post_status }}">{{ combo.post_status or "pending" }}</td>
+  <td>
+    {%- for name, value in combo.params.items() -%}
+    {{ meta.label_for(name) }} = {{ meta.format_value(name, value) }}{{ " " + meta.unit_for(name) if meta.unit_for(name) }}{{ ", " if not loop.last }}
+    {%- else -%}
+    <span class="muted">no swept parameters</span>
+    {%- endfor -%}
+  </td>
+  <td class="step status-{{ combo.step_status }}">{{ combo.step_status or "pending" }}</td>
+  <td class="queue status-{{ combo.queue_status }}">{{ combo.queue_status or "not queued" }}</td>
+  <td class="post status-{{ combo.post_status }}">{{ combo.post_status or "pending" }}</td>
+  <td><a href="{{ url_for('index', from_run=run.run_id, combo=combo_id) }}"
+         title="Open the new-run form with this combination's values">use as a starting point</a></td>
 </tr>
 {% endfor %}
+</tbody>
 </table>
 
 {% if plot_exists %}
@@ -58,23 +101,52 @@
 {% endif %}
 
 <script>
-// Polls the run's JSON status endpoint and reloads the whole page
-// whenever the stage changes or a plot has newly appeared -- simpler
-// and more robust than patching individual table cells in place, and
-// this page is refreshed infrequently enough (every few seconds) that
-// a full reload isn't disruptive.
+// Polls the run's JSON status endpoint and patches the per-combination
+// cells in place. The pipeline queues each model as soon as its STEP
+// file exists and monitors the queue while the remaining geometry is
+// still being built, so these cells change constantly *within* a single
+// stage -- waiting for a stage change to reload would leave the table
+// looking frozen for the whole build. The page is only reloaded when
+// something it can't patch appears (a finished plot, or an error).
 const initialStage = "{{ run.state.stage }}";
 const hadPlot = {{ "true" if plot_exists else "false" }};
 
+function paint(cell, value, fallback) {
+  if (!cell) { return; }
+  const text = value || fallback;
+  if (cell.textContent !== text) { cell.textContent = text; }
+  const wanted = "status-" + String(value).replace(/\s+/g, "_");
+  if (cell.classList.contains(wanted)) { return; }
+  for (const name of [...cell.classList]) {
+    if (name.startsWith("status-")) { cell.classList.remove(name); }
+  }
+  cell.classList.add(wanted);
+}
+
 async function poll() {
-  const res = await fetch("{{ url_for('run_status_json', run_id=run.run_id) }}");
-  if (!res.ok) return;
-  const data = await res.json();
+  let data;
+  try {
+    const res = await fetch("{{ url_for('run_status_json', run_id=run.run_id) }}");
+    if (!res.ok) return;
+    data = await res.json();
+  } catch (e) {
+    return;  // transient -- try again on the next tick
+  }
+
   document.getElementById("stage").textContent = data.stage;
   document.getElementById("running-indicator").textContent = data.is_running ? "running" : "not running";
-  if (data.stage !== initialStage || (data.stage === "complete" && !hadPlot)) {
-    location.reload();
+
+  for (const [comboId, combo] of Object.entries(data.combos || {})) {
+    const row = document.querySelector('tr[data-combo="' + CSS.escape(comboId) + '"]');
+    if (!row) continue;
+    paint(row.querySelector("td.step"), combo.step_status, "pending");
+    paint(row.querySelector("td.queue"), combo.queue_status, "not queued");
+    paint(row.querySelector("td.post"), combo.post_status, "pending");
   }
+
+  const finishedWithAPlot = data.stage === "complete" && !hadPlot;
+  const hitAnError = data.stage === "error" && initialStage !== "error";
+  if (finishedWithAPlot || hitAnError) { location.reload(); }
 }
 setInterval(poll, 4000);
 </script>

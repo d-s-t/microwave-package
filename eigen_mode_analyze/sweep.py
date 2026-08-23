@@ -8,7 +8,7 @@ from __future__ import annotations
 import itertools
 import re
 from dataclasses import dataclass
-from typing import Dict, List
+from typing import Dict, List, Tuple
 
 
 @dataclass
@@ -47,10 +47,32 @@ def expand_values(spec: str) -> List[float]:
     return [float(x.strip()) for x in spec.split(",") if x.strip() != ""]
 
 
+def split_swept_and_fixed(
+    params: List[SweepParameter],
+) -> Tuple[List[SweepParameter], Dict[str, float]]:
+    """Separate the parameters that actually vary from the ones pinned to
+    a single value.
+
+    A parameter given only one value ("4", or a range that expands to a
+    single point) is not a sweep dimension -- multiplying the cartesian
+    product by 1 just adds its value to every combo's name. It is instead
+    treated as a new default for the whole run: applied to every
+    combination, but not part of what distinguishes them.
+    """
+    swept = [p for p in params if len(p.values) > 1]
+    fixed = {p.name: p.values[0] for p in params if len(p.values) == 1}
+    return swept, fixed
+
+
 def combinations(sweep_params: List[SweepParameter]) -> List[Dict[str, float]]:
-    """Cartesian product across every swept parameter's values."""
+    """Cartesian product across every swept parameter's values.
+
+    With nothing swept this is a single combination with no varying
+    parameters -- a run that only pins defaults still builds one model,
+    rather than none at all.
+    """
     if not sweep_params:
-        return []
+        return [{}]
     names = [p.name for p in sweep_params]
     value_lists = [p.values for p in sweep_params]
     return [dict(zip(names, combo)) for combo in itertools.product(*value_lists)]

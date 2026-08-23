@@ -23,7 +23,7 @@ import re
 import sys
 import threading
 import traceback
-from typing import Dict
+from typing import Dict, Optional
 
 from flask import Flask, jsonify, redirect, render_template, request, send_from_directory, url_for
 from markupsafe import Markup
@@ -31,10 +31,10 @@ from markupsafe import Markup
 from ansys_analyze_common import queue_common
 
 from . import equations as eq
-from . import paths
+from . import parameter_meta, paths, pipeline
 from .pipeline import run_pipeline
 from .run_manager import Run
-from .sweep import SweepParameter, expand_values
+from .sweep import SweepParameter, expand_values, split_swept_and_fixed
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s: %(message)s", stream=sys.stdout)
 logger = logging.getLogger("eigen_mode_analyze")
@@ -134,32 +134,81 @@ def _parameter_drawings() -> Dict[str, Markup]:
     return drawings
 
 
+def _latest_run_id() -> Optional[str]:
+    runs = Run.list_runs()  # newest first
+    return runs[0]["run_id"] if runs else None
+
+
+def _form_starting_point(from_run: Optional[str], combo_id: Optional[str]):
+    """The analysis settings and per-parameter values to open the form with.
+
+    Defaults to carrying over the most recent run, so the settings you
+    used last time are already there; `from_run` picks a specific one
+    instead, and `combo_id` starts from one combination of that run (its
+    own values on top of whatever that run had pinned), which is the way
+    to take a single point from a sweep and build a new sweep around it.
+    """
+    run_id = from_run or _latest_run_id()
+    if not run_id:
+        return dict(pipeline.DEFAULT_ANALYSIS_SETTINGS), {}, None
+    try:
+        run = Run.load(run_id)
+    except (OSError, ValueError, KeyError):
+        logger.warning("Could not load settings from run %s", run_id)
+        return dict(pipeline.DEFAULT_ANALYSIS_SETTINGS), {}, None
+
+    settings = {**pipeline.DEFAULT_ANALYSIS_SETTINGS, **run.config.get("analysis_settings", {})}
+    values = run.starting_values()
+    if combo_id:
+        combo = run.state.get("combos", {}).get(combo_id)
+        if combo:
+            values = {**run.parameter_defaults, **combo.get("params", {})}
+    return settings, values, run_id
+
+
 @app.route("/")
 def index():
     content = eq.read_file(str(paths.DEFAULT_EQUATIONS_FILE))
     parameters = eq.get_numeric_parameters(content)
     runs = Run.list_runs()
+    settings, values, loaded_from = _form_starting_point(
+        request.args.get("from_run"), request.args.get("combo")
+    )
     return render_template(
         "index.html",
         parameters=parameters,
         runs=runs,
         drawings=_parameter_drawings(),
+        meta=parameter_meta,
+        settings=settings,
+        values={name: parameter_meta.format_value(name, value) for name, value in values.items()},
+        loaded_from=loaded_from,
+        loaded_combo=request.args.get("combo"),
     )
 
 
 @app.route("/runs/new", methods=["POST"])
 def new_run():
-    # A parameter is swept when its range box was filled in; an empty box
-    # means "leave it at its current value". The names are taken from the
-    # equations file rather than the form, so only real parameters count.
+    # A filled-in box means "use this"; an empty one leaves the parameter
+    # at the equation file's value. A box holding a single value pins that
+    # value for the whole run, and only boxes holding more than one value
+    # become sweep dimensions. The names come from the equations file
+    # rather than the form, so only real parameters count.
     content = eq.read_file(str(paths.DEFAULT_EQUATIONS_FILE))
-    sweep_params = []
+    requested = []
     for name in eq.get_numeric_parameters(content):
         spec = request.form.get(f"range_{name}", "").strip()
         if not spec:
             continue
-        sweep_params.append(SweepParameter(name=name, values=expand_values(spec)))
-    if not sweep_params:
+        try:
+            values = expand_values(spec)
+        except ValueError as exc:
+            logger.warning("Ignoring %s=%r: %s", name, spec, exc)
+            continue
+        if values:
+            requested.append(SweepParameter(name=name, values=values))
+    sweep_params, parameter_defaults = split_swept_and_fixed(requested)
+    if not sweep_params and not parameter_defaults:
         return redirect(url_for("index"))
 
     settings = {
@@ -181,7 +230,7 @@ def new_run():
             "perfect_e_box": "perfect_e_box" in request.form,
         },
     }
-    run = Run.create(sweep_params, settings)
+    run = Run.create(sweep_params, settings, parameter_defaults)
     _start_pipeline_thread(run)
     return redirect(url_for("run_status", run_id=run.run_id))
 
@@ -198,7 +247,20 @@ def resume_run(run_id):
 def run_status(run_id):
     run = Run.load(run_id)
     plot_exists = os.path.exists(os.path.join(run.plots_dir, "modes_scatter_plot.html"))
-    return render_template("run_status.html", run=run, is_running=_is_running(run_id), plot_exists=plot_exists)
+    return render_template(
+        "run_status.html",
+        run=run,
+        is_running=_is_running(run_id),
+        plot_exists=plot_exists,
+        meta=parameter_meta,
+        has_common_dimensions=os.path.exists(os.path.join(run.run_dir, "common_dimensions.txt")),
+    )
+
+
+@app.route("/runs/<run_id>/common_dimensions.txt")
+def run_common_dimensions(run_id):
+    run = Run.load(run_id)
+    return send_from_directory(run.run_dir, "common_dimensions.txt", mimetype="text/plain")
 
 
 @app.route("/runs/<run_id>/status.json")

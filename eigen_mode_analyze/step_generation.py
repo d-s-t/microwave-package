@@ -129,17 +129,66 @@ def save_as_step(swModel, step_filepath: str) -> Tuple[bool, Optional[str]]:
     return False, "SaveAs returned but no (non-empty) STEP file was found on disk"
 
 
+def write_common_dimensions(run, log: Callable[[str], None] = logger.info) -> Optional[str]:
+    """
+    Write `common_dimensions.txt` in the run folder: the equation lines
+    that are identical across every combination in the run.
+
+    Rather than reasoning about which parameters were swept, this reads
+    back the per-combo `dimensions.txt` snapshots and keeps the lines they
+    all agree on -- so whatever varied (directly or through a formula that
+    depends on it) drops out, and what is left is exactly the geometry
+    this run held constant.
+    """
+    snapshots = []
+    for combo_id, combo in run.state["combos"].items():
+        path = os.path.join(run.combo_dir(combo_id), "dimensions.txt")
+        if os.path.isfile(path):
+            snapshots.append(eq.read_file(path).splitlines())
+    if not snapshots:
+        return None
+
+    shared = set(snapshots[0])
+    for lines in snapshots[1:]:
+        shared &= set(lines)
+
+    # keep the first snapshot's ordering, and each line only once
+    seen = set()
+    common_lines = []
+    for line in snapshots[0]:
+        if line in shared and line not in seen:
+            seen.add(line)
+            common_lines.append(line)
+
+    out_path = os.path.join(run.run_dir, "common_dimensions.txt")
+    eq.write_file(out_path, "\n".join(common_lines) + "\n")
+    log(f"Wrote {out_path} ({len(common_lines)} line(s) shared by all {len(snapshots)} combination(s)).")
+    return out_path
+
+
 def generate_step_files(
     combos: Dict[str, Dict[str, float]],
     equations_path: str,
     assembly_path: str,
     run,
     log: Callable[[str], None] = logger.info,
+    parameter_defaults: Optional[Dict[str, float]] = None,
+    on_step_done: Optional[Callable[[str], None]] = None,
+    stop_event=None,
 ) -> None:
     """
     Build a STEP file for every combo, skipping ones already generated
     (resume support -- checked via `run.state`). Restores the equations
     file to its original content when done, even on failure.
+
+    `parameter_defaults` are applied to every combination before its own
+    values are, so a parameter pinned for the run takes effect everywhere
+    without becoming part of what distinguishes one combination.
+
+    `on_step_done` is called with each combo_id as soon as its STEP file
+    lands, so the caller can queue that model for analysis while the
+    remaining geometry is still being built. SolidWorks drives one
+    document here, so the combos themselves stay strictly sequential.
     """
     pending = {
         combo_id: params
@@ -148,6 +197,7 @@ def generate_step_files(
     }
     if not pending:
         log("All STEP files already generated -- skipping SolidWorks step.")
+        write_common_dimensions(run, log=log)
         return
 
     original_content = eq.read_file(equations_path)
@@ -162,8 +212,13 @@ def generate_step_files(
 
     try:
         for combo_id, params in pending.items():
+            if stop_event is not None and stop_event.is_set():
+                log("STEP generation stopped.")
+                return
             log(f"Building geometry for {combo_id} ({params})...")
             content = original_content
+            for name, value in (parameter_defaults or {}).items():
+                content = eq.set_parameter(content, name, value)
             for name, value in params.items():
                 content = eq.set_parameter(content, name, value)
             eq.write_file(equations_path, content)
@@ -181,9 +236,12 @@ def generate_step_files(
             if success:
                 log(f"Saved {step_path}")
                 run.update_combo(combo_id, step_path=step_path, step_status="done", step_error=None)
+                if on_step_done is not None:
+                    on_step_done(combo_id)
             else:
                 log(f"FAILED to save STEP for {combo_id}: {err}")
                 run.update_combo(combo_id, step_status="failed", step_error=err)
     finally:
         eq.write_file(equations_path, original_content)
         log("Restored original equations file.")
+        write_common_dimensions(run, log=log)

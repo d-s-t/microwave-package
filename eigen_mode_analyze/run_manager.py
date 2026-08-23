@@ -12,7 +12,8 @@ from __future__ import annotations
 import datetime as _dt
 import json
 import os
-from typing import Dict, List
+import threading
+from typing import Dict, List, Optional
 
 from . import paths
 from .sweep import SweepParameter, combinations, combo_id_for
@@ -27,10 +28,19 @@ class Run:
         self.state_path = os.path.join(self.run_dir, "state.json")
         self.config: dict = {}
         self.state: dict = {"stage": "created", "combos": {}}
+        # STEP/AEDT work and queue monitoring now run at the same time
+        # (see pipeline.run_pipeline), and both record progress here, so
+        # every read-modify-write of the state file is serialised.
+        self._lock = threading.RLock()
 
     # -- creation / loading -------------------------------------------------
     @classmethod
-    def create(cls, sweep_params: List[SweepParameter], analysis_settings: dict) -> "Run":
+    def create(
+        cls,
+        sweep_params: List[SweepParameter],
+        analysis_settings: dict,
+        parameter_defaults: Optional[Dict[str, float]] = None,
+    ) -> "Run":
         run_id = _dt.datetime.now().strftime("run_%Y%m%d_%H%M%S")
         run = cls(run_id)
         os.makedirs(run.run_dir, exist_ok=True)
@@ -38,6 +48,10 @@ class Run:
 
         run.config = {
             "sweep_params": [{"name": p.name, "values": p.values} for p in sweep_params],
+            # Parameters pinned to one value for this run: applied to every
+            # combination before its geometry is built, and reloaded into
+            # the form when this run is used as the basis for a new one.
+            "parameter_defaults": dict(parameter_defaults or {}),
             "analysis_settings": analysis_settings,
             "created_at": _dt.datetime.now().isoformat(timespec="seconds"),
         }
@@ -99,20 +113,30 @@ class Run:
         return summaries
 
     # -- persistence ----------------------------------------------------------
+    @staticmethod
+    def _write_json(path: str, payload: dict) -> None:
+        """Write via a temp file and replace, so a reader (the web UI polls
+        these constantly) never catches a half-written file."""
+        temporary = f"{path}.tmp"
+        with open(temporary, "w") as f:
+            json.dump(payload, f, indent=2, default=str)
+        os.replace(temporary, path)
+
     def save(self) -> None:
-        os.makedirs(self.run_dir, exist_ok=True)
-        with open(self.config_path, 'w') as f:
-            json.dump(self.config, f, indent=2, default=str)
-        with open(self.state_path, 'w') as f:
-            json.dump(self.state, f, indent=2, default=str)
+        with self._lock:
+            os.makedirs(self.run_dir, exist_ok=True)
+            self._write_json(self.config_path, self.config)
+            self._write_json(self.state_path, self.state)
 
     def set_stage(self, stage: str) -> None:
-        self.state["stage"] = stage
-        self.save()
+        with self._lock:
+            self.state["stage"] = stage
+            self.save()
 
     def update_combo(self, combo_id: str, **fields) -> None:
-        self.state["combos"][combo_id].update(fields)
-        self.save()
+        with self._lock:
+            self.state["combos"][combo_id].update(fields)
+            self.save()
 
     def combo_dir(self, combo_id: str) -> str:
         d = os.path.join(self.run_dir, "models", combo_id)
@@ -122,6 +146,20 @@ class Run:
     @property
     def sweep_param_names(self) -> List[str]:
         return [p["name"] for p in self.config.get("sweep_params", [])]
+
+    @property
+    def parameter_defaults(self) -> Dict[str, float]:
+        return self.config.get("parameter_defaults", {})
+
+    def starting_values(self) -> Dict[str, float]:
+        """What to prefill a new run's form with, based on this run: the
+        values it pinned, plus the low end of anything it swept (a sweep's
+        starting point is the most useful single value to carry over)."""
+        values = dict(self.parameter_defaults)
+        for param in self.config.get("sweep_params", []):
+            if param.get("values"):
+                values[param["name"]] = min(param["values"])
+        return values
 
     @property
     def is_complete(self) -> bool:
