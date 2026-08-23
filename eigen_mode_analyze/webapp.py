@@ -25,13 +25,15 @@ import threading
 import traceback
 from typing import Dict, Optional
 
-from flask import Flask, jsonify, redirect, render_template, request, send_from_directory, url_for
+import pandas as pd
+from flask import (Flask, Response, jsonify, redirect, render_template, request,
+                   send_from_directory, url_for)
 from markupsafe import Markup
 
 from ansys_analyze_common import queue_common
 
 from . import equations as eq
-from . import parameter_meta, paths, pipeline
+from . import parameter_meta, paths, pipeline, plotting
 from .pipeline import run_pipeline
 from .run_manager import Run
 from .sweep import SweepParameter, expand_values, split_swept_and_fixed
@@ -253,6 +255,9 @@ def resume_run(run_id):
 def run_status(run_id):
     run = Run.load(run_id)
     plot_exists = os.path.exists(os.path.join(run.plots_dir, "modes_scatter_plot.html"))
+    df = _results_frame(run)
+    options = plotting.axis_options(df, run.sweep_param_names) if df is not None else []
+    swept = [parameter_meta.column_name(n) for n in run.sweep_param_names]
     return render_template(
         "run_status.html",
         run=run,
@@ -260,6 +265,9 @@ def run_status(run_id):
         plot_exists=plot_exists,
         meta=parameter_meta,
         has_common_dimensions=os.path.exists(os.path.join(run.run_dir, "common_dimensions.txt")),
+        axis_options=options,
+        default_x=plotting.DEFAULT_X,
+        default_y=(swept[0] if swept else "combo_id"),
     )
 
 
@@ -281,10 +289,59 @@ def run_status_json(run_id):
     })
 
 
+def _results_frame(run):
+    """This run's combined results table, or None if it has none yet."""
+    csv_path = os.path.join(run.plots_dir, "all_results.csv")
+    if not os.path.exists(csv_path):
+        return None
+    try:
+        return pd.read_csv(csv_path)
+    except (OSError, ValueError):
+        logger.warning("Could not read results for run %s", run.run_id)
+        return None
+
+
 @app.route("/runs/<run_id>/plot")
 def run_plot(run_id):
+    """The figure itself, rendered for the requested axes and theme.
+
+    Served as its own document so the run page can embed it in an iframe
+    and swap axes by reloading just the figure, rather than rebuilding
+    the whole page (the embedded plotly.js is far and away the largest
+    thing on it).
+    """
     run = Run.load(run_id)
-    return send_from_directory(run.plots_dir, "modes_scatter_plot.html")
+    df = _results_frame(run)
+    if df is None:
+        return send_from_directory(run.plots_dir, "modes_scatter_plot.html")
+
+    html = plotting.figure_html(
+        df,
+        run.sweep_param_names,
+        x=request.args.get("x"),
+        y=request.args.get("y"),
+        color=request.args.get("color") or None,
+        dark=request.args.get("theme") == "dark",
+        plotlyjs_src=url_for("plotly_js"),
+    )
+    return Response(html, mimetype="text/html")
+
+
+@app.route("/plotly.js")
+def plotly_js():
+    """Plotly itself, served once and cached.
+
+    The figure is re-rendered on every axis change, and inlining the
+    library into each render means re-sending several megabytes each
+    time. Served from here it is fetched once per browser session. It
+    comes out of the installed plotly package, so this still works with
+    no internet connection.
+    """
+    from plotly.offline import get_plotlyjs
+
+    response = Response(get_plotlyjs(), mimetype="application/javascript")
+    response.headers["Cache-Control"] = "public, max-age=86400"
+    return response
 
 
 @app.route("/runs/<run_id>/results.csv")

@@ -211,6 +211,9 @@ def build_and_queue(
             solution_type="Eigenmode",
             objects=object_names,
             post_processing=[
+                # max_mag_e / mean_mag_e for the chip -- the numbers the run
+                # page can plot. The two plot ops below only produce images.
+                {"op": "field_statistics", "params": {"object_key": "chip", "quantity": "Mag_E"}},
                 {"op": "field_plot_surface", "params": {"object_key": "chip", "quantity": "Mag_E"}},
                 {"op": "field_plot_volume", "params": {"object_key": "vacuum", "quantity": "Mag_E"}},
             ],

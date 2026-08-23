@@ -33,7 +33,14 @@
   a.button,button{display:inline-block;padding:.5rem 1rem;background:var(--accent);color:#fff;border:none;
     border-radius:4px;text-decoration:none;cursor:pointer;font-size:1em}
   a.button:hover,button:hover{background:var(--accent-hover)}
-  iframe{width:100%;height:600px;border:1px solid var(--line);margin-top:1rem;background:#fff}
+  /* transparent so the figure sits on the page's own background in
+     either theme -- the plot is rendered with a see-through canvas */
+  iframe{width:100%;height:600px;border:1px solid var(--line);margin-top:1rem;background:transparent}
+  .axis-picker{display:flex;align-items:center;gap:.5rem;flex-wrap:wrap;margin:.75rem 0;
+    padding:.6rem .8rem;border:1px solid var(--line-soft);border-radius:6px}
+  .axis-picker label{font-weight:600;font-size:.9em}
+  .axis-picker select{padding:.2rem}
+  .axis-picker button{padding:.3rem .7rem;font-size:.85em}
   .error-box{background:var(--error-bg);border:1px solid var(--bad);border-radius:6px;padding:.75rem 1rem;margin:1rem 0}
   .error-box pre{white-space:pre-wrap;word-break:break-word;margin:.5rem 0 0;font-size:.85em}
 </style>
@@ -96,8 +103,32 @@
 
 {% if plot_exists %}
 <h2>Results</h2>
+{% if axis_options %}
+<div class="axis-picker">
+  <label for="axis-x">X</label>
+  <select id="axis-x">
+    {% for option in axis_options %}
+    <option value="{{ option.value }}" {% if option.value == default_x %}selected{% endif %}>{{ option.label }}</option>
+    {% endfor %}
+  </select>
+  <label for="axis-y">Y</label>
+  <select id="axis-y">
+    {% for option in axis_options %}
+    <option value="{{ option.value }}" {% if option.value == default_y %}selected{% endif %}>{{ option.label }}</option>
+    {% endfor %}
+  </select>
+  <label for="axis-color">Colour</label>
+  <select id="axis-color">
+    <option value="">(none)</option>
+    {% for option in axis_options %}
+    <option value="{{ option.value }}">{{ option.label }}</option>
+    {% endfor %}
+  </select>
+  <button type="button" id="swap-axes" title="Swap the X and Y axes">&#8646; swap</button>
+</div>
+{% endif %}
 <p><a class="button" href="{{ url_for('run_results_csv', run_id=run.run_id) }}">Download CSV</a></p>
-<iframe src="{{ url_for('run_plot', run_id=run.run_id) }}"></iframe>
+<iframe id="plot-frame" src="{{ url_for('run_plot', run_id=run.run_id) }}"></iframe>
 {% endif %}
 
 <script>
@@ -149,6 +180,53 @@ async function poll() {
   if (finishedWithAPlot || hitAnError) { location.reload(); }
 }
 setInterval(poll, 4000);
+
+// --- results plot -------------------------------------------------
+// The figure is rendered server-side and embedded, so changing an axis
+// reloads just the iframe. It is also re-rendered when the OS theme
+// flips, since plotly bakes its colours in at render time and cannot
+// pick them up from the page's CSS the way the rest of the UI does.
+(function () {
+  var frame = document.getElementById("plot-frame");
+  if (!frame) { return; }
+  var x = document.getElementById("axis-x");
+  var y = document.getElementById("axis-y");
+  var colour = document.getElementById("axis-color");
+  if (!x || !y) { return; }
+
+  var darkQuery = window.matchMedia("(prefers-color-scheme: dark)");
+  var base = "{{ url_for('run_plot', run_id=run.run_id) }}";
+
+  function render() {
+    var params = new URLSearchParams({
+      x: x.value,
+      y: y.value,
+      theme: darkQuery.matches ? "dark" : "light",
+    });
+    if (colour && colour.value) { params.set("color", colour.value); }
+    frame.src = base + "?" + params.toString();
+  }
+
+  [x, y, colour].forEach(function (select) {
+    if (select) { select.addEventListener("change", render); }
+  });
+
+  var swap = document.getElementById("swap-axes");
+  if (swap) {
+    swap.addEventListener("click", function () {
+      var held = x.value;
+      x.value = y.value;
+      y.value = held;
+      render();
+    });
+  }
+
+  // Safari still only supports the deprecated addListener here
+  if (darkQuery.addEventListener) { darkQuery.addEventListener("change", render); }
+  else if (darkQuery.addListener) { darkQuery.addListener(render); }
+
+  render();
+})();
 </script>
 </body>
 </html>
