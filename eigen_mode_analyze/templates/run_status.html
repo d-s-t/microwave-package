@@ -66,9 +66,15 @@
 </div>
 {% endif %}
 
-{% if not is_running and run.state.stage != "complete" %}
+{# Offered on what the combinations actually show, not on the stage
+   label: a run can stop early and still be marked complete, and then
+   this is the only way to pick it back up. #}
+{% if not is_running and not run.is_complete %}
 <form method="post" action="{{ url_for('resume_run', run_id=run.run_id) }}">
   <button type="submit">{{ "Retry" if run.state.stage == "error" else "Resume this run" }}</button>
+  {% if run.state.stage == "complete" %}
+  <span class="muted">This run is marked complete but some combinations never finished.</span>
+  {% endif %}
 </form>
 {% endif %}
 

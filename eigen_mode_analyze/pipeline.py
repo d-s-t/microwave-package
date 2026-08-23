@@ -64,19 +64,24 @@ def run_pipeline(run: Run, queue: "queue_common.QueuePaths", log=logger.info, st
     run.set_stage("generating_and_queuing")
 
     queuing_finished = threading.Event()
-    monitor_thread = threading.Thread(
-        target=monitor_run,
-        args=(run, queue),
-        kwargs={
-            "poll_seconds": analysis_settings.get("poll_seconds", 10.0),
-            "log": log,
-            "stop_event": stop_event,
-            "more_expected": lambda: not queuing_finished.is_set(),
-        },
-        daemon=True,
-        name=f"monitor-{run.run_id}",
-    )
-    monitor_thread.start()
+
+    def start_monitor():
+        thread = threading.Thread(
+            target=monitor_run,
+            args=(run, queue),
+            kwargs={
+                "poll_seconds": analysis_settings.get("poll_seconds", 10.0),
+                "log": log,
+                "stop_event": stop_event,
+                "more_expected": lambda: not queuing_finished.is_set(),
+            },
+            daemon=True,
+            name=f"monitor-{run.run_id}",
+        )
+        thread.start()
+        return thread
+
+    monitor_thread = start_monitor()
 
     try:
         resilient_io.call_with_retry(
@@ -112,27 +117,43 @@ def run_pipeline(run: Run, queue: "queue_common.QueuePaths", log=logger.info, st
     worker_is_remote = analysis_settings.get("student_version", True)
     poll_seconds = analysis_settings.get("poll_seconds", 10.0)
 
+    def still_analyzing():
+        return [
+            combo_id for combo_id, combo in run.state["combos"].items()
+            if combo.get("task_id") and combo.get("queue_status") not in ("done", "failed")
+        ]
+
     if worker_is_remote:
         log("Stage 2/4: post-processing each analysis as it finishes...")
         run.set_stage("postprocessing")
-        while monitor_thread.is_alive():
-            if stop_event is not None and stop_event.is_set():
-                return
+    else:
+        log("Stage 2/4: waiting for the remaining analyses to finish...")
+        run.set_stage("monitoring")
+
+    while True:
+        if stop_event is not None and stop_event.is_set():
+            return
+        if worker_is_remote:
+            # results are pulled in as they land rather than at the end
             resilient_io.call_with_retry(
                 postprocess.postprocess_run, run, queue, analysis_settings,
                 queue_root=queue.root, log=log, stop_event=stop_event, announce_idle=False,
             )
-            monitor_thread.join(timeout=poll_seconds)
-        if stop_event is not None and stop_event.is_set():
-            return
-        log("Stage 3/4: post-processing whatever finished last...")
-    else:
-        log("Stage 2/4: waiting for the remaining analyses to finish...")
-        run.set_stage("monitoring")
-        monitor_thread.join()
-        if stop_event is not None and stop_event.is_set():
-            return
-        log("Stage 3/4: post-processing analyzed projects...")
+        if not monitor_thread.is_alive():
+            outstanding = still_analyzing()
+            if not outstanding:
+                break
+            # Monitoring is the only thing that notices work finishing, so
+            # it going quiet while combos are still out means the run would
+            # otherwise sit here looking done. Bring it back rather than
+            # reporting a run that never finished as complete.
+            log(f"Monitoring stopped with {len(outstanding)} combination(s) unfinished -- restarting it.")
+            monitor_thread = start_monitor()
+        monitor_thread.join(timeout=poll_seconds)
+
+    if stop_event is not None and stop_event.is_set():
+        return
+    log("Stage 3/4: post-processing analyzed projects...")
 
     run.set_stage("postprocessing")
     resilient_io.call_with_retry(

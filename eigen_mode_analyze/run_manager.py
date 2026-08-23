@@ -11,15 +11,23 @@ from __future__ import annotations
 
 import datetime as _dt
 import json
+import logging
 import os
 import threading
+import time
 from typing import Dict, List, Optional
 
 from . import paths
 from .sweep import SweepParameter, combinations, combo_id_for
 
+logger = logging.getLogger("eigen_mode_analyze")
+
 
 class Run:
+    # When the atomic replace is being blocked by something outside this
+    # process, this holds the time until which to assume it still is.
+    _replace_blocked_until = 0.0
+
     def __init__(self, run_id: str):
         self.run_id = run_id
         self.run_dir = os.path.join(str(paths.RUNS_ROOT), run_id)
@@ -75,13 +83,30 @@ class Run:
         run.save()
         return run
 
+    @staticmethod
+    def _read_json(path: str, attempts: int = 20) -> dict:
+        """Read one of the run's files, retrying while it is being replaced.
+
+        The pipeline rewrites these as it works, and on Windows the file
+        is briefly unopenable during the replace. The web UI polls them
+        every few seconds, so without this it would occasionally fail to
+        load a run for no reason the user could act on.
+        """
+        last_error = None
+        for attempt in range(attempts):
+            try:
+                with open(path) as f:
+                    return json.load(f)
+            except (PermissionError, json.JSONDecodeError) as exc:
+                last_error = exc
+                time.sleep(0.02 * (attempt + 1))
+        raise last_error
+
     @classmethod
     def load(cls, run_id: str) -> "Run":
         run = cls(run_id)
-        with open(run.config_path) as f:
-            run.config = json.load(f)
-        with open(run.state_path) as f:
-            run.state = json.load(f)
+        run.config = cls._read_json(run.config_path)
+        run.state = cls._read_json(run.state_path)
         return run
 
     @classmethod
@@ -96,8 +121,7 @@ class Run:
             if not os.path.isfile(state_path):
                 continue
             try:
-                with open(state_path) as f:
-                    state = json.load(f)
+                state = cls._read_json(state_path)
             except (OSError, json.JSONDecodeError):
                 continue
             combos = state.get("combos", {})
@@ -114,13 +138,60 @@ class Run:
 
     # -- persistence ----------------------------------------------------------
     @staticmethod
-    def _write_json(path: str, payload: dict) -> None:
+    def _write_json(path: str, payload: dict, attempts: int = 20) -> bool:
         """Write via a temp file and replace, so a reader (the web UI polls
-        these constantly) never catches a half-written file."""
-        temporary = f"{path}.tmp"
-        with open(temporary, "w") as f:
-            json.dump(payload, f, indent=2, default=str)
-        os.replace(temporary, path)
+        these constantly) never catches a half-written file.
+
+        On Windows the replace fails with PermissionError while any other
+        handle is open on the destination -- which the web UI's polling
+        opens every few seconds. Those collisions clear in milliseconds,
+        so the replace is retried; if it still will not go through, the
+        write is skipped rather than raised. Whoever called this is
+        recording progress, and losing one intermediate write (the next
+        update rewrites the whole file anyway) is far better than killing
+        the thread that was reporting it.
+        """
+        # Once the replace has proved to be persistently blocked, stop
+        # spending the full retry window on every subsequent write -- go
+        # almost straight to writing in place, and re-probe periodically
+        # in case whatever held the file has let go.
+        if time.time() < Run._replace_blocked_until:
+            attempts = 2
+
+        temporary = f"{path}.{os.getpid()}.tmp"
+        try:
+            with open(temporary, "w") as f:
+                json.dump(payload, f, indent=2, default=str)
+            for attempt in range(attempts):
+                try:
+                    os.replace(temporary, path)
+                    Run._replace_blocked_until = 0.0
+                    return True
+                except PermissionError:
+                    time.sleep(0.02 * (attempt + 1))
+            Run._replace_blocked_until = time.time() + 60.0
+
+            # Something is holding the file open for longer than a passing
+            # read -- an indexer, a virus scanner, another copy of this
+            # app. Writing in place is not atomic, but a reader that
+            # catches it mid-write retries (see _read_json), and losing
+            # the run's progress entirely is the worse outcome.
+            logger.warning(
+                "%s could not be replaced after %d attempts -- something is holding it open. "
+                "Writing in place instead.", path, attempts,
+            )
+            with open(path, "w") as f:
+                json.dump(payload, f, indent=2, default=str)
+            return True
+        except OSError as exc:
+            logger.warning("Could not update %s (%s); skipping this write.", path, exc)
+        finally:
+            if os.path.exists(temporary):
+                try:
+                    os.remove(temporary)
+                except OSError:
+                    pass
+        return False
 
     def save(self) -> None:
         with self._lock:
@@ -128,15 +199,23 @@ class Run:
             self._write_json(self.config_path, self.config)
             self._write_json(self.state_path, self.state)
 
+    def save_state(self) -> None:
+        """Just the progress file. The configuration is fixed when the run
+        is created, so rewriting it on every status update is pure churn
+        -- and one more file to collide with a reader over."""
+        with self._lock:
+            os.makedirs(self.run_dir, exist_ok=True)
+            self._write_json(self.state_path, self.state)
+
     def set_stage(self, stage: str) -> None:
         with self._lock:
             self.state["stage"] = stage
-            self.save()
+            self.save_state()
 
     def update_combo(self, combo_id: str, **fields) -> None:
         with self._lock:
             self.state["combos"][combo_id].update(fields)
-            self.save()
+            self.save_state()
 
     def combo_dir(self, combo_id: str) -> str:
         d = os.path.join(self.run_dir, "models", combo_id)

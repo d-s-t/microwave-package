@@ -62,24 +62,27 @@ def monitor_run(
             log(f"Monitoring {len(pending_ids)} task(s)...")
             announced = True
 
-        if pending_ids:
-            resilient_io.wait_until_available(
-                queue.root,
-                poll_seconds=poll_seconds,
-                on_wait=lambda p: log(f"Queue path {p} is unreachable -- waiting for it to come back..."),
-            )
+        # Anything unexpected in here is logged and retried on the next
+        # pass rather than allowed out: this runs on its own thread, and
+        # an exception escaping it would end status reporting for the
+        # rest of the run without anything obviously breaking.
+        try:
+            if pending_ids:
+                resilient_io.wait_until_available(
+                    queue.root,
+                    poll_seconds=poll_seconds,
+                    on_wait=lambda p: log(f"Queue path {p} is unreachable -- waiting for it to come back..."),
+                )
 
-        for combo_id in pending_ids:
-            task_id = combos[combo_id]["task_id"]
-            try:
+            for combo_id in pending_ids:
+                task_id = combos[combo_id]["task_id"]
                 status = queue_common.get_task_status(queue, task_id)
-            except OSError as exc:
-                log(f"Could not check status of {combo_id} ({exc}) -- will retry.")
-                continue
-
-            if status != combos[combo_id].get("queue_status"):
-                run.update_combo(combo_id, queue_status=status)
-                if status in TERMINAL_STATUSES:
-                    log(f"{combo_id} (task {task_id}) -> {status}")
+                if status != combos[combo_id].get("queue_status"):
+                    run.update_combo(combo_id, queue_status=status)
+                    if status in TERMINAL_STATUSES:
+                        log(f"{combo_id} (task {task_id}) -> {status}")
+        except Exception as exc:
+            logger.exception("Monitoring pass failed; will retry in %.0fs", poll_seconds)
+            log(f"Could not check task status ({exc}) -- will retry in {poll_seconds:.0f}s.")
 
         time.sleep(poll_seconds)
