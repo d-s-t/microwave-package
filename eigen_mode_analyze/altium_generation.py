@@ -154,7 +154,13 @@ def run_script(
         f'|ProcName="{procedure}")'
     )
     log(f"Launching Altium: {procedure} (timeout {timeout:.0f}s)")
-    subprocess.Popen([exe, argument], close_fds=True)
+    # Passed as ONE verbatim command string, not as a list. Given a
+    # list, Windows applies MSVC quoting rules and escapes the quotes
+    # this argument depends on; Altium then sees a broken FileName and
+    # resolves the wreckage against its working directory, producing a
+    # doubled drive letter. It fails as a modal dialog, so the mistake
+    # costs a full timeout every time.
+    subprocess.Popen('"' + exe + '" ' + argument, close_fds=True)
 
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
