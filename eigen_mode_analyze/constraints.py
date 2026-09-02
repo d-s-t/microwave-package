@@ -200,3 +200,98 @@ def check_combination(values: Dict[str, float]) -> Optional[str]:
             )
 
     return None
+
+
+# --- layout feasibility ----------------------------------------------
+#
+# The inequalities above are about the distortion, and are checked at run
+# creation so an impossible combination is never handed to SolidWorks.
+# These are the equivalent for the Altium layout, and exist for the same
+# reason: it is much better to say "the via fence does not fit" up front
+# than to let the generator produce a board that is quietly wrong.
+#
+# They are kept separate from CONSTRAINTS rather than folded into it
+# because that machinery is shaped around one distortion offset per axis
+# -- it drives the max-value hints in the form -- and these are plain
+# geometric facts with no free offset to bound.
+
+def check_layout(values: Dict[str, float]) -> Optional[str]:
+    """Why this combination's layout cannot be built, or None if it can.
+
+    Returns a sentence naming the parameter to change, in the same style
+    as `check_combination`.
+    """
+    def get(name: str, default: float = 0.0) -> float:
+        return values.get(name, default)
+
+    trace = get("cpw_trace_width")
+    if trace <= 0:
+        return "cpw_trace_width must be positive"
+
+    half_side = get("pcb_side") / 2.0
+    half_length = get("pcb_length") / 2.0
+    via_dia = get("via_diameter")
+
+    # The CPW gap is solved rather than drawn, so the first thing that
+    # can fail is the solve itself: too wide a trace over a thin
+    # substrate is microstrip-dominated and cannot reach 50 ohm at any
+    # gap. Better to say so here than to let the solver raise mid-sweep.
+    from . import cpw
+
+    try:
+        gap = cpw.solve_gap_for_z0(
+            trace_width=trace,
+            substrate_height=get("pcb_width", 0.381),
+            eps_r=cpw.PERMITTIVITY["Rogers TMM 10i (tm)"],
+            conductor_thickness=get("copper_thickness"),
+        )
+    except ValueError as exc:
+        return f"no 50 ohm geometry for this trace width: {exc}"
+
+    # The fence sits outside the gap, and needs its own diameter of room
+    # before the board edge.
+    fence_edge = trace / 2.0 + gap + get("via_gnd_clearance") + via_dia
+    if fence_edge >= half_side:
+        return (
+            f"the via fence needs {_fmt(fence_edge)} mm either side of the centre line "
+            f"but only {_fmt(half_side)} mm is available -- reduce via_diameter, "
+            f"via_gnd_clearance or cpw_trace_width, or widen pcb_side"
+        )
+
+    # The shield ring surrounds the chip pocket and must stay on the board.
+    ring_x = get("chip_length") / 2.0 + get("shield_ring_inset") + via_dia / 2.0
+    ring_y = get("chip_side") / 2.0 + get("shield_ring_inset") + via_dia / 2.0
+    if ring_x >= half_length:
+        return (
+            f"the shield ring reaches {_fmt(ring_x)} mm along the feedline but the PCB "
+            f"only offers {_fmt(half_length)} mm -- reduce shield_ring_inset or "
+            f"chip_length, or lengthen pcb_length"
+        )
+    if ring_y >= half_side:
+        return (
+            f"the shield ring reaches {_fmt(ring_y)} mm across the feedline but the PCB "
+            f"only offers {_fmt(half_side)} mm -- reduce shield_ring_inset or "
+            f"chip_side, or widen pcb_side"
+        )
+
+    # Bond fingers sit between the die and the port, and must not run
+    # into either.
+    finger_x = get("chip_length") / 2.0 + get("bonding_clearence")
+    port_inner = half_length - get("port_space") - get("port_length") / 4.0
+    if finger_x >= port_inner:
+        return (
+            f"the bond fingers reach {_fmt(finger_x)} mm but the port starts at "
+            f"{_fmt(port_inner)} mm -- reduce bonding_clearence, or move the port out "
+            f"with port_space"
+        )
+
+    # A row of bonds has to fit across the die.
+    bond_span = (get("bond_count") - 1) * get("bond_pad_pitch") + get("bond_pad_width")
+    if get("bond_count") > 0 and bond_span >= get("chip_side"):
+        return (
+            f"{_fmt(get('bond_count'))} bonds at {_fmt(get('bond_pad_pitch'))} mm pitch span "
+            f"{_fmt(bond_span)} mm, wider than the {_fmt(get('chip_side'))} mm die -- "
+            f"reduce bond_count or bond_pad_pitch"
+        )
+
+    return None

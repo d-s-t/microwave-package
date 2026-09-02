@@ -221,6 +221,40 @@ def assign_materials_and_boundaries(hfss, mat_settings: dict, log=logger.info) -
     return objects_dict
 
 
+def carve_vacuum(hfss, objects_dict, log=logger.info) -> None:
+    """Cut the conductors out of the vacuum body.
+
+    The vacuum arrives from the STEP as the cavity fill, sized back when
+    the only things in the cavity were the substrates. The copper, vias
+    and bonds built here now occupy part of that same volume, and two
+    solids claiming one region is not a small inaccuracy -- HFSS either
+    errors or silently resolves it by material priority, which is worse
+    because the model still solves.
+    """
+    vacuum = objects_dict.get("vacuum")
+    if vacuum is None:
+        return
+
+    tools = [
+        obj.name
+        for key, obj in objects_dict.items()
+        if key != "vacuum" and ("copper" in key or "via" in key or "wirebond" in key)
+    ]
+    if not tools:
+        return
+
+    try:
+        # keep_originals: the conductors must survive being cut out of the
+        # vacuum -- they are the thing being simulated.
+        hfss.modeler.subtract(vacuum.name, tools, keep_originals=True)
+        log(f"Carved {len(tools)} conductor bodies out of the vacuum.")
+    except Exception as exc:
+        log(
+            f"WARNING: could not subtract the conductors from the vacuum ({exc}). "
+            "The model has overlapping solids and its results should not be trusted."
+        )
+
+
 SETUP_NAME = "Setup_1"
 
 
@@ -386,6 +420,7 @@ def build_and_queue(
         build_copper(hfss, combo_dir, dimensions_txt_content, log=log)
 
         objects_dict = assign_materials_and_boundaries(hfss, analysis_settings["materials"], log=log)
+        carve_vacuum(hfss, objects_dict, log=log)
         object_names = {key: obj.name for key, obj in objects_dict.items()}
 
         create_eigenmode_setup(hfss, dimensions_txt_content, analysis_settings)

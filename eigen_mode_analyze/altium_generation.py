@@ -240,7 +240,13 @@ def generate_for_combo(
     layout cannot be built should be recorded and skipped, exactly as a
     failed STEP already is, not abort the whole sweep.
     """
-    from . import paths
+    from . import constraints, paths
+
+    # Cheaper to refuse here than to let Altium build a board that is
+    # quietly wrong -- and the message names the parameter to change.
+    reason = constraints.check_layout(values)
+    if reason:
+        return False, f"layout cannot be built: {reason}"
 
     materials = materials or {}
     params = build_params(
