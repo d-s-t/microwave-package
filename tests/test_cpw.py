@@ -77,6 +77,61 @@ class TestSolveGap(unittest.TestCase):
         self.assertAlmostEqual(cpw.z0_gcpw(0.2, gap, 0.381, 9.8), 75.0, places=6)
 
 
+class TestConductorThickness(unittest.TestCase):
+    """35 um of copper across a ~100 um gap is not a perturbation, so the
+    finite-thickness correction has to be right."""
+
+    def test_zero_thickness_is_the_ideal_case(self):
+        ideal = cpw.z0_gcpw(0.2, 0.1, 0.381, 9.8)
+        explicit = cpw.z0_gcpw(0.2, 0.1, 0.381, 9.8, conductor_thickness=0.0)
+        self.assertEqual(ideal, explicit)
+
+    def test_correction_matches_the_closed_form(self):
+        # delta = (1.25t/pi) * (1 + ln(4 pi w / t)); w=0.2, t=0.035 mm.
+        self.assertAlmostEqual(cpw.thickness_correction(0.2, 0.035), 0.0734459, places=6)
+        self.assertEqual(cpw.thickness_correction(0.2, 0.0), 0.0)
+
+    def test_thicker_metal_lowers_impedance(self):
+        """Thick metal widens the trace and narrows the slot, raising the
+        capacitance -- so the same drawn geometry measures lower."""
+        thin = cpw.z0_gcpw(0.2, 0.3, 0.381, 9.8, conductor_thickness=0.0)
+        thick = cpw.z0_gcpw(0.2, 0.3, 0.381, 9.8, conductor_thickness=0.035)
+        self.assertLess(thick, thin)
+
+    def test_thicker_metal_needs_a_wider_gap_for_50_ohm(self):
+        ideal = cpw.solve_gap_for_z0(0.2, 0.381, 9.8, conductor_thickness=0.0)
+        real = cpw.solve_gap_for_z0(0.2, 0.381, 9.8, conductor_thickness=0.035)
+        self.assertGreater(real, ideal)
+
+    def test_ignoring_thickness_would_badly_miss_50_ohm(self):
+        """The regression this correction exists to prevent: build the
+        zero-thickness gap in 1 oz copper and the line is nowhere near
+        matched."""
+        ideal_gap = cpw.solve_gap_for_z0(0.2, 0.381, 9.8, conductor_thickness=0.0)
+        actual = cpw.z0_gcpw(0.2, ideal_gap, 0.381, 9.8, conductor_thickness=0.035)
+        self.assertLess(actual, 40.0)
+
+    def test_solution_round_trips_with_thickness(self):
+        gap = cpw.solve_gap_for_z0(0.2, 0.381, 9.8, conductor_thickness=0.035)
+        z0 = cpw.z0_gcpw(0.2, gap, 0.381, 9.8, conductor_thickness=0.035)
+        self.assertAlmostEqual(z0, 50.0, places=6)
+
+    def test_thin_film_chip_metal_barely_matters(self):
+        """200 nm on the chip should move the gap by ~1 um, not more."""
+        ideal = cpw.solve_gap_for_z0(0.1, 0.381, 11.9, conductor_thickness=0.0)
+        real = cpw.solve_gap_for_z0(0.1, 0.381, 11.9, conductor_thickness=0.0002)
+        self.assertLess(abs(real - ideal), 0.005)
+
+    def test_metal_thicker_than_the_gap_is_refused(self):
+        with self.assertRaises(ValueError) as ctx:
+            cpw.z0_gcpw(0.2, 0.02, 0.381, 9.8, conductor_thickness=0.035)
+        self.assertIn("closes the slot", str(ctx.exception))
+
+    def test_negative_thickness_is_refused(self):
+        with self.assertRaises(ValueError):
+            cpw.z0_gcpw(0.2, 0.1, 0.381, 9.8, conductor_thickness=-0.01)
+
+
 class TestPermittivityLookup(unittest.TestCase):
     def test_known_materials_match_the_hfss_names(self):
         self.assertEqual(cpw.permittivity_of("Rogers TMM 10i (tm)"), 9.8)

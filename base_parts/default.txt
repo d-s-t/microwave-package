@@ -44,6 +44,10 @@
 
 "distortion_y" = 1
 
+"copper_thickness"= 0.035	' thickness of the PCB copper (35 um, 1 oz)
+
+"chip_metal_thickness"= 0.0002	' thickness of the chip conductor (200 nm)
+
 "box_height"= "wall_width" + "pedestal_depth" + "pcb_width"
 
 "box_length"= "pcb_length" + 2 * "wall_width"

@@ -43,6 +43,9 @@ LABELS: Dict[str, str] = {
     "wall_width": "Box wall thickness",
     "wing_length": "Mounting wing length",
     "wing_width": "Mounting wing width",
+    # metallisation
+    "copper_thickness": "PCB copper thickness",
+    "chip_metal_thickness": "Chip metal thickness",
     "no_distortion": "Distortion",
     # distortion geometry
     "distortion_radius": "Distortion radius",
@@ -52,7 +55,10 @@ LABELS: Dict[str, str] = {
 
 # Shown, typed, and reported in micrometres instead of millimetres.
 # These are the sub-millimetre dimensions, where "381" beats "0.381".
-MICRON_PARAMETERS = {"pcb_width", "chip_width", "route_clearence", "chip_leg"}
+MICRON_PARAMETERS = {
+    "pcb_width", "chip_width", "route_clearence", "chip_leg",
+    "copper_thickness", "chip_metal_thickness",
+}
 
 # Counts rather than lengths: no unit at all.
 INTEGER_PARAMETERS = {"port_count"}
@@ -121,6 +127,15 @@ GROUPS: List[dict] = [
             "chip_leg", "bonding_clearence",
             "route_width", "route_clearence", "route_chip_clearence",
         ],
+    },
+    {
+        "title": "Metallisation",
+        "hint": "Conductor thicknesses. These matter more than they look: 35 um of copper "
+                "across a ~100 um gap pulls the CPW impedance down by more than 10 ohm, "
+                "which is why the 50 ohm gap is solved with the thickness rather than "
+                "without it.",
+        "collapsed": False,
+        "names": ["copper_thickness", "chip_metal_thickness"],
     },
     {
         "title": "Additional parameters",

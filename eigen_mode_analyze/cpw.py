@@ -13,10 +13,16 @@ The impedance model is the standard conformal-mapping result for a CPW
 with a ground plane on the far side of the substrate (Simons, *Coplanar
 Waveguide Circuits, Components and Systems*): two partial capacitances,
 one for the coplanar grounds and one for the backing plane, each a ratio
-of complete elliptic integrals. It assumes zero-thickness, lossless
-conductors and an infinitely wide substrate -- fine for picking a
-starting geometry, but it is HFSS that has the last word, which is the
-whole reason the solved value gets recorded per run.
+of complete elliptic integrals. Conductor thickness is accounted for by
+the usual first-order correction, because 35 um of copper on a 100 um
+gap is not a perturbation you can wave away -- it widens the trace and
+narrows the slot, pulling the impedance down by several ohms.
+
+What is still idealised: lossless conductors and an infinitely wide
+substrate. So this picks the starting geometry and HFSS has the last
+word, which is why the solved value is recorded per run. Altium's own
+layer-stack field solver is a useful independent check on the same
+number.
 
 Everything here is in millimetres, like `default.txt` itself.
 """
@@ -65,15 +71,50 @@ def _k_ratio(k: float) -> float:
     return complete_elliptic_k(k) / complete_elliptic_k(math.sqrt(1.0 - k * k))
 
 
-def z0_gcpw(trace_width: float, gap: float, substrate_height: float, eps_r: float) -> float:
+def thickness_correction(trace_width: float, conductor_thickness: float) -> float:
+    """How much a conductor of finite thickness effectively widens the
+    trace, in millimetres.
+
+    Real copper has sidewalls, and the field crossing the slot sees them.
+    The standard first-order treatment folds that into the geometry: the
+    trace behaves as if it were wider by this amount and the gap
+    correspondingly narrower, both by the same delta.
+    """
+    if conductor_thickness <= 0:
+        return 0.0
+    return (1.25 * conductor_thickness / math.pi) * (
+        1.0 + math.log(4.0 * math.pi * trace_width / conductor_thickness)
+    )
+
+
+def z0_gcpw(
+    trace_width: float,
+    gap: float,
+    substrate_height: float,
+    eps_r: float,
+    conductor_thickness: float = 0.0,
+) -> float:
     """Characteristic impedance in ohms of a conductor-backed CPW.
 
     `trace_width` is the centre conductor, `gap` the slot either side of
     it, `substrate_height` the dielectric thickness to the backing
-    ground -- all in millimetres.
+    ground, `conductor_thickness` the metal thickness (0 for the ideal
+    zero-thickness case) -- all in millimetres.
     """
     if min(trace_width, gap, substrate_height) <= 0:
         raise ValueError("trace_width, gap and substrate_height must all be positive")
+    if conductor_thickness < 0:
+        raise ValueError("conductor_thickness cannot be negative")
+
+    delta = thickness_correction(trace_width, conductor_thickness)
+    if delta >= gap:
+        raise ValueError(
+            f"conductor_thickness={conductor_thickness} mm is too large for a "
+            f"{gap} mm gap: the thickness correction ({delta:.4f} mm) closes the "
+            "slot entirely. Widen the gap or thin the metal."
+        )
+    trace_width = trace_width + delta
+    gap = gap - delta
 
     a = trace_width / 2.0
     b = a + gap
@@ -97,6 +138,7 @@ def solve_gap_for_z0(
     substrate_height: float,
     eps_r: float,
     z0: float = TARGET_Z0_OHM,
+    conductor_thickness: float = 0.0,
     gap_bounds: tuple = (1e-4, 100.0),
     tolerance: float = 1e-9,
 ) -> float:
@@ -108,8 +150,11 @@ def solve_gap_for_z0(
     starting guess to get wrong.
     """
     low, high = gap_bounds
-    z_low = z0_gcpw(trace_width, low, substrate_height, eps_r)
-    z_high = z0_gcpw(trace_width, high, substrate_height, eps_r)
+    # A gap at or below the thickness correction is not a real geometry,
+    # so the bracket starts just clear of it rather than at gap_bounds[0].
+    low = max(low, thickness_correction(trace_width, conductor_thickness) * 1.000001)
+    z_low = z0_gcpw(trace_width, low, substrate_height, eps_r, conductor_thickness)
+    z_high = z0_gcpw(trace_width, high, substrate_height, eps_r, conductor_thickness)
     if not z_low <= z0 <= z_high:
         raise ValueError(
             f"{z0} ohm is unreachable for trace_width={trace_width} mm on "
@@ -120,7 +165,7 @@ def solve_gap_for_z0(
 
     while high - low > tolerance:
         mid = 0.5 * (low + high)
-        if z0_gcpw(trace_width, mid, substrate_height, eps_r) < z0:
+        if z0_gcpw(trace_width, mid, substrate_height, eps_r, conductor_thickness) < z0:
             low = mid
         else:
             high = mid
