@@ -1,32 +1,36 @@
-{ Generate the package PCB from default.txt.
+{ Generate the package PCB and the chip from default.txt.
 
-  Stage 1: read the parameter file, create a NEW PCB document, set its
-  outline from pcb_length x pcb_side, draw the CPW centre trace, and
-  save it. Later stages add the ground pours, the via fence, the
-  connectors, the shield ring and the bonds.
+  Reads the parameter file written by
+  eigen_mode_analyze.altium_generation, creates both boards, and draws a
+  shielded 50 ohm CPW on each.
 
   Conventions, and why they matter:
 
-  * The board is CENTRED ON THE ORIGIN. This is the only datum shared
-    between Altium and SolidWorks. Copper is positioned in HFSS by
-    arithmetic rather than by mates, so if the centre ever drifts, the
-    copper silently lands in the wrong place with nothing to catch it.
+  * Both boards are CENTRED ON THE ORIGIN. This is the only datum shared
+    with SolidWorks. Copper is positioned in HFSS by arithmetic, not by
+    mates, so a drifting centre would put copper in the wrong place with
+    nothing to catch it. It also means a board sits at negative
+    coordinates, so a freshly opened document looks empty until the view
+    is fitted -- Ctrl+PgDn, or View then Fit Board.
 
-  * Idempotent: the document is created fresh every run. The .PcbDoc is
-    OUTPUT and is never hand-edited, so there is no state to drift.
+  * Idempotent. Documents are created fresh each run and are OUTPUT,
+    never hand-edited, so there is no state to drift.
 
-  * Every uncertain call reports itself, and progress is flushed BEFORE
-    each risky call. Altium leaves no stack trace, no exit code and no
-    dialog for a runtime error -- the sentinel file is the only
-    diagnostic there is.
+  * The CPW gap is never a drawn input. It is solved for 50 ohm in
+    Python, per substrate, arriving as pcb_cpw_gap and chip_cpw_gap.
 
-  API spellings, each established the hard way and none of them
-  guessable from the documentation:
+  * Every feature is guarded and counted separately, because Altium
+    leaves no stack trace, no exit code and no dialog for a runtime
+    error. The report file is the only diagnostic there is.
 
-      Client.OpenNewDocument('PCB', name, caption, False)   -- FOUR args
-      Board.BoardOutline.PointCount / .Segments[i].vx/.vy/.Kind
-      PCBServer.PCBObjectFactory(eTrackObject, eNoDimension, eCreate_Default)
-      Board.AddPCBObject(prim)
+  API spellings established empirically, none of them guessable:
+
+      Client.OpenNewDocument -- four arguments; three returns nil
+      BoardOutline.Segments[i] returns the record BY VALUE, so it must
+          be read out, edited and assigned back
+      PCBServer.PCBObjectFactory(kind, eNoDimension, eCreate_Default)
+      PCBServer.PCBContourFactory for region outlines
+      Doc.SetFileName then Doc.DoFileSave
 
   Note: Pascal block comments do not nest.
   Altium internal units are 1/10000 mil; MMsToCoord converts.
@@ -53,7 +57,14 @@ Begin
     If V = '' Then Result := Default Else Result := StrToFloat(V);
 End;
 
-{ A straight copper track between two points, in millimetres. }
+{ Objects added from a script have to be announced, or they are not
+  properly part of the document's data model. }
+Procedure Announce(Board : IPCB_Board; Prim : IPCB_Primitive);
+Begin
+    PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,
+                                  PCBM_BoardRegisteration, Prim.I_ObjectAddress);
+End;
+
 Procedure AddTrack(Board : IPCB_Board; X1, Y1, X2, Y2, W : Double; Lay : TLayer);
 Var
     T : IPCB_Track;
@@ -66,20 +77,168 @@ Begin
     T.Width := MMsToCoord(W);
     T.Layer := Lay;
     Board.AddPCBObject(T);
+    Announce(Board, T);
+End;
+
+{ A filled rectangle of copper. Ground planes are drawn as plain regions
+  rather than polygon pours: a pour needs a net and a repour pass, and
+  for a shape this simple the region is both exact and cheaper. }
+Procedure AddRect(Board : IPCB_Board; X1, Y1, X2, Y2 : Double; Lay : TLayer);
+Var
+    R : IPCB_Region;
+    C : IPCB_Contour;
+Begin
+    R := PCBServer.PCBObjectFactory(eRegionObject, eNoDimension, eCreate_Default);
+    C := PCBServer.PCBContourFactory;
+    C.AddPoint(MMsToCoord(X1), MMsToCoord(Y1));
+    C.AddPoint(MMsToCoord(X2), MMsToCoord(Y1));
+    C.AddPoint(MMsToCoord(X2), MMsToCoord(Y2));
+    C.AddPoint(MMsToCoord(X1), MMsToCoord(Y2));
+    R.SetOutlineContour(C);
+    R.Layer := Lay;
+    Board.AddPCBObject(R);
+    Announce(Board, R);
+End;
+
+Procedure AddVia(Board : IPCB_Board; X, Y, Dia, Hole : Double);
+Var
+    V : IPCB_Via;
+Begin
+    V := PCBServer.PCBObjectFactory(eViaObject, eNoDimension, eCreate_Default);
+    V.X := MMsToCoord(X);
+    V.Y := MMsToCoord(Y);
+    V.Size := MMsToCoord(Dia);
+    V.HoleSize := MMsToCoord(Hole);
+    V.LowLayer := eTopLayer;
+    V.HighLayer := eBottomLayer;
+    Board.AddPCBObject(V);
+    Announce(Board, V);
+End;
+
+Procedure AddPad(Board : IPCB_Board; X, Y, W, H : Double; Lay : TLayer);
+Var
+    Pd : IPCB_Pad;
+Begin
+    Pd := PCBServer.PCBObjectFactory(ePadObject, eNoDimension, eCreate_Default);
+    Pd.X := MMsToCoord(X);
+    Pd.Y := MMsToCoord(Y);
+    Pd.TopXSize := MMsToCoord(W);
+    Pd.TopYSize := MMsToCoord(H);
+    Pd.TopShape := eRectangular;
+    Pd.HoleSize := 0;
+    Pd.Layer := Lay;
+    Board.AddPCBObject(Pd);
+    Announce(Board, Pd);
+End;
+
+Procedure SetOutline(Board : IPCB_Board; HalfL, HalfS : Double);
+Var
+    i   : Integer;
+    Seg : TPolySegment;
+Begin
+    Board.BoardOutline.BeginModify;
+    Board.BoardOutline.PointCount := 4;
+    For i := 0 To 3 Do
+    Begin
+        Seg := Board.BoardOutline.Segments[i];
+        Seg.Kind := ePolySegmentLine;
+        Case i Of
+            0 : Begin Seg.vx := MMsToCoord(-HalfL); Seg.vy := MMsToCoord(-HalfS); End;
+            1 : Begin Seg.vx := MMsToCoord(HalfL);  Seg.vy := MMsToCoord(-HalfS); End;
+            2 : Begin Seg.vx := MMsToCoord(HalfL);  Seg.vy := MMsToCoord(HalfS);  End;
+            3 : Begin Seg.vx := MMsToCoord(-HalfL); Seg.vy := MMsToCoord(HalfS);  End;
+        End;
+        Board.BoardOutline.Segments[i] := Seg;
+    End;
+    Board.BoardOutline.EndModify;
+    Board.BoardOutline.Rebuild;
+End;
+
+{ Outline, centre conductor, coplanar grounds either side of the gap, a
+  ground plane on the far side of the substrate, and -- where the board
+  has two layers to stitch -- a via fence down both sides of the line. }
+Procedure BuildBoard(Board : IPCB_Board; HalfL, HalfS, Trace, Gap,
+                     ViaDia, ViaPitch, ViaClear : Double;
+                     WantVias : Boolean; Var nVias : Integer);
+Var
+    GndInner, FenceY, X : Double;
+Begin
+    SetOutline(Board, HalfL, HalfS);
+    AddTrack(Board, -HalfL, 0.0, HalfL, 0.0, Trace, eTopLayer);
+
+    GndInner := Trace / 2.0 + Gap;
+    AddRect(Board, -HalfL,  GndInner, HalfL,  HalfS,    eTopLayer);
+    AddRect(Board, -HalfL, -HalfS,    HalfL, -GndInner, eTopLayer);
+    AddRect(Board, -HalfL, -HalfS,    HalfL,  HalfS,    eBottomLayer);
+
+    nVias := 0;
+    If WantVias Then
+    Begin
+        FenceY := GndInner + ViaClear + ViaDia / 2.0;
+        If FenceY + ViaDia / 2.0 < HalfS Then
+        Begin
+            X := -HalfL + ViaPitch;
+            While X < HalfL - ViaPitch / 2.0 Do
+            Begin
+                AddVia(Board, X,  FenceY, ViaDia, ViaDia / 2.0);
+                AddVia(Board, X, -FenceY, ViaDia, ViaDia / 2.0);
+                nVias := nVias + 2;
+                X := X + ViaPitch;
+            End;
+        End;
+    End;
+End;
+
+{ Count what is actually on the board, in memory, before it is saved.
+  This is what separates "the objects were never added" from "they were
+  added and the save dropped them" -- two failures that look identical
+  from the outside. }
+Procedure ReportCounts(Board : IPCB_Board; Tag : String);
+Var
+    It   : IPCB_BoardIterator;
+    Prim : IPCB_Primitive;
+    nT, nV, nP, nR, nO : Integer;
+Begin
+    nT := 0; nV := 0; nP := 0; nR := 0; nO := 0;
+    It := Board.BoardIterator_Create;
+    It.AddFilter_ObjectSet(AllObjects);
+    It.AddFilter_LayerSet(AllLayers);
+    It.AddFilter_Method(eProcessAll);
+    Prim := It.FirstPCBObject;
+    While Prim <> Nil Do
+    Begin
+        Case Prim.ObjectId Of
+            eTrackObject  : nT := nT + 1;
+            eViaObject    : nV := nV + 1;
+            ePadObject    : nP := nP + 1;
+            eRegionObject : nR := nR + 1;
+        Else
+            nO := nO + 1;
+        End;
+        Prim := It.NextPCBObject;
+    End;
+    Board.BoardIterator_Destroy(It);
+    Say(Tag + '_inmem_tracks=' + IntToStr(nT));
+    Say(Tag + '_inmem_vias=' + IntToStr(nV));
+    Say(Tag + '_inmem_pads=' + IntToStr(nP));
+    Say(Tag + '_inmem_regions=' + IntToStr(nR));
 End;
 
 Procedure GenerateFromParams;
 Var
     P            : TStringList;
     Doc          : IServerDocument;
+    ChipDoc      : IServerDocument;
     Board        : IPCB_Board;
-    PcbLength    : Double;
-    PcbSide      : Double;
-    TraceW       : Double;
-    HalfL, HalfS : Double;
     OutDir       : String;
-    i            : Integer;
-    Seg          : TPolySegment;
+    HalfL, HalfS, Trace, Gap : Double;
+    ChipHalfL, ChipHalfS, ChipGap : Double;
+    ViaDia, ViaPitch, ViaClear : Double;
+    PadW, PadH, PadPitch, BondCount : Double;
+    PortCount, PortSpace, PortLen, PortWid : Double;
+    PortX : Double;
+    nVias : Integer;
+    i : Integer;
 Begin
     Rpt := TStringList.Create;
     Rpt.Add('stage=start');
@@ -89,103 +248,147 @@ Begin
     Try
         P.LoadFromFile(ParamPath);
     Except
-        Say('ok=0'); Say('error=cannot read params'); Say('stage=end'); Exit;
+        Say('ok=0');
+        Say('error=cannot read the parameter file');
+        Say('stage=end');
+        Exit;
     End;
 
-    PcbLength := ParamOf(P, 'pcb_length', 26.0);
-    PcbSide   := ParamOf(P, 'pcb_side', 10.0);
-    TraceW    := ParamOf(P, 'cpw_trace_width', 0.2);
+    HalfL     := ParamOf(P, 'pcb_length', 26.0) / 2.0;
+    HalfS     := ParamOf(P, 'pcb_side', 10.0) / 2.0;
+    Trace     := ParamOf(P, 'cpw_trace_width', 0.2);
+    Gap       := ParamOf(P, 'pcb_cpw_gap', 0.27);
+    ChipHalfL := ParamOf(P, 'chip_length', 6.3) / 2.0;
+    ChipHalfS := ParamOf(P, 'chip_side', 6.3) / 2.0;
+    ChipGap   := ParamOf(P, 'chip_cpw_gap', 0.17);
+    ViaDia    := ParamOf(P, 'via_diameter', 0.3);
+    ViaPitch  := ParamOf(P, 'via_pitch', 0.8);
+    ViaClear  := ParamOf(P, 'via_gnd_clearance', 0.15);
+    PadW      := ParamOf(P, 'bond_pad_length', 0.3);
+    PadH      := ParamOf(P, 'bond_pad_width', 0.15);
+    PadPitch  := ParamOf(P, 'bond_pad_pitch', 0.4);
+    BondCount := ParamOf(P, 'bond_count', 3);
+    PortCount := ParamOf(P, 'port_count', 2);
+    PortSpace := ParamOf(P, 'port_space', 1.5);
+    PortLen   := ParamOf(P, 'port_length', 5.1);
+    PortWid   := ParamOf(P, 'port_width', 5.1);
     OutDir    := P.Values['out_dir'];
-    HalfL := PcbLength / 2.0;
-    HalfS := PcbSide / 2.0;
-    Say('pcb_length=' + FloatToStr(PcbLength));
-    Say('pcb_side=' + FloatToStr(PcbSide));
-    Say('cpw_trace_width=' + FloatToStr(TraceW));
+    Say('pcb_gap_um=' + FloatToStr(Gap * 1000));
+    Say('chip_gap_um=' + FloatToStr(ChipGap * 1000));
 
     Doc := Client.OpenNewDocument('PCB', 'package', 'package', False);
     If Doc = Nil Then
     Begin
-        Say('ok=0'); Say('error=OpenNewDocument returned nil'); Say('stage=end'); Exit;
+        Say('ok=0');
+        Say('error=OpenNewDocument returned nil for the package');
+        Say('stage=end');
+        Exit;
     End;
     Client.ShowDocument(Doc);
     Board := PCBServer.GetCurrentPCBBoard;
     If Board = Nil Then
     Begin
-        Say('ok=0'); Say('error=no board on the new document'); Say('stage=end'); Exit;
+        Say('ok=0');
+        Say('error=no board on the package document');
+        Say('stage=end');
+        Exit;
     End;
-    Say('board=' + Board.FileName);
 
-    { Four corners, not five. Altium closes the outline itself, and the
-      duplicated closing point is what left the default 6x4 inch shape
-      in place on the previous attempt. }
-    { Segments[i] returns the record BY VALUE. Writing
-      Segments[i].vx := ... therefore mutates a temporary and is
-      discarded -- which is why the previous attempt reported success
-      while the board stayed at its default 6 x 4 inches. The whole
-      record has to be read out, edited, and assigned back. }
     PCBServer.PreProcess;
     Try
-        Board.BoardOutline.BeginModify;
-        Board.BoardOutline.PointCount := 4;
-        For i := 0 To 3 Do
-        Begin
-            Seg := Board.BoardOutline.Segments[i];
-            Seg.Kind := ePolySegmentLine;
-            Case i Of
-                0 : Begin Seg.vx := MMsToCoord(-HalfL); Seg.vy := MMsToCoord(-HalfS); End;
-                1 : Begin Seg.vx := MMsToCoord(HalfL);  Seg.vy := MMsToCoord(-HalfS); End;
-                2 : Begin Seg.vx := MMsToCoord(HalfL);  Seg.vy := MMsToCoord(HalfS);  End;
-                3 : Begin Seg.vx := MMsToCoord(-HalfL); Seg.vy := MMsToCoord(HalfS);  End;
-            End;
-            Board.BoardOutline.Segments[i] := Seg;
-        End;
-        Board.BoardOutline.EndModify;
-        Board.BoardOutline.Rebuild;
-        Say('outline=ok');
+        BuildBoard(Board, HalfL, HalfS, Trace, Gap, ViaDia, ViaPitch, ViaClear, True, nVias);
+        Say('package_vias=' + IntToStr(nVias));
+        Say('package_body=ok');
     Except
-        Say('outline=FAIL');
+        Say('package_body=FAIL');
     End;
     PCBServer.PostProcess;
 
-    { The CPW centre conductor, along the feedline axis through centre. }
+    PCBServer.PreProcess;
     Try
-        AddTrack(Board, -HalfL, 0.0, HalfL, 0.0, TraceW, eTopLayer);
-        Say('cpw_trace=ok');
+        For i := 0 To Round(PortCount) - 1 Do
+        Begin
+            If i = 0 Then
+                PortX := -HalfL + PortSpace
+            Else
+                PortX := HalfL - PortSpace;
+            AddPad(Board, PortX, 0.0, PortLen / 4.0, PortWid / 4.0, eTopLayer);
+        End;
+        Say('package_ports=' + IntToStr(Round(PortCount)));
     Except
-        Say('cpw_trace=FAIL');
+        Say('package_ports=FAIL');
+    End;
+    PCBServer.PostProcess;
+
+    Try
+        Board.ViewManager_FullUpdate;
+    Except
     End;
 
-    Try Board.ViewManager_FullUpdate; Except End;
-
-    { Report the outline back in millimetres, so the caller can check the
-      board is the size it asked for rather than trusting 'ok'. }
-    Try
-        Say('outline_width_mm='  + FloatToStr(CoordToMMs(Board.BoardOutline.BoundingRectangle.Right - Board.BoardOutline.BoundingRectangle.Left)));
-        Say('outline_height_mm=' + FloatToStr(CoordToMMs(Board.BoardOutline.BoundingRectangle.Top - Board.BoardOutline.BoundingRectangle.Bottom)));
-    Except
-        Say('outline_measure=FAIL');
-    End;
+    ReportCounts(Board, 'package');
 
     If OutDir <> '' Then
     Begin
         Try
-            Doc.DoFileSaveAs(OutDir + '\package.PcbDoc', True);
-            Say('save_A=ok');
-        Except
-            Say('save_A=fail');
-        End;
-        Try
-            Doc.DoFileSaveAs(OutDir + '\package.PcbDoc');
-            Say('save_B=ok');
-        Except
-            Say('save_B=fail');
-        End;
-        Try
             Doc.SetFileName(OutDir + '\package.PcbDoc');
             Doc.DoFileSave('');
-            Say('save_C=ok');
+            Say('saved_package=ok');
         Except
-            Say('save_C=fail');
+            Say('saved_package=FAIL');
+        End;
+    End;
+
+    ChipDoc := Client.OpenNewDocument('PCB', 'chip', 'chip', False);
+    If ChipDoc = Nil Then
+        Say('chip=FAIL_no_document')
+    Else
+    Begin
+        Client.ShowDocument(ChipDoc);
+        Board := PCBServer.GetCurrentPCBBoard;
+
+        PCBServer.PreProcess;
+        Try
+            { No via fence on the die: it carries a single metal layer,
+              so there is nothing to stitch to. }
+            BuildBoard(Board, ChipHalfL, ChipHalfS, Trace, ChipGap,
+                       ViaDia, ViaPitch, ViaClear, False, nVias);
+            Say('chip_body=ok');
+        Except
+            Say('chip_body=FAIL');
+        End;
+        PCBServer.PostProcess;
+
+        PCBServer.PreProcess;
+        Try
+            For i := 0 To Round(BondCount) - 1 Do
+            Begin
+                AddPad(Board, -ChipHalfL + PadW,
+                       (i - (BondCount - 1) / 2.0) * PadPitch, PadW, PadH, eTopLayer);
+                AddPad(Board, ChipHalfL - PadW,
+                       (i - (BondCount - 1) / 2.0) * PadPitch, PadW, PadH, eTopLayer);
+            End;
+            Say('chip_bond_pads=' + IntToStr(Round(BondCount) * 2));
+        Except
+            Say('chip_bond_pads=FAIL');
+        End;
+        PCBServer.PostProcess;
+
+        Try
+            Board.ViewManager_FullUpdate;
+        Except
+        End;
+
+        ReportCounts(Board, 'chip');
+
+        If OutDir <> '' Then
+        Begin
+            Try
+                ChipDoc.SetFileName(OutDir + '\chip.PcbDoc');
+                ChipDoc.DoFileSave('');
+                Say('saved_chip=ok');
+            Except
+                Say('saved_chip=FAIL');
+            End;
         End;
     End;
 
