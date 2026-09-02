@@ -159,6 +159,32 @@ def build_copper(hfss, combo_dir: str, dimensions_txt_content: str, log=logger.i
             continue
         copper_geometry.build(hfss.modeler, board, placement, prefix=prefix, log=log)
 
+    # The bonds are computed rather than read: Altium has no scriptable
+    # wirebond object, and the loop profile matters more to the field
+    # solve than to the layout anyway.
+    bond_count = int(values.get("bond_count", 0))
+    if bond_count:
+        pcb_top = values.get("pcb_width", 0.381)
+        chip_top = pcb_top + values.get("chip_width", 0.381)
+        half_chip = values.get("chip_length", 6.3) / 2.0
+        span = values.get("bonding_clearence", 1.0)
+        inset = values.get("bond_pad_length", 0.3)
+        for sign in (-1.0, +1.0):
+            copper_geometry.build_wirebonds(
+                hfss.modeler,
+                copper_geometry.BondSpec(
+                    x_start=sign * (half_chip + span),
+                    x_end=sign * (half_chip - inset),
+                    z_start=pcb_top,
+                    z_end=chip_top,
+                    count=bond_count,
+                    pitch=values.get("bond_pad_pitch", 0.4),
+                    height=values.get("bond_height", 0.2),
+                    diameter=values.get("bond_wire_diameter", 0.025),
+                ),
+                log=log,
+            )
+
 
 def assign_materials_and_boundaries(hfss, mat_settings: dict, log=logger.info) -> Dict[str, object]:
     """Give every solid in the imported model its material and boundary.

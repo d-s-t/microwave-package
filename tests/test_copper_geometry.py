@@ -243,3 +243,57 @@ class TestAgainstRealExport(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestWireBonds(unittest.TestCase):
+    """Bonds are computed rather than read from Altium: AD26 exposes no
+    wirebond object id to scripting at all, and a bond is EM geometry
+    rather than layout."""
+
+    SPEC = cg.BondSpec(
+        x_start=-4.15, x_end=-2.85, z_start=0.381, z_end=0.762,
+        count=3, pitch=0.4, height=0.2, diameter=0.025,
+    )
+
+    def test_path_starts_and_ends_on_the_pads(self):
+        pts = cg.bond_path(self.SPEC, y=0.0)
+        self.assertAlmostEqual(pts[0][0], -4.15)
+        self.assertAlmostEqual(pts[0][2], 0.381)
+        self.assertAlmostEqual(pts[-1][0], -2.85)
+        self.assertAlmostEqual(pts[-1][2], 0.762)
+
+    def test_loop_rises_above_both_ends(self):
+        """A straight wire would clip the die edge. The loop is the
+        whole point of a bond profile."""
+        pts = cg.bond_path(self.SPEC, y=0.0)
+        apex = max(p[2] for p in pts)
+        self.assertGreater(apex, max(self.SPEC.z_start, self.SPEC.z_end))
+
+    def test_apex_scales_with_bond_height(self):
+        tall = cg.BondSpec(**{**self.SPEC.__dict__, "height": 0.5})
+        self.assertGreater(
+            max(p[2] for p in cg.bond_path(tall, 0.0)),
+            max(p[2] for p in cg.bond_path(self.SPEC, 0.0)),
+        )
+
+    def test_bonds_are_spread_symmetrically_about_centre(self):
+        modeler = FakeModeler()
+        cg.build_wirebonds(modeler, self.SPEC, log=lambda _m: None)
+        ys = sorted({round(p[1], 6) for path in modeler.polylines for p in path})
+        self.assertEqual(ys, [-0.4, 0.0, 0.4])
+
+    def test_one_wire_per_bond_united_under_the_material_rule_name(self):
+        from eigen_mode_analyze import model_builder
+
+        modeler = FakeModeler()
+        created = cg.build_wirebonds(modeler, self.SPEC, log=lambda _m: None)
+        self.assertEqual(len(modeler.polylines), 3)
+        self.assertEqual(created, ["wirebond"])
+        patterns = [rule[0] for rule in model_builder.MATERIAL_RULES]
+        self.assertTrue(any(p in "wirebond" for p in patterns))
+
+    def test_no_bonds_requested_makes_nothing(self):
+        modeler = FakeModeler()
+        spec = cg.BondSpec(**{**self.SPEC.__dict__, "count": 0})
+        self.assertEqual(cg.build_wirebonds(modeler, spec, log=lambda _m: None), [])
+        self.assertEqual(modeler.polylines, [])

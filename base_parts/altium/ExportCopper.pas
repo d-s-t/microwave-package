@@ -74,11 +74,19 @@ Var
 Begin
     Result := 0;
 
-    { Close any copy already open, or Altium hands back an in-memory
-      document that may be a stale one from an earlier run. }
+    { Close EVERY copy already open, not just one. Documents accumulate
+      across runs all claiming the same path, and closing a single one
+      still leaves Altium free to hand back another -- which is how this
+      export once reported a board as it stood before its bond fingers
+      were added. Bounded, so a document that refuses to close cannot
+      spin here forever. }
     Try
-        Doc := Client.GetDocumentByPath(Dir + FileName);
-        If Doc <> Nil Then Client.CloseDocument(Doc);
+        For i := 1 To 10 Do
+        Begin
+            Doc := Client.GetDocumentByPath(Dir + FileName);
+            If Doc = Nil Then Break;
+            Client.CloseDocument(Doc);
+        End;
     Except
     End;
 

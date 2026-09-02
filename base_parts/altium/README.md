@@ -58,16 +58,35 @@ on `Undeclared identifier: GetCurrentPCBBoard` before any `Try` can catch it.
 Open a document through `Client` *first*. A warm session hides this completely,
 because a document is already open.
 
-**5. Stale open documents lie to you.** `Client.OpenDocument` on a path Altium
-already has open returns the in-memory copy, and `GetCurrentPCBBoard` may return
-a *different*, previously focused board. A correctly generated 62-via board once
-read back as the previous run's single track. Close the document before reading
-it back:
+**5. Stale open documents lie to you.** This one cost two separate debugging
+rounds, and it is the failure mode most likely to waste your afternoon.
+
+`Client.OpenDocument` on a path Altium already has open returns the in-memory
+copy rather than reading the file, and `GetCurrentPCBBoard` may return a
+*different*, previously focused board. A correctly generated 62-via board once
+read back as the previous run's single track.
+
+Worse, closing *one* document is not enough. Documents accumulate across runs all
+claiming the same path, so the copper export later reported a board exactly as it
+stood one run earlier — before its bond fingers existed — while the file on disk
+was perfectly correct. Drain them:
 
 ```pascal
-Doc := Client.GetDocumentByPath(Path);
-If Doc <> Nil Then Client.CloseDocument(Doc);
+For i := 1 To 10 Do
+Begin
+    Doc := Client.GetDocumentByPath(Path);
+    If Doc = Nil Then Break;
+    Client.CloseDocument(Doc);
+End;
 ```
+
+Better still, close each document as soon as it is saved, so stale copies never
+accumulate in the first place. The generator does this.
+
+The general lesson: **measure the file, not the session.** `GenerateFromParams`
+counts its own primitives in memory before saving and `VerifyGenerated` counts
+them again from disk, because "the objects were never added" and "they were added
+but something else was read back" look identical from the outside.
 
 ## API spellings that work
 
@@ -156,6 +175,17 @@ probe enumerated 262 vias on the reference board) and rebuild copper directly in
 HFSS with PyAEDT. SolidWorks keeps building the box, lid, vacuum and substrates,
 and keeps its mates; only copper moves.
 
-Also found: AD26 has **native wire-bond objects** (`IPCB_Wirebond`, JEDEC
-templates, clearance-rule checked, and included in STEP/Parasolid export), which
-removes the hand-built SolidWorks bond model from the plan.
+### Wire bonds are modelled but not scriptable
+
+AD26 clearly models bond wires: it has wirebond rules, violation types
+(`eViolation_WirebondLength`, `eViolation_BondFingerToWireAlignment`), JEDEC
+profile constants, and export support. But there is **no wirebond entry in the
+scriptable object-id enum at all** — of its 52 object ids, none is a wirebond, so
+`PCBObjectFactory` cannot create one. The same partial exposure that blocked the
+3D exporter.
+
+This turned out not to matter. A bond is EM geometry rather than layout, so
+`copper_geometry.build_wirebonds` builds the loops directly in HFSS from
+`bond_count`, `bond_height` and `bond_wire_diameter`, where the arc profile can
+be exactly what the field solve needs. What the layout owes the bonds is the pads
+at each end, and those the generator does place.

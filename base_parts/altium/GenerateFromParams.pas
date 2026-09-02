@@ -224,6 +224,76 @@ Begin
     Say(Tag + '_inmem_regions=' + IntToStr(nR));
 End;
 
+{ A ring of stitching vias around the chip pocket.
+
+  The ring deliberately BREAKS where the CPW crosses it. A via dropped
+  into the signal corridor would short the line to ground, and the
+  generator would cheerfully report success while producing a dead
+  board. `Corridor` is the half-height of the keep-out: trace plus gap
+  plus a via radius of margin. }
+Function AddShieldRing(Board : IPCB_Board;
+                       HalfX, HalfY, ViaDia, ViaPitch, Corridor : Double) : Integer;
+Var
+    X, Y : Double;
+    n    : Integer;
+Begin
+    n := 0;
+
+    { Top and bottom runs: full width, no corridor to worry about. }
+    X := -HalfX;
+    While X <= HalfX Do
+    Begin
+        AddVia(Board, X,  HalfY, ViaDia, ViaDia / 2.0);
+        AddVia(Board, X, -HalfY, ViaDia, ViaDia / 2.0);
+        n := n + 2;
+        X := X + ViaPitch;
+    End;
+
+    { Left and right runs: skip anything inside the signal corridor. }
+    Y := -HalfY + ViaPitch;
+    While Y < HalfY Do
+    Begin
+        If Abs(Y) > Corridor Then
+        Begin
+            AddVia(Board, -HalfX, Y, ViaDia, ViaDia / 2.0);
+            AddVia(Board,  HalfX, Y, ViaDia, ViaDia / 2.0);
+            n := n + 2;
+        End;
+        Y := Y + ViaPitch;
+    End;
+
+    Result := n;
+End;
+
+{ Bond fingers: the landing pads the wire bonds will run to.
+
+  The bonds themselves are NOT drawn here. AD26 clearly models bond
+  wires -- it has wirebond rules, violation types, JEDEC profile
+  constants and export support -- but there is no wirebond entry in the
+  scriptable object-id enum at all. Of its 52 object ids, none is a
+  wirebond, so PCBObjectFactory cannot make one. That is the same
+  partial exposure that blocked the 3D exporter.
+
+  It costs nothing, because a bond is EM geometry rather than layout:
+  copper_geometry builds the loops directly in HFSS from bond_count,
+  bond_height and bond_wire_diameter, where the arc profile can be made
+  exactly what the model needs. What the layout owes the bonds is the
+  pads at each end, which is what this places. }
+Function AddBondFingers(Board : IPCB_Board;
+                        X, PadPitch, Count, PadW, PadH : Double) : Integer;
+Var
+    i : Integer;
+    Y : Double;
+Begin
+    Result := 0;
+    For i := 0 To Round(Count) - 1 Do
+    Begin
+        Y := (i - (Count - 1) / 2.0) * PadPitch;
+        AddPad(Board, X, Y, PadW, PadH, eTopLayer);
+        Result := Result + 1;
+    End;
+End;
+
 Procedure GenerateFromParams;
 Var
     P            : TStringList;
@@ -237,7 +307,10 @@ Var
     PadW, PadH, PadPitch, BondCount : Double;
     PortCount, PortSpace, PortLen, PortWid : Double;
     PortX : Double;
+    ShieldInset, BondWire, BondHeight, BondSpan : Double;
     nVias : Integer;
+    nRing : Integer;
+    nBonds : Integer;
     i : Integer;
 Begin
     Rpt := TStringList.Create;
@@ -272,6 +345,10 @@ Begin
     PortSpace := ParamOf(P, 'port_space', 1.5);
     PortLen   := ParamOf(P, 'port_length', 5.1);
     PortWid   := ParamOf(P, 'port_width', 5.1);
+    ShieldInset := ParamOf(P, 'shield_ring_inset', 0.5);
+    BondWire    := ParamOf(P, 'bond_wire_diameter', 0.025);
+    BondHeight  := ParamOf(P, 'bond_height', 0.2);
+    BondSpan    := ParamOf(P, 'bonding_clearence', 1.0);
     OutDir    := P.Values['out_dir'];
     Say('pcb_gap_um=' + FloatToStr(Gap * 1000));
     Say('chip_gap_um=' + FloatToStr(ChipGap * 1000));
@@ -325,6 +402,31 @@ Begin
     Except
     End;
 
+    { Shield ring around the chip pocket, broken where the CPW crosses. }
+    PCBServer.PreProcess;
+    Try
+        nRing := AddShieldRing(Board,
+                               ChipHalfL + ShieldInset, ChipHalfS + ShieldInset,
+                               ViaDia, ViaPitch,
+                               Trace / 2.0 + Gap + ViaDia / 2.0);
+        Say('package_shield_vias=' + IntToStr(nRing));
+    Except
+        Say('package_shield_vias=FAIL');
+    End;
+    PCBServer.PostProcess;
+
+    { Bond fingers facing the die, one row each side. The wires
+      themselves are built in HFSS -- see AddBondFingers. }
+    PCBServer.PreProcess;
+    Try
+        nBonds := AddBondFingers(Board, -ChipHalfL - BondSpan, PadPitch, BondCount, PadW, PadH)
+                + AddBondFingers(Board,  ChipHalfL + BondSpan, PadPitch, BondCount, PadW, PadH);
+        Say('package_bond_fingers=' + IntToStr(nBonds));
+    Except
+        Say('package_bond_fingers=FAIL');
+    End;
+    PCBServer.PostProcess;
+
     ReportCounts(Board, 'package');
 
     If OutDir <> '' Then
@@ -333,6 +435,11 @@ Begin
             Doc.SetFileName(OutDir + '\package.PcbDoc');
             Doc.DoFileSave('');
             Say('saved_package=ok');
+            { Close it once saved. Documents left open accumulate across
+              runs, all claiming the same path, and a later reader can
+              be handed a previous run's copy -- which is how an export
+              once reported the board before its bond fingers existed. }
+            Client.CloseDocument(Doc);
         Except
             Say('saved_package=FAIL');
         End;
@@ -386,6 +493,7 @@ Begin
                 ChipDoc.SetFileName(OutDir + '\chip.PcbDoc');
                 ChipDoc.DoFileSave('');
                 Say('saved_chip=ok');
+                Client.CloseDocument(ChipDoc);
             Except
                 Say('saved_chip=FAIL');
             End;

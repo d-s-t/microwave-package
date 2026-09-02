@@ -310,3 +310,70 @@ def _unite_as(modeler, parts: Sequence[str], name: str) -> List[str]:
         modeler.unite(parts)
     modeler[parts[0]].name = name
     return [name]
+
+
+# --- wire bonds -------------------------------------------------------
+#
+# Bonds are built here rather than in Altium. AD26 models bond wires --
+# it has wirebond rules, violation types and JEDEC profile constants --
+# but exposes no wirebond entry in its scriptable object-id enum, so a
+# script cannot create one. That turned out not to matter: a bond is EM
+# geometry, not layout, and building it here means the loop profile is
+# exactly what the model needs and the solid is named `wirebond`, which
+# is what the material rules look for.
+
+
+@dataclass(frozen=True)
+class BondSpec:
+    """One row of bonds, from a board pad across to a die pad."""
+    x_start: float
+    x_end: float
+    z_start: float
+    z_end: float
+    count: int
+    pitch: float
+    height: float
+    diameter: float
+
+
+def bond_path(spec: BondSpec, y: float, segments: int = 12) -> List[List[float]]:
+    """Points along one bond loop.
+
+    A real bond leaves the pad steeply, arcs over, and comes down onto
+    the die -- it is not a straight line, and the height of the loop is
+    what keeps it clear of the die edge. A half sine gives that shape
+    with the apex at `height` above the higher of the two ends, which is
+    close enough to a JEDEC profile for a field solve and needs no
+    special-casing when the two ends sit at different heights.
+    """
+    import math
+
+    points = []
+    for i in range(segments + 1):
+        t = i / segments
+        x = spec.x_start + (spec.x_end - spec.x_start) * t
+        z = spec.z_start + (spec.z_end - spec.z_start) * t
+        z += spec.height * math.sin(math.pi * t)
+        points.append([x, y, z])
+    return points
+
+
+def build_wirebonds(modeler, spec: BondSpec, log=logger.info) -> List[str]:
+    """Create one row of bond wires as swept circular profiles."""
+    names = []
+    for i in range(spec.count):
+        y = (i - (spec.count - 1) / 2.0) * spec.pitch
+        wire = modeler.create_polyline(
+            points=bond_path(spec, y),
+            xsection_type="Circle",
+            xsection_width=spec.diameter,
+        )
+        names.append(wire.name)
+
+    if not names:
+        return []
+    if len(names) > 1:
+        modeler.unite(names)
+    modeler[names[0]].name = "wirebond"
+    log(f"Built {spec.count} wire bonds as 'wirebond'")
+    return ["wirebond"]
