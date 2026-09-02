@@ -43,6 +43,18 @@ LABELS: Dict[str, str] = {
     "wall_width": "Box wall thickness",
     "wing_length": "Mounting wing length",
     "wing_width": "Mounting wing width",
+    # transmission line, shielding and bonds
+    "cpw_trace_width": "CPW trace width",
+    "via_diameter": "Via diameter",
+    "via_pitch": "Via fence pitch",
+    "via_gnd_clearance": "Via fence setback from gap",
+    "shield_ring_inset": "Shield ring inset",
+    "bond_pad_length": "Bond pad length",
+    "bond_pad_width": "Bond pad width",
+    "bond_pad_pitch": "Bond pad pitch",
+    "bond_count": "Wire bonds per side",
+    "bond_height": "Bond loop height",
+    "bond_wire_diameter": "Bond wire diameter",
     # metallisation
     "copper_thickness": "PCB copper thickness",
     "chip_metal_thickness": "Chip metal thickness",
@@ -58,10 +70,11 @@ LABELS: Dict[str, str] = {
 MICRON_PARAMETERS = {
     "pcb_width", "chip_width", "route_clearence", "chip_leg",
     "copper_thickness", "chip_metal_thickness",
+    "via_gnd_clearance", "bond_wire_diameter",
 }
 
 # Counts rather than lengths: no unit at all.
-INTEGER_PARAMETERS = {"port_count"}
+INTEGER_PARAMETERS = {"port_count", "bond_count"}
 
 # On/off flags in the equations file (a plain 0 or 1). The form gives
 # these their own named control instead of a value-or-range box, so they
@@ -126,6 +139,19 @@ GROUPS: List[dict] = [
             "port_count", "port_length", "port_width", "port_space",
             "chip_leg", "bonding_clearence",
             "route_width", "route_clearence", "route_chip_clearence",
+        ],
+    },
+    {
+        "title": "Transmission line and shielding",
+        "hint": "The CPW itself, the via fence that shields it, and the bonds across to the "
+                "chip. The CPW gap is absent on purpose: it is solved for 50 ohm from the "
+                "trace width, substrate and copper thickness rather than typed.",
+        "collapsed": False,
+        "names": [
+            "cpw_trace_width",
+            "via_diameter", "via_pitch", "via_gnd_clearance", "shield_ring_inset",
+            "bond_pad_length", "bond_pad_width", "bond_pad_pitch",
+            "bond_count", "bond_height", "bond_wire_diameter",
         ],
     },
     {

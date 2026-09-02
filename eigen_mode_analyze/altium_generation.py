@@ -174,3 +174,46 @@ def run_script(
     else:
         log("Altium script timed out having written nothing at all.")
     return False, partial
+
+
+# --- assembling what the generator needs -------------------------------
+#
+# The equation file holds drawn dimensions. The layout generator needs a
+# few things that are derived rather than drawn -- above all the CPW gap,
+# which is solved for 50 ohm rather than typed, and solved separately per
+# substrate because Rogers and silicon do not behave alike.
+
+def build_params(
+    values: Dict[str, float],
+    mat_pcb: str = "Rogers TMM 10i (tm)",
+    mat_chip: str = "silicon",
+    target_z0: float = 50.0,
+) -> Dict[str, float]:
+    """Equation-file values plus the derived geometry Altium needs.
+
+    Adds `pcb_cpw_gap` and `chip_cpw_gap`, each solved for `target_z0`
+    on its own substrate with its own metal thickness. Both are recorded
+    rather than recomputed downstream, so the run keeps a record of the
+    geometry it actually built.
+    """
+    from . import cpw
+
+    out = dict(values)
+    trace = values["cpw_trace_width"]
+
+    out["pcb_cpw_gap"] = cpw.solve_gap_for_z0(
+        trace_width=trace,
+        substrate_height=values["pcb_width"],
+        eps_r=cpw.permittivity_of(mat_pcb),
+        z0=target_z0,
+        conductor_thickness=values.get("copper_thickness", 0.0),
+    )
+    out["chip_cpw_gap"] = cpw.solve_gap_for_z0(
+        trace_width=trace,
+        substrate_height=values["chip_width"],
+        eps_r=cpw.permittivity_of(mat_chip),
+        z0=target_z0,
+        conductor_thickness=values.get("chip_metal_thickness", 0.0),
+    )
+    out["target_z0"] = target_z0
+    return out

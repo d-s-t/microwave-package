@@ -44,6 +44,28 @@
 
 "distortion_y" = 1
 
+"cpw_trace_width"= 0.2	' width of the CPW signal trace (the gap is solved for 50 ohm, not typed)
+
+"via_diameter"= 0.3	' finished diameter of the ground-stitching vias
+
+"via_pitch"= 0.8	' centre-to-centre spacing of vias along the fence
+
+"via_gnd_clearance"= 0.15	' setback of the via fence from the edge of the CPW gap
+
+"shield_ring_inset"= 0.5	' setback of the shield ring from the chip pocket edge
+
+"bond_pad_length"= 0.3	' bonding pad size along the feedline
+
+"bond_pad_width"= 0.15	' bonding pad size across the feedline
+
+"bond_pad_pitch"= 0.4	' centre-to-centre spacing of the bonding pads
+
+"bond_count"= 3	' number of wire bonds per side
+
+"bond_height"= 0.2	' height of the bond loop apex above the pad
+
+"bond_wire_diameter"= 0.025	' bond wire diameter (25 um)
+
 "copper_thickness"= 0.035	' thickness of the PCB copper (35 um, 1 oz)
 
 "chip_metal_thickness"= 0.0002	' thickness of the chip conductor (200 nm)
