@@ -1,16 +1,16 @@
-"pcb_length"= 40	' length of the chip in the direction of the feadline
+"pcb_length"= 26.0	' length of the chip in the direction of the feadline
 
-"pcb_side"= 20   	' length of the chip in the other direction
+"pcb_side"= 10   	' length of the chip in the other direction
 
 "pcb_width"= 0.381	' thickness of the PCB (381 um)
 
 "wall_width"= 1 	' minimal width from the box walls
 
-"route_width"= 1	' The width of the trace on the lid for not touching the signal roates.
+"route_width"= 0.5	' The width of the trace on the lid for not touching the signal roates.
 
-"route_clearence"= 0.4	' The clearence depth of the trace on the lid for not touching the signal roates.
+"route_clearence"= 0.04	' The clearence depth of the trace on the lid for not touching the signal roates.
 
-"route_chip_clearence"= 1
+"route_chip_clearence"= 0
 
 "port_count"= 2
 
@@ -26,19 +26,26 @@
 
 "chip_width"= 0.381	' thickness of the chip (381 um)
 
-"pedestal_depth"= 1	' depth of the pedestal under the chip
+"pedestal_depth"= 0.0	' depth of the pedestal under the chip
 
 "chip_leg"= 0.8 	' size of the legs the chip lay on in case there is pedestal
 
-"wing_length"= 10	' Mounting wing size
+"wing_length"= 5	' Mounting wing size
 
 "wing_width"= 1	' mounting wing width
 
 "bonding_clearence"= 1
+
+"no_distortion" = 0 ' (boolean) when set to 1, no distortions are present. when set to 0, distortions are added to the box and holes to the PCB.
+
+"distortion_radius" = 0.95
+
+"distortion_x" = 0.1
+
+"distortion_y" = 0.8
 
 "box_height"= "wall_width" + "pedestal_depth" + "pcb_width"
 
 "box_length"= "pcb_length" + 2 * "wall_width"
 
 "box_side"= "pcb_side" + 2 * "wall_width"
-
