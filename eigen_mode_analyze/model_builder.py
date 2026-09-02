@@ -121,6 +121,45 @@ MATERIAL_RULES = [
 ]
 
 
+def build_copper(hfss, combo_dir: str, dimensions_txt_content: str, log=logger.info) -> None:
+    """Rebuild the layout's copper in the model, if the layout exported any.
+
+    Silently does nothing when there is no copper file: a run built from
+    a SolidWorks-only assembly is still perfectly valid, and was the only
+    kind of run until the Altium stage existed.
+    """
+    from . import copper_geometry, equations as eq
+
+    copper_path = os.path.join(combo_dir, "copper.txt")
+    if not os.path.isfile(copper_path):
+        log("No copper.txt for this combination -- building the model without copper.")
+        return
+
+    values = eq.get_numeric_parameters(dimensions_txt_content)
+    boards = copper_geometry.read_file(copper_path)
+
+    # The substrates sit centred on the assembly origin, so a board's
+    # copper needs no XY offset -- the datum the Altium generator keeps.
+    # Z is the only thing this side has to work out.
+    plans = [
+        ("package", "pcb", copper_geometry.Placement(
+            z_top=values.get("pcb_width", 0.381),
+            z_bottom=0.0,
+            thickness=values.get("copper_thickness", 0.035),
+        )),
+        ("chip", "chip", copper_geometry.Placement(
+            z_top=values.get("pcb_width", 0.381) + values.get("chip_width", 0.381),
+            z_bottom=values.get("pcb_width", 0.381),
+            thickness=values.get("chip_metal_thickness", 0.0002),
+        )),
+    ]
+    for board_name, prefix, placement in plans:
+        board = boards.get(board_name)
+        if board is None or not len(board):
+            continue
+        copper_geometry.build(hfss.modeler, board, placement, prefix=prefix, log=log)
+
+
 def assign_materials_and_boundaries(hfss, mat_settings: dict, log=logger.info) -> Dict[str, object]:
     """Give every solid in the imported model its material and boundary.
 
@@ -314,7 +353,13 @@ def build_and_queue(
         log(f"Importing {step_path}...")
         hfss.modeler.import_3d_cad(step_path)
 
-        objects_dict = assign_materials_and_boundaries(hfss, analysis_settings["materials"])
+        # Copper is not in the STEP -- Altium's export drops it, so it is
+        # rebuilt here from the geometry read out of the layout. This must
+        # happen BEFORE materials are assigned, or the copper bodies exist
+        # without one. See copper_geometry for why it works this way.
+        build_copper(hfss, combo_dir, dimensions_txt_content, log=log)
+
+        objects_dict = assign_materials_and_boundaries(hfss, analysis_settings["materials"], log=log)
         object_names = {key: obj.name for key, obj in objects_dict.items()}
 
         create_eigenmode_setup(hfss, dimensions_txt_content, analysis_settings)

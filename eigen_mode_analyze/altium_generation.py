@@ -217,3 +217,80 @@ def build_params(
     )
     out["target_z0"] = target_z0
     return out
+
+
+# --- the per-combination stage ----------------------------------------
+
+def generate_for_combo(
+    combo_dir: str,
+    values: Dict[str, float],
+    materials: Optional[Dict[str, str]] = None,
+    log: Callable[[str], None] = logger.info,
+) -> Tuple[bool, str]:
+    """Regenerate the boards for one combination and leave a copper.txt
+    in `combo_dir`. Returns (ok, reason).
+
+    Two Altium calls rather than one: the generator writes the boards,
+    then the exporter reads them back and dumps their copper. Keeping
+    them separate means a layout can be regenerated and inspected
+    without an export, and -- more usefully when something breaks -- the
+    report says which of the two failed.
+
+    A failure here is returned rather than raised. One combination whose
+    layout cannot be built should be recorded and skipped, exactly as a
+    failed STEP already is, not abort the whole sweep.
+    """
+    from . import paths
+
+    materials = materials or {}
+    params = build_params(
+        values,
+        mat_pcb=materials.get("mat_pcb", "Rogers TMM 10i (tm)"),
+        mat_chip=materials.get("mat_chip", "silicon"),
+    )
+    write_params(
+        str(paths.ALTIUM_PARAMS_FILE), params,
+        extra={"out_dir": str(paths.ALTIUM_OUT_DIR)},
+    )
+
+    ok, report = run_script(
+        str(paths.ALTIUM_GENERATOR), "GenerateFromParams",
+        str(paths.ALTIUM_GENERATE_REPORT), log=log,
+    )
+    if not ok:
+        return False, _describe(report, "Altium layout generation")
+
+    ok, report = run_script(
+        str(paths.ALTIUM_COPPER_EXPORTER), "ExportCopper",
+        str(paths.ALTIUM_COPPER_REPORT), log=log,
+    )
+    if not ok:
+        return False, _describe(report, "Altium copper export")
+
+    source = paths.ALTIUM_OUT_DIR / "copper.txt"
+    if not source.is_file():
+        return False, "Altium reported success but wrote no copper.txt"
+
+    os.makedirs(combo_dir, exist_ok=True)
+    destination = os.path.join(combo_dir, "copper.txt")
+    with open(source, "r", encoding="utf-8") as src:
+        content = src.read()
+    with open(destination, "w", encoding="utf-8") as dst:
+        dst.write(content)
+
+    # The copper belongs to this combination, so it is kept with it
+    # rather than left in the shared output folder to be overwritten by
+    # the next combination.
+    log(f"Copper for this combination written to {destination}")
+    return True, ""
+
+
+def _describe(report: Dict[str, str], what: str) -> str:
+    """Turn a partial sentinel into a sentence worth reading on the run
+    page. How far the script got is the only diagnostic Altium gives."""
+    if not report:
+        return f"{what} produced no output at all -- Altium may be showing a modal dialog."
+    if report.get("error"):
+        return f"{what} failed: {report['error']}"
+    reached = ", ".join(f"{k}={v}" for k, v in report.items())
+    return f"{what} did not finish. It got as far as: {reached}"

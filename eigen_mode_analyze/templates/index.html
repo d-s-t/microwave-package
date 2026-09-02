@@ -224,6 +224,15 @@
     <label>Queue poll interval (s) <input type="number" step="any" name="poll_seconds" value="{{ settings.poll_seconds }}"></label>
   </fieldset>
   <fieldset>
+    <legend>Geometry source</legend>
+    <label><input type="checkbox" name="use_altium" checked> Regenerate the PCB and chip layouts in Altium</label>
+    <p style="font-size:0.85em;opacity:0.75;margin:0.4em 0 0">
+      With this on, every combination rebuilds the boards from the equations file and
+      the model carries real copper, vias and shielding. With it off you get the older
+      SolidWorks-only geometry: no copper, and a far lighter mesh.
+    </p>
+  </fieldset>
+  <fieldset>
     <legend>Materials / boundaries</legend>
     <label>Box material <input type="text" name="mat_box" value="{{ materials.mat_box }}"></label><br>
     <label>PCB material <input type="text" name="mat_pcb" value="{{ materials.mat_pcb }}"></label><br>

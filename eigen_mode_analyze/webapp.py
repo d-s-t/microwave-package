@@ -324,6 +324,7 @@ def new_run():
         "student_version": "student_version" in request.form,
         "graphical": "graphical" in request.form,
         "poll_seconds": float(request.form.get("poll_seconds", 10.0)),
+        "use_altium": "use_altium" in request.form,
         "materials": {
             "mat_box": request.form.get("mat_box", "aluminum"),
             "mat_pcb": request.form.get("mat_pcb", "Rogers TMM 10i (tm)"),

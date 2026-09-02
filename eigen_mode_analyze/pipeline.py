@@ -60,7 +60,8 @@ def run_pipeline(run: Run, queue: "queue_common.QueuePaths", log=logger.info, st
     # already analysing report progress to the UI while the remaining
     # geometry is still being built. The STEP files themselves are still
     # produced one at a time: they share a single SolidWorks document.
-    log("Stage 1/4: generating STEP files, building AEDT models, and queuing analysis tasks...")
+    log("Stage 1/4: generating layouts in Altium, STEP files in SolidWorks, "
+        "building AEDT models, and queuing analysis tasks...")
     run.set_stage("generating_and_queuing")
 
     queuing_finished = threading.Event()
@@ -88,6 +89,8 @@ def run_pipeline(run: Run, queue: "queue_common.QueuePaths", log=logger.info, st
             step_generation.generate_step_files, combos, equations_path, assembly_path, run,
             log=log, parameter_defaults=parameter_defaults, on_step_done=queue_combo,
             stop_event=stop_event,
+            use_altium=analysis_settings.get("use_altium", True),
+            materials=analysis_settings.get("materials"),
         )
         if stop_event is None or not stop_event.is_set():
             # Anything whose STEP was already on disk from an earlier
@@ -187,6 +190,11 @@ DEFAULT_ANALYSIS_SETTINGS = {
     "student_version": True,
     "graphical": False,
     "poll_seconds": 10.0,
+    # Regenerate the PCB and chip layouts in Altium for every
+    # combination. Turning this off falls back to the SolidWorks-only
+    # geometry the pipeline built before Altium existed -- no copper, no
+    # vias, and a much lighter mesh.
+    "use_altium": True,
     "materials": {
         "mat_box": "aluminum",
         "mat_pcb": "Rogers TMM 10i (tm)",
@@ -222,6 +230,7 @@ def build_analysis_settings(args: argparse.Namespace) -> dict:
         "student_version": args.student_version,
         "graphical": args.graphical,
         "poll_seconds": args.poll_seconds,
+        "use_altium": args.use_altium,
         "materials": {
             "mat_box": args.mat_box,
             "mat_pcb": args.mat_pcb,
@@ -259,6 +268,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--mat-chip", type=str, default="silicon")
     parser.add_argument("--mat-vacuum", type=str, default="vacuum")
     parser.add_argument("--no-perfect-e-box", dest="perfect_e_box", action="store_false", default=True)
+    parser.add_argument("--no-altium", dest="use_altium", action="store_false", default=True,
+                        help="Skip layout generation and build the SolidWorks-only geometry")
     parser.add_argument("--mat-conductor-pcb", type=str, default="copper")
     parser.add_argument("--mat-conductor-chip", type=str, default="niobium")
     parser.add_argument("--no-perfect-e-conductors", dest="perfect_e_conductors",
