@@ -17,10 +17,25 @@ import threading
 import time
 from typing import Dict, List, Optional
 
+from . import constraints
+from . import equations as eq
 from . import paths
 from .sweep import SweepParameter, combinations, combo_id_for
 
 logger = logging.getLogger("eigen_mode_analyze")
+
+
+def _equation_file_values() -> Dict[str, float]:
+    """The equations file's own numeric values, as the base every
+    combination is layered on top of. An unreadable file is not fatal
+    here -- it only means the constraint check has nothing to work with,
+    and STEP generation will fail with a better message than this could.
+    """
+    try:
+        return eq.get_numeric_parameters(eq.read_file(str(paths.DEFAULT_EQUATIONS_FILE)))
+    except OSError:
+        logger.warning("Could not read %s to check geometry constraints.", paths.DEFAULT_EQUATIONS_FILE)
+        return {}
 
 
 class Run:
@@ -63,7 +78,14 @@ class Run:
             "analysis_settings": analysis_settings,
             "created_at": _dt.datetime.now().isoformat(timespec="seconds"),
         }
-        combos = combinations(sweep_params)
+        combos = combinations(sweep_params, parameter_defaults)
+
+        # Each combination's full geometry -- the equations file's values
+        # with the run's pinned values and then the combo's own on top --
+        # is checked before anything is built, so a combination that
+        # cannot physically fit is marked here and skipped later rather
+        # than failing somewhere inside SolidWorks.
+        base_values = _equation_file_values()
         run.state = {
             "stage": "created",
             "combos": {
@@ -72,6 +94,11 @@ class Run:
                     "step_status": None,
                     "step_path": None,
                     "step_error": None,
+                    # Why this combination will not be built, or None when
+                    # it is buildable (see constraints.py).
+                    "skip_reason": constraints.check_combination(
+                        {**base_values, **(parameter_defaults or {}), **combo}
+                    ),
                     "task_id": None,
                     "queue_status": None,
                     "post_status": None,
@@ -217,8 +244,17 @@ class Run:
             self.state["combos"][combo_id].update(fields)
             self.save_state()
 
+    def combo_path(self, combo_id: str) -> str:
+        """Where a combination's files live, without creating anything.
+
+        `combo_dir` makes the folder, which is what the pipeline wants but
+        not what a reader does -- the web UI looking over a few thousand
+        combinations should not leave a few thousand empty folders behind.
+        """
+        return os.path.join(self.run_dir, "models", combo_id)
+
     def combo_dir(self, combo_id: str) -> str:
-        d = os.path.join(self.run_dir, "models", combo_id)
+        d = self.combo_path(combo_id)
         os.makedirs(d, exist_ok=True)
         return d
 
@@ -244,6 +280,8 @@ class Run:
     def is_complete(self) -> bool:
         combos = self.state["combos"]
         return bool(combos) and all(
-            c.get("queue_status") == "failed" or c.get("post_status") in ("done", "failed")
+            c.get("skip_reason")
+            or c.get("queue_status") == "failed"
+            or c.get("post_status") in ("done", "failed")
             for c in combos.values()
         )

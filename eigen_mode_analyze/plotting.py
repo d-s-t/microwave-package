@@ -62,6 +62,59 @@ def label_for_column(column: str, sweep_param_names: List[str]) -> str:
     return "Combination" if column == "combo_id" else column
 
 
+def _as_key(value) -> str:
+    """One value rendered the same way on both sides of a filter match.
+
+    The filter travels through a URL as text while the table holds
+    floats, so 0.5 has to meet "0.5" and 1.0 has to meet "1" -- `%g` is
+    what the rest of the UI already prints these with.
+    """
+    try:
+        return f"{float(value):g}"
+    except (TypeError, ValueError):
+        return str(value)
+
+
+def filter_options(df: pd.DataFrame, sweep_param_names: List[str]) -> List[Dict]:
+    """The distinct value of each swept parameter, for the filter panel.
+
+    Only swept parameters get one: they are what a run varies, so they
+    are what there is any point picking apart. Values come back in
+    numeric order with the key the filter matches on alongside the label
+    the form shows.
+    """
+    options = []
+    for name in sweep_param_names:
+        column = parameter_meta.column_name(name)
+        if column not in df.columns:
+            continue
+        values = sorted(df[column].dropna().unique().tolist())
+        if len(values) < 2:
+            continue  # nothing to pick apart
+        options.append({
+            "column": column,
+            "label": parameter_meta.axis_label(name),
+            "values": [{"key": _as_key(v), "label": _as_key(v)} for v in values],
+        })
+    return options
+
+
+def apply_filters(df: pd.DataFrame, filters: Dict[str, List[str]]) -> pd.DataFrame:
+    """Keep only the rows whose swept values are still selected.
+
+    `filters` maps a column to the values left ticked. A column that is
+    not mentioned is not filtered at all; a column with nothing ticked
+    genuinely means "none of them", and the empty result is what the
+    plot then says.
+    """
+    for column, allowed in filters.items():
+        if column not in df.columns:
+            continue
+        wanted = set(allowed)
+        df = df[df[column].map(_as_key).isin(wanted)]
+    return df
+
+
 def figure_html(
     df: pd.DataFrame,
     sweep_param_names: List[str],
@@ -101,6 +154,10 @@ def figure_html(
     figure = px.scatter(
         df, x=x, y=y, color=color,
         hover_data=[c for c in ("combo_id", "mode", *options) if c in df.columns and c not in (x, y)],
+        # always first in each point's customdata, whatever hover_data
+        # holds -- the run page reads it back to tell which combination
+        # was clicked (see the click bridge below).
+        custom_data=["combo_id"] if "combo_id" in df.columns else None,
         labels=labels,
         template="plotly_dark" if dark else "plotly_white",
     )
@@ -125,9 +182,30 @@ def figure_html(
         "<!doctype html><html><head><meta charset='utf-8'>"
         f"<script src='{plotlyjs_src}'></script>"
         "<style>html,body{margin:0;padding:0;background:transparent;"
-        f"color-scheme:{scheme}}}</style>"
-        f"</head><body>{fragment}</body></html>"
+        f"color-scheme:{scheme}}}"
+        ".js-plotly-plot .plotly .cursor-crosshair{cursor:pointer}</style>"
+        f"</head><body>{fragment}{_CLICK_BRIDGE}</body></html>"
     )
+
+
+# The figure is embedded in an iframe, so a click on a point has to be
+# handed out to the run page that owns the panel. Same origin either way;
+# postMessage keeps it to one explicit channel rather than reaching
+# across documents. combo_id is customdata[0] -- see `custom_data` above.
+_CLICK_BRIDGE = """
+<script>
+(function () {
+  var plot = document.querySelector('.js-plotly-plot');
+  if (!plot || !plot.on) { return; }
+  plot.on('plotly_click', function (event) {
+    var point = event && event.points && event.points[0];
+    var custom = point && point.customdata;
+    var comboId = Array.isArray(custom) ? custom[0] : custom;
+    if (!comboId) { return; }
+    parent.postMessage({ source: 'eigenmode-plot', comboId: String(comboId) }, '*');
+  });
+})();
+</script>"""
 
 
 def _interpolate(points, axis: int, resolution: int = 120):
@@ -149,11 +227,18 @@ def _interpolate(points, axis: int, resolution: int = 120):
     return x, y, grid_z, across
 
 
+# How many chips the "all variants" grid draws. Every extra panel is a
+# full interpolated surface, so a few hundred of them is tens of
+# megabytes and several seconds -- and unreadable besides.
+MAX_HEATMAP_PANELS = 12
+
+
 def chip_heatmap_html(
     entries: List[dict],
     dark: bool = False,
     plotlyjs_src: Optional[str] = None,
     columns: int = 3,
+    note: Optional[str] = None,
 ) -> str:
     """Chip top-face |E| as a heatmap, for one variant or all of them.
 
@@ -175,10 +260,16 @@ def chip_heatmap_html(
     cols = 1 if count == 1 else min(columns, count)
     rows = (count + cols - 1) // cols
 
+    # Plotly caps the gap between panels at 1/(rows-1), so a sweep with
+    # hundreds of combinations would otherwise fail outright rather than
+    # draw anything. Shrink the gap to fit, and give each row a fixed
+    # height so a tall grid stays readable instead of being squashed.
+    spacing = min(0.12, 0.8 / (rows - 1)) if rows > 1 else 0.0
+
     figure = make_subplots(
         rows=rows, cols=cols,
         subplot_titles=[e["label"] for e in usable],
-        horizontal_spacing=0.08, vertical_spacing=0.12 if rows > 1 else 0.0,
+        horizontal_spacing=0.08, vertical_spacing=spacing,
     )
 
     axis_names = None
@@ -213,12 +304,16 @@ def chip_heatmap_html(
         return figure.to_html(include_plotlyjs=True, full_html=True)
     fragment = figure.to_html(include_plotlyjs=False, full_html=False)
     scheme = "dark" if dark else "light"
+    banner = (
+        f"<p style='margin:.4rem .6rem;font:13px system-ui;opacity:.7'>{note}</p>"
+        if note else ""
+    )
     return (
         "<!doctype html><html><head><meta charset='utf-8'>"
         f"<script src='{plotlyjs_src}'></script>"
         "<style>html,body{margin:0;padding:0;background:transparent;"
         f"color-scheme:{scheme}}}</style>"
-        f"</head><body>{fragment}</body></html>"
+        f"</head><body>{banner}{fragment}</body></html>"
     )
 
 

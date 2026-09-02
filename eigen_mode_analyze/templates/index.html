@@ -37,6 +37,17 @@
   details.collapsible[open] summary{margin-bottom:.3rem}
   details.collapsible fieldset{margin-top:.6rem}
   .setting-note{margin:.15rem 0 .5rem 1.6rem;max-width:46rem}
+  /* A run with no distorted combination never uses these, so they are
+     dimmed rather than hidden -- what you typed stays visible. */
+  #distortion-geometry.unused{opacity:.5}
+  #distortion-geometry .unused-note{display:none;font-style:italic}
+  #distortion-geometry.unused .unused-note{display:inline}
+  /* How much room is left for each distortion parameter. Recomputed as
+     the form changes, and turned red once a box is past its own limit --
+     that combination would be skipped rather than built. */
+  td.limit-cell{color:var(--muted);font-size:.85em;white-space:normal;max-width:15rem}
+  td.limit-cell.over{color:var(--bad);font-weight:600}
+  input.range.over{border-color:var(--bad)}
 
   /* Start run follows you down the form -- it is a long page and the
      button used to sit past the end of it. It stays inside the form, so
@@ -111,9 +122,9 @@
     start:stop:step ("0:10:2"). More than one box holding a range sweeps every combination of them
     (cartesian product) -- watch the combination count, since each one is a full model build +
     analysis. Click a drawing to see which dimension a parameter drives.</p>
-  {% macro parameter_rows(names) -%}
+  {% macro parameter_rows(names, limits=None) -%}
   <table>
-    <tr><th>Drawing</th><th>Parameter</th><th>Value or range</th></tr>
+    <tr><th>Drawing</th><th>Parameter</th><th>Value or range</th>{% if limits %}<th>Fits while</th>{% endif %}</tr>
     {% for name in names %}
     {% set value = parameters[name] %}
     {% set label = meta.label_for(name) %}
@@ -136,6 +147,9 @@
                aria-label="{{ label }}, currently {{ meta.format_value(name, value) }}{% if unit %} {{ unit }}{% endif %}">
         <span class="unit{% if meta.is_micron(name) %} unit-micron{% endif %}">{{ unit or "" }}</span>
       </td>
+      {% if limits %}
+      <td class="limit-cell" data-limit-for="{{ name }}">{{ limits[name].note if name in limits }}</td>
+      {% endif %}
     </tr>
     {% endfor %}
   </table>
@@ -154,6 +168,36 @@
     {{ parameter_rows(group.names) }}
     {% endif %}
   {% endfor %}
+
+  {% if has_distortion_param %}
+  <h4>Distortions</h4>
+  <p class="muted">The clean geometry has no distortions (<code>no_distortion = 1</code>); the
+    distorted variant adds distortions to the box and holes to the PCB (<code>no_distortion = 0</code>).
+    Pick one for the whole run, or build every combination both ways.</p>
+  <fieldset class="distortion-modes">
+    <label><input type="radio" name="distortion_mode" value="none"
+      {% if distortion_mode == 'none' %}checked{% endif %}> Without distortions</label><br>
+    <label><input type="radio" name="distortion_mode" value="with"
+      {% if distortion_mode == 'with' %}checked{% endif %}> With distortions</label><br>
+    <label><input type="radio" name="distortion_mode" value="both"
+      {% if distortion_mode == 'both' %}checked{% endif %}> Both versions
+      <span class="muted">-- doubles the combination count</span></label>
+  </fieldset>
+
+  {% if distortion_group %}
+  <div id="distortion-geometry">
+    <h4>{{ distortion_group.title }}
+      <span class="muted unused-note">-- not used by this run</span></h4>
+    <p class="muted">{{ distortion_group.hint }}</p>
+    <p class="muted">A combination whose distortion cannot fit on the PCB is skipped rather than
+      built -- the run page says which one and why. The radius has to fit with the chip, its wire
+      bonds and the ports along the feedline, and with the signal route across it; each offset then
+      has to fit what is left on its own axis. The last column is the room actually left, and follows
+      whatever you type above -- widen the PCB and it grows.</p>
+    {{ parameter_rows(distortion_group.names, limits=distortion_limits) }}
+  </div>
+  {% endif %}
+  {% endif %}
 
   {% set materials = settings.materials or {} %}
   <details class="collapsible">
@@ -255,6 +299,131 @@
     if (event.key === 'Escape' && !box.hidden) { close(); }
   });
 })();
+
+// The distortion geometry only applies to combinations built distorted.
+// Picking "Without distortions" dims it, so it is obvious those boxes
+// will not be used before the run is started rather than afterwards.
+(function () {
+  var section = document.getElementById('distortion-geometry');
+  if (!section) { return; }
+  var radios = document.querySelectorAll('input[name="distortion_mode"]');
+
+  function sync() {
+    var chosen = document.querySelector('input[name="distortion_mode"]:checked');
+    section.classList.toggle('unused', !!chosen && chosen.value === 'none');
+  }
+
+  radios.forEach(function (radio) { radio.addEventListener('change', sync); });
+  sync();
+})();
+
+// How much room is left for each distortion parameter, kept in step with
+// what is being typed. The limits move with the PCB and chip dimensions
+// as much as with the distortion itself, so a number rendered once would
+// be wrong the moment any of those boxes changed. Mirrors
+// constraints.max_values() -- see that module for the inequalities.
+{% if distortion_limits %}
+(function () {
+  var spec = {{ constraint_payload | tojson }};
+  var cells = document.querySelectorAll('td.limit-cell[data-limit-for]');
+  if (!cells.length) { return; }
+
+  function box(name) { return document.getElementById('range_' + name); }
+
+  // What a range box is worth, as [smallest, largest] it can produce.
+  // Empty means the equations file's own value, which the placeholder
+  // holds. Mirrors sweep.expand_values -- only the ends are needed.
+  function span(name) {
+    var input = box(name);
+    if (!input) { return null; }
+    var text = (input.value.trim() || input.placeholder.trim());
+    if (!text) { return null; }
+
+    var numbers;
+    if (text.indexOf(':') !== -1) {
+      var parts = text.split(':').map(Number);
+      if (parts.length < 2 || parts.length > 3 || parts.some(isNaN)) { return null; }
+      var start = parts[0], stop = parts[1], step = parts.length === 3 ? parts[2] : 1;
+      if (!step) { return null; }
+      var count = Math.round((stop - start) / step);
+      if (count < 0) { return null; }
+      numbers = [start, start + count * step];
+    } else {
+      numbers = text.split(',').map(function (p) { return Number(p.trim()); }).filter(function (n) { return !isNaN(n); });
+      if (!numbers.length) { return null; }
+    }
+    var lo = Math.min.apply(null, numbers), hi = Math.max.apply(null, numbers);
+    if (spec.micron[name]) { lo /= 1000; hi /= 1000; }   // typed in µm, weighed in mm
+    return [lo, hi];
+  }
+
+  // Worst case, so a limit shown for a swept run holds for every
+  // combination it will produce: every term at its largest, against the
+  // smallest the half-span can be.
+  function largest(range) { var s = span(range); return s ? s[1] : 0; }
+  function smallest(range) { var s = span(range); return s ? s[0] : 0; }
+
+  function headroom(constraint, free, zeroed) {
+    var used = 0;
+    for (var name in constraint.terms) {
+      if (name === free) { continue; }
+      if (zeroed && zeroed.indexOf(name) !== -1) { continue; }
+      used += constraint.terms[name] * largest(name);
+    }
+    var limit = smallest(constraint.limitParam) * constraint.limitFactor;
+    return (limit - used) / constraint.terms[free];
+  }
+
+  function maxima() {
+    var offsets = spec.constraints.map(function (c) { return c.offsetParam; });
+    var result = {};
+    result[spec.radiusParam] = Math.min.apply(null, spec.constraints.map(function (c) {
+      return headroom(c, spec.radiusParam, offsets);
+    }));
+    spec.constraints.forEach(function (c) {
+      result[c.offsetParam] = headroom(c, c.offsetParam, null);
+    });
+    return result;
+  }
+
+  function format(value) {
+    return Number(value.toFixed(4)).toString();
+  }
+
+  function render() {
+    var limits = maxima();
+    cells.forEach(function (cell) {
+      var name = cell.dataset.limitFor;
+      var maximum = limits[name];
+      var input = box(name);
+      if (maximum === undefined || !isFinite(maximum)) { cell.textContent = ''; return; }
+
+      if (maximum <= 0) {
+        cell.textContent = 'no room for this on the current PCB';
+      } else if (name === spec.radiusParam) {
+        cell.textContent = 'must stay under ' + format(maximum) + ' mm (with both offsets at 0)';
+      } else {
+        cell.textContent = 'must stay under ' + format(maximum) + ' mm (at this radius)';
+      }
+
+      // Flag the box when what is in it already exceeds the limit --
+      // those combinations get skipped rather than built.
+      var wanted = span(name);
+      var over = !!wanted && wanted[1] >= maximum;
+      cell.classList.toggle('over', over);
+      if (input) { input.classList.toggle('over', over); }
+    });
+  }
+
+  // Any box the inequalities mention can move these numbers, not just
+  // the distortion's own three.
+  Object.keys(spec.micron).forEach(function (name) {
+    var input = box(name);
+    if (input) { input.addEventListener('input', render); }
+  });
+  render();
+})();
+{% endif %}
 </script>
 </body>
 </html>

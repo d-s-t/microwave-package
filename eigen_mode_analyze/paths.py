@@ -23,3 +23,8 @@ PARAMETER_DRAWINGS_DIR = BASE_PARTS_DIR / "parameters_visual"
 # here -- one subfolder per run_id. This is output, not source, so it's
 # excluded in .gitignore (these get backed up elsewhere -- see README).
 RUNS_ROOT = PACKAGE_DIR / "runs"
+
+# Third-party JS/WASM for the in-browser STEP viewer (three.js and
+# occt-import-js). Not committed -- populated by `fetch_vendor.py`, and
+# the web UI just hides the "3D view" button when it is absent.
+VENDOR_DIR = PACKAGE_DIR / "vendor"

@@ -97,6 +97,8 @@ def run_pipeline(run: Run, queue: "queue_common.QueuePaths", log=logger.info, st
                     break
                 if combo.get("task_id"):
                     continue
+                if combo.get("skip_reason"):
+                    continue  # already reported by generate_step_files
                 if combo.get("step_status") != "done":
                     log(f"Skipping {combo_id} -- STEP generation did not succeed for it.")
                     continue

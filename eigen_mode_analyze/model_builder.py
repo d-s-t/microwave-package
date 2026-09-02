@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+import time
 from typing import Callable, Dict, List, Optional
 
 from ansys_analyze_common import queue_common
@@ -137,8 +138,92 @@ def create_eigenmode_setup(hfss, dimensions_txt_content: str, analysis_settings:
     setup.props["MaximumPasses"] = analysis_settings["max_passes"]
     setup.props["MinimumPasses"] = analysis_settings["min_passes"]
     setup.props["MinimumConvergedPasses"] = analysis_settings["min_converged"]
-    setup.props["MaximumDeltaFreqPerPass"] = analysis_settings["max_delta_f"]
+    setup.props["MaxDeltaFreq"] = analysis_settings["max_delta_f"]
     return setup
+
+
+def project_file_for(run, combo_id: str) -> str:
+    """Where this combo's AEDT project lives -- and, because AEDT names a
+    project after its file, what that project is called inside the AEDT
+    session.
+
+    The name carries the run id because the AEDT session is shared and
+    long-lived (`new_desktop=False`): a project some earlier run left
+    open -- a crash, a stopped run, a window the user still has on
+    screen -- stays in that session under its own name. Combo ids repeat
+    from run to run (a sweep with nothing swept calls its only combo
+    "default" every single time), so a plain `<combo_id>.aedt` puts two
+    same-named projects in one session, and from that point on AEDT
+    refuses every command that addresses a project by name ("Cannot
+    perform command because multiple projects are named default") --
+    including the close below, which then dies inside PyAEDT on the
+    None it gets handed back.
+
+    A project an earlier version of this code already wrote under the
+    old `<combo_id>.aedt` name keeps that name, so resuming a run
+    started before this change reopens its project instead of building a
+    second one beside it -- the queue copy wants exactly one .aedt file
+    per combo folder.
+    """
+    combo_dir = run.combo_dir(combo_id)
+    legacy_path = os.path.join(combo_dir, f"{combo_id}.aedt")
+    if os.path.exists(legacy_path):
+        return legacy_path
+    return os.path.join(combo_dir, f"{run.run_id}__{combo_id}.aedt")
+
+
+def close_project_safely(hfss, log: Callable[[str], None] = logger.info) -> bool:
+    """Close whatever project `hfss` has open, without ever raising.
+
+    PyAEDT's own `close_project()` asks the session for the project
+    object and calls `.GetPath()` on it unchecked, so when the session
+    cannot hand one back -- the project is already gone, or its name is
+    ambiguous -- it dies with `AttributeError: 'NoneType' object has no
+    attribute 'GetPath'` rather than reporting a close that failed. By
+    the time we close, the model is built and saved to disk; a close
+    going wrong must not take the whole run down with it.
+
+    Returns True when the project is no longer open in AEDT.
+    """
+    if hfss is None:
+        return True
+
+    try:
+        name = hfss.project_name
+    except Exception:
+        name = None
+    if not name:
+        log("AEDT reports no open project -- nothing to close.")
+        return True
+
+    try:
+        if hfss.close_project(name=name) is False:
+            log(f"AEDT does not have a project named {name} open -- nothing to close.")
+        return True
+    except Exception as exc:
+        log(f"PyAEDT could not close project {name} ({exc}); asking the desktop to close it directly.")
+
+    try:
+        hfss.odesktop.CloseProject(name)
+        return True
+    except Exception as exc:
+        log(f"Failed to close AEDT project {name}: {exc}")
+        return False
+
+
+def wait_until_unlocked(project_path: str, timeout: float = 15.0) -> bool:
+    """Wait for AEDT to drop the project's `.lock` file, which is what it
+    leaves behind while the project is still open. The lock travels with
+    the folder when the project is copied to the queue, and the worker
+    refuses to open a locked project -- so a project that never unlocks
+    is one that must not be queued."""
+    lock_path = f"{project_path}.lock"
+    deadline = time.monotonic() + timeout
+    while os.path.exists(lock_path):
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.5)
+    return True
 
 
 def build_and_queue(
@@ -163,7 +248,7 @@ def build_and_queue(
     from ansys.aedt.core import Hfss
 
     combo_dir = run.combo_dir(combo_id)
-    project_path = os.path.join(combo_dir, f"{combo_id}.aedt")
+    project_path = project_file_for(run, combo_id)
 
     hfss = Hfss(
         project=project_path,
@@ -172,6 +257,13 @@ def build_and_queue(
         new_desktop=False,
         student_version=student_version,
         non_graphical=not graphical,
+        # A run that died with its project open leaves an .aedt.lock behind,
+        # and PyAEDT refuses to reopen a locked project -- which would make
+        # that combo unresumable forever. The lock is only reached when the
+        # project is NOT already open in this session (PyAEDT attaches to it
+        # instead when it is), and these projects live in the run's own
+        # folder where nothing else opens them, so a lock here is a leftover.
+        remove_lock=True,
     )
 
     try:
@@ -192,8 +284,20 @@ def build_and_queue(
         create_eigenmode_setup(hfss, dimensions_txt_content, analysis_settings)
 
         hfss.save_project(project_path)
-        hfss.close_project(name=hfss.project_name)
+        closed = close_project_safely(hfss, log=log)
         hfss = None
+        # The lock file, not the close call, is what decides whether this
+        # combo can be queued: it is what the worker trips over.
+        if not wait_until_unlocked(project_path):
+            log(
+                f"{combo_id} was built and saved, but AEDT still holds "
+                f"{os.path.basename(project_path)} open -- not queueing it, because the worker "
+                f"cannot open a locked project. Close it in AEDT (or restart AEDT), then run "
+                f"again to pick it up."
+            )
+            return
+        if not closed:
+            log(f"{combo_id}'s project unlocked despite that close error -- queueing it anyway.")
 
         task_id = queue_common.new_task_id("eigenmode_analyze")
         relative_project_file = queue_common.copy_project_to_queue(queue, task_id, combo_dir)
@@ -246,8 +350,4 @@ def build_and_queue(
         log(f"Queued analysis task {task_id} for {combo_id}: {task_path}")
 
     finally:
-        if hfss is not None:
-            try:
-                hfss.close_project(name=hfss.project_name)
-            except Exception as e:
-                log(f"Failed to close project gracefully: {e}")
+        close_project_safely(hfss, log=log)

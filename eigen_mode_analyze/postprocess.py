@@ -26,6 +26,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 from ansys_analyze_common import queue_common
 
+from .model_builder import close_project_safely
 from .post_processing import run_post_processing
 
 logger = logging.getLogger("eigen_mode_analyze")
@@ -166,11 +167,7 @@ def postprocess_task(
 
         return {"modes": modes_data, "num_modes_found": len(modes_data)}
     finally:
-        try:
-            if hfss is not None and getattr(hfss, "project_name", None):
-                hfss.close_project(name=hfss.project_name)
-        except Exception:
-            log("Failed to close project cleanly after post-processing.")
+        close_project_safely(hfss, log=log)
 
 
 def copy_tree_verified(source: str, destination: str) -> List[str]:

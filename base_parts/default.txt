@@ -38,11 +38,11 @@
 
 "no_distortion" = 0 ' (boolean) when set to 1, no distortions are present. when set to 0, distortions are added to the box and holes to the PCB.
 
-"distortion_radius" = 0.95
+"distortion_radius" = 1.0
 
-"distortion_x" = 0.1
+"distortion_x" = 0.0
 
-"distortion_y" = 0.8
+"distortion_y" = 1.2
 
 "box_height"= "wall_width" + "pedestal_depth" + "pcb_width"
 

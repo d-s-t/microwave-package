@@ -26,6 +26,10 @@ def build_combined_results(run, queue: "queue_common.QueuePaths", log: Callable[
     skipped = []
 
     for combo_id, combo in run.state["combos"].items():
+        if combo.get("skip_reason"):
+            skipped.append((combo_id, "skipped -- geometry does not fit"))
+            continue
+
         task_id = combo.get("task_id")
         if not task_id:
             skipped.append((combo_id, "not queued"))

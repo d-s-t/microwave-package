@@ -16,6 +16,7 @@ the drawing named after each one in `base_parts/parameters_visual/`).
 """
 from __future__ import annotations
 
+import re
 from typing import Dict, List, Optional
 
 # Equation-file name -> what the web UI calls it.
@@ -42,6 +43,11 @@ LABELS: Dict[str, str] = {
     "wall_width": "Box wall thickness",
     "wing_length": "Mounting wing length",
     "wing_width": "Mounting wing width",
+    "no_distortion": "Distortion",
+    # distortion geometry
+    "distortion_radius": "Distortion radius",
+    "distortion_x": "Distortion offset along feedline",
+    "distortion_y": "Distortion offset across feedline",
 }
 
 # Shown, typed, and reported in micrometres instead of millimetres.
@@ -50,6 +56,40 @@ MICRON_PARAMETERS = {"pcb_width", "chip_width", "route_clearence", "chip_leg"}
 
 # Counts rather than lengths: no unit at all.
 INTEGER_PARAMETERS = {"port_count"}
+
+# On/off flags in the equations file (a plain 0 or 1). The form gives
+# these their own named control instead of a value-or-range box, so they
+# are left out of the parameter groups below. `no_distortion` is the only
+# one: 1 builds the clean geometry, 0 adds distortions to the box and
+# holes to the PCB.
+DISTORTION_PARAM = "no_distortion"
+BOOLEAN_PARAMETERS = {DISTORTION_PARAM}
+
+# The distortion's own geometry. These only mean anything when the
+# distortion is actually built (no_distortion = 0), so they are swept
+# across the distorted combinations only -- see sweep.combinations.
+#
+# TODO: draw these three in base_parts/parameters_visual.SLDDRW and
+# export them (base_parts/parameters_svg.py) as distortion_radius.svg,
+# distortion_x.svg and distortion_y.svg. Until those files exist the
+# form just leaves their drawing cell empty -- nothing else to change.
+DISTORTION_GEOMETRY_PARAMETERS = ["distortion_radius", "distortion_x", "distortion_y"]
+
+# The three choices the form's "Distortions" control offers, and the
+# `no_distortion` sweep values each expands to. A single value pins the
+# flag for the whole run; [0, 1] builds every other combination both ways.
+DISTORTION_MODES: Dict[str, List[int]] = {
+    "none": [1],
+    "with": [0],
+    "both": [0, 1],
+}
+DEFAULT_DISTORTION_MODE = "none"
+
+# How the flag's two values read as words -- used for combination ids and
+# anywhere the value is shown. The equation value is inverted from plain
+# English (no_distortion = 0 is the distorted model), so a folder named
+# "no_distortion-0" reads backwards; these do not.
+DISTORTION_VALUE_LABELS = {0: "with_distortion", 1: "without_distortion"}
 
 MILLIMETRE = "mm"
 MICROMETRE = "µm"
@@ -90,6 +130,17 @@ GROUPS: List[dict] = [
     },
 ]
 
+# The distortion's geometry gets its own group, rendered next to the
+# Distortions radio rather than among the groups above -- it only applies
+# to the combinations that are actually built distorted.
+DISTORTION_GROUP: dict = {
+    "title": "Distortion geometry",
+    "hint": "The size and placement of the distortion itself. These are only used by the "
+            "combinations built with distortions -- sweeping one adds its values to those "
+            "combinations alone.",
+    "names": DISTORTION_GEOMETRY_PARAMETERS,
+}
+
 
 def label_for(name: str) -> str:
     """The UI name for a parameter, falling back to the raw name so a
@@ -103,13 +154,13 @@ def is_micron(name: str) -> bool:
 
 
 def is_integer(name: str) -> bool:
-    """Whether the displayed value is a whole number: counts always, and
-    micrometres because that is the point of using them."""
-    return name in INTEGER_PARAMETERS or is_micron(name)
+    """Whether the displayed value is a whole number: counts and boolean
+    flags always, and micrometres because that is the point of using them."""
+    return name in INTEGER_PARAMETERS or name in BOOLEAN_PARAMETERS or is_micron(name)
 
 
 def unit_for(name: str) -> Optional[str]:
-    if name in INTEGER_PARAMETERS:
+    if name in INTEGER_PARAMETERS or name in BOOLEAN_PARAMETERS:
         return None
     return MICROMETRE if is_micron(name) else MILLIMETRE
 
@@ -137,10 +188,23 @@ def _render(name: str, display_value: float) -> str:
     return f"{display_value:g}"
 
 
+def distortion_word(value) -> Optional[str]:
+    """"with_distortion" / "without_distortion" for a no_distortion flag
+    value (0 / 1), or None if it is neither."""
+    try:
+        return DISTORTION_VALUE_LABELS.get(int(round(float(value))))
+    except (TypeError, ValueError):
+        return None
+
+
 def format_value(name: str, value) -> str:
     """Render a millimetre value the way this parameter should read."""
     if value is None:
         return ""
+    if name == DISTORTION_PARAM:
+        word = distortion_word(value)
+        if word is not None:
+            return word
     try:
         return _render(name, to_display(name, value))
     except (TypeError, ValueError):
@@ -155,6 +219,23 @@ def combo_id_value(name: str, value) -> str:
     """
     text = format_value(name, value)
     return f"{text}um" if is_micron(name) else text
+
+
+def combo_id_part(name: str, value) -> str:
+    """One parameter's filesystem-safe piece of a combination id.
+
+    Usually `name-value` (e.g. "pcb_length-40", "chip_width-381um"). The
+    distortion flag is the exception: it contributes a single word,
+    "with_distortion" / "without_distortion", because "no_distortion-0"
+    as a folder name reads backwards (0 is the distorted one).
+    """
+    if name == DISTORTION_PARAM:
+        word = distortion_word(value)
+        if word is not None:
+            return word
+    safe_name = re.sub(r"[^A-Za-z0-9_]+", "_", name)
+    safe_value = re.sub(r"[^A-Za-z0-9.]+", "_", combo_id_value(name, value))
+    return f"{safe_name}-{safe_value}"
 
 
 def column_name(name: str) -> str:
@@ -173,9 +254,14 @@ def grouped(names) -> List[dict]:
 
     Anything in the equations file that GROUPS does not mention is added
     to the last group, so a newly added parameter is still reachable in
-    the form rather than silently missing.
+    the form rather than silently missing. Two kinds are left out here
+    because the form gives them their own place: boolean flags (see
+    BOOLEAN_PARAMETERS), which get a named control rather than a
+    value-or-range box, and the distortion geometry, which is rendered as
+    DISTORTION_GROUP beside the Distortions radio.
     """
-    remaining = list(names)
+    excluded = BOOLEAN_PARAMETERS | set(DISTORTION_GEOMETRY_PARAMETERS)
+    remaining = [n for n in names if n not in excluded]
     result = []
     for group in GROUPS:
         present = [n for n in group["names"] if n in remaining]

@@ -10,3 +10,12 @@ venv/
 # Run outputs (generated STEP/AEDT files, state, plots) -- these are
 # backed up elsewhere, not committed.
 eigen_mode_analyze/runs/
+
+# Third-party JS/WASM for the in-browser STEP viewer (three.js +
+# occt-import-js, ~8 MB). Fetched once with `python -m
+# eigen_mode_analyze.fetch_vendor`; not committed.
+eigen_mode_analyze/vendor/
+
+
+*.log
+*.lnk

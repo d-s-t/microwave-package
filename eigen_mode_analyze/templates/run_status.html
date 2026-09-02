@@ -18,6 +18,10 @@
   a.button,button{display:inline-block;padding:.5rem 1rem;background:var(--accent);color:#fff;border:none;
     border-radius:4px;text-decoration:none;cursor:pointer;font-size:1em}
   a.button:hover,button:hover{background:var(--accent-hover)}
+  td.row-actions a{margin-right:.5rem}
+  button.mini{padding:.25rem .6rem;font-size:.8em;margin-right:.4rem}
+  button.mini:disabled{opacity:.55;cursor:progress}
+  .row-msg{font-size:.85em}
   /* transparent so the figure sits on the page's own background in
      either theme -- the plot is rendered with a see-through canvas */
   iframe{width:100%;height:600px;border:1px solid var(--line);margin-top:1rem;background:transparent}
@@ -37,7 +41,85 @@
   button.danger:disabled{opacity:.5;cursor:not-allowed;filter:none}
   .error-box{background:var(--error-bg);border:1px solid var(--bad);border-radius:6px;padding:.75rem 1rem;margin:1rem 0}
   .error-box pre{white-space:pre-wrap;word-break:break-word;margin:.5rem 0 0;font-size:.85em}
+  .note-box{border:1px solid var(--line-soft);border-left:3px solid var(--busy);border-radius:4px;
+    padding:.5rem .8rem;margin:1rem 0;font-size:.9em}
+  /* A combination that was never built because its geometry does not
+     fit: dimmed, with the reason spelled out under its name. */
+  tr.skipped td{opacity:.75}
+  .status-skipped{color:var(--busy);font-weight:600}
+  .skip-reason{font-size:.85em;color:var(--muted);font-style:italic}
+  details.collapsible{margin-top:1.5rem;border:1px solid var(--line-soft);border-radius:6px;
+    padding:.5rem .8rem}
+  details.collapsible summary{cursor:pointer;font-weight:600}
+  details.collapsible table{margin-top:.5rem}
+
+  /* Results filter: one toggle per distinct value of each swept
+     parameter, so a point can be hidden without re-running anything. */
+  .filter-panel{margin:.75rem 0;padding:.6rem .8rem;border:1px solid var(--line-soft);border-radius:6px}
+  .filter-head{display:flex;align-items:center;gap:.6rem;margin-bottom:.4rem}
+  .filter-head strong{font-size:.9em}
+  .filter-row{display:flex;align-items:baseline;gap:.5rem;flex-wrap:wrap;margin:.25rem 0}
+  .filter-name{font-size:.85em;font-weight:600;min-width:11rem}
+  .chips{display:flex;gap:.3rem;flex-wrap:wrap;flex:1}
+  label.chip{display:inline-flex;align-items:center;gap:.25rem;font-size:.8em;cursor:pointer;
+    padding:.1rem .4rem;border:1px solid var(--line-soft);border-radius:999px;user-select:none}
+  label.chip:hover{border-color:var(--accent)}
+  label.chip:has(input:checked){background:var(--surface-hover);border-color:var(--accent)}
+  label.chip:not(:has(input:checked)){opacity:.5}
+  button.mini.link-ish{background:transparent;color:var(--accent);padding:.1rem .3rem;
+    font-size:.75em;margin:0}
+  button.mini.link-ish:hover{background:var(--surface-hover)}
+
+  /* The window a clicked point opens: what that combination is, what it
+     produced, and everything that can be done with it. */
+  dialog.combo-window{width:min(680px,94vw);max-width:none;border:1px solid var(--line-soft);
+    border-radius:8px;background:var(--panel);color:var(--fg);padding:0}
+  dialog.combo-window::backdrop{background:var(--backdrop)}
+  .combo-window header{display:flex;align-items:center;justify-content:space-between;gap:1rem;
+    padding:.6rem .9rem;border-bottom:1px solid var(--line-soft)}
+  .combo-window header h3{margin:0;font-size:.95rem;word-break:break-all}
+  .combo-window button.close{background:var(--neutral)}
+  .combo-window button.close:hover{background:var(--neutral-hover)}
+  .cw-body{padding:.8rem .9rem;max-height:70vh;overflow:auto}
+  .cw-body h4{margin:.9rem 0 .3rem;font-size:.85rem;text-transform:uppercase;
+    letter-spacing:.04em;color:var(--muted)}
+  .cw-body h4:first-child{margin-top:0}
+  .cw-body table{margin:0}
+  .cw-body td{border:none;border-bottom:1px solid var(--line-soft);padding:.25rem .4rem}
+  .cw-body td:first-child{color:var(--muted);width:55%}
+  .cw-actions{display:flex;gap:.5rem;flex-wrap:wrap;margin-top:1rem;
+    padding-top:.8rem;border-top:1px solid var(--line-soft)}
+  .cw-actions a.button,.cw-actions button{padding:.4rem .8rem;font-size:.85em;margin:0}
+  .cw-msg{margin-top:.5rem;font-size:.85em;min-height:1.1em}
+
+  /* In-browser STEP viewer (three.js + occt-import-js, both served from
+     /vendor). The dialog is only wired up when those files are present. */
+  dialog.viewer3d{width:min(1000px,94vw);max-width:none;border:1px solid var(--line-soft);
+    border-radius:8px;background:var(--panel);color:var(--fg);padding:0}
+  dialog.viewer3d::backdrop{background:var(--backdrop)}
+  .viewer3d header{display:flex;align-items:center;justify-content:space-between;gap:1rem;
+    padding:.6rem .9rem;border-bottom:1px solid var(--line-soft)}
+  .viewer3d header h3{margin:0;font-size:1rem;word-break:break-all}
+  .viewer3d .body{display:flex;gap:.8rem;padding:.8rem .9rem}
+  .viewer3d .canvas-wrap{flex:1;min-width:0}
+  .viewer3d canvas{display:block;width:100%;height:auto;border:1px solid var(--line);
+    border-radius:4px;background:transparent}
+  .viewer3d .side{width:11rem;flex:none;font-size:.85em;display:flex;flex-direction:column;
+    gap:.3rem;max-height:60vh;overflow:auto}
+  .viewer3d .side label{display:flex;gap:.4rem;align-items:center;cursor:pointer;word-break:break-all}
+  .viewer3d .vstatus{padding:0 .9rem .8rem;font-size:.85em;color:var(--muted);min-height:1.2em}
+  .viewer3d button.close{background:var(--neutral)}
+  .viewer3d button.close:hover{background:var(--neutral-hover)}
+  @media (max-width:640px){
+    .viewer3d .body{flex-direction:column}
+    .viewer3d .side{width:auto;max-height:8rem}
+  }
 </style>
+{% if step_viewer_available %}
+<script type="importmap">
+{ "imports": { "three": "{{ url_for('vendor_file', name='three.module.min.js') }}" } }
+</script>
+{% endif %}
 </head>
 <body>
 {% include "_theme.html" %}
@@ -65,6 +147,18 @@
 </form>
 {% endif %}
 
+{% for note in run.config.notes or [] %}
+<div class="note-box">{{ note }}</div>
+{% endfor %}
+
+{% if rows.skipped_total %}
+<div class="note-box">
+  <strong>{{ rows.skipped_total }} of {{ rows.total }} combination(s) were skipped</strong> --
+  their distortion does not fit on the PCB, so no geometry is built for them. They are listed
+  at the bottom of this page, with the parameter to change and by how much.
+</div>
+{% endif %}
+
 {% if run.config.parameter_defaults %}
 <p class="muted">Pinned for this run:
   {% for name, value in run.config.parameter_defaults.items() %}
@@ -77,30 +171,56 @@
    <span class="muted">-- the geometry every combination in this run shares</span></p>
 {% endif %}
 
+{% macro combo_params(combo) -%}
+{%- for name, value in combo.params.items() -%}
+{{ meta.label_for(name) }} = {{ meta.format_value(name, value) }}{{ " " + meta.unit_for(name) if meta.unit_for(name) }}{{ ", " if not loop.last }}
+{%- else -%}
+<span class="muted">no swept parameters</span>
+{%- endfor -%}
+{%- endmacro %}
+
+{# Folded away once the run is finished: at that point it is a record,
+   not something to watch, and a few hundred rows otherwise push the
+   results off the screen. #}
+<details class="collapsible combos" {% if combos_open %}open{% endif %}>
+<summary>Combinations
+  <span class="muted">({{ rows.buildable|length }}{% if rows.skipped_total %} built, {{ rows.skipped_total }} skipped{% endif %})</span>
+</summary>
 <table id="combo-table">
 <thead>
 <tr><th>Combination</th><th>Parameters</th><th>STEP</th><th>Analysis</th><th>Post-processing</th><th></th></tr>
 </thead>
 <tbody>
-{% for combo_id, combo in run.state.combos.items() %}
+{% for combo_id, combo in rows.buildable.items() %}
 <tr data-combo="{{ combo_id }}">
   <td>{{ combo_id }}</td>
-  <td>
-    {%- for name, value in combo.params.items() -%}
-    {{ meta.label_for(name) }} = {{ meta.format_value(name, value) }}{{ " " + meta.unit_for(name) if meta.unit_for(name) }}{{ ", " if not loop.last }}
-    {%- else -%}
-    <span class="muted">no swept parameters</span>
-    {%- endfor -%}
-  </td>
+  <td>{{ combo_params(combo) }}</td>
   <td class="step status-{{ combo.step_status }}">{{ combo.step_status or "pending" }}</td>
   <td class="queue status-{{ combo.queue_status }}">{{ combo.queue_status or "not queued" }}</td>
   <td class="post status-{{ combo.post_status }}">{{ combo.post_status or "pending" }}</td>
-  <td><a href="{{ url_for('index', from_run=run.run_id, combo=combo_id) }}"
-         title="Open the new-run form with this combination's values">use as a starting point</a></td>
+  <td class="row-actions">
+    <a href="{{ url_for('index', from_run=run.run_id, combo=combo_id) }}"
+       title="Open the new-run form with this combination's values">use as a starting point</a>
+    {% if step_viewer_available and combo.step_status == "done" %}
+    <button type="button" class="mini view-3d"
+            data-url="{{ url_for('combo_step_file', run_id=run.run_id, combo_id=combo_id) }}"
+            data-title="{{ combo_id }}"
+            title="Quick 3D view of this combination's geometry, read from its STEP file">3D view</button>
+    {% endif %}
+    {% if combo.queue_status %}
+    <button type="button" class="mini open-aedt"
+            data-url="{{ url_for('open_combo_in_aedt', run_id=run.run_id, combo_id=combo_id) }}"
+            title="Open this combination's project in a visible AEDT window">Open in AEDT</button>
+    {% endif %}
+    <span class="row-msg muted" role="status"></span>
+  </td>
 </tr>
+{% else %}
+<tr><td colspan="6" class="muted">Every combination in this run was skipped -- see below.</td></tr>
 {% endfor %}
 </tbody>
 </table>
+</details>
 
 {% if plot_exists %}
 <h2>Results</h2>
@@ -128,7 +248,33 @@
   <button type="button" id="swap-axes" title="Swap the X and Y axes">&#8646; swap</button>
 </div>
 {% endif %}
-<p><a class="button" href="{{ url_for('run_results_csv', run_id=run.run_id) }}">Download CSV</a></p>
+{% if filter_options %}
+{# One row of toggles per swept parameter. Everything starts ticked, so
+   the plot opens showing the whole run and filtering is subtractive --
+   untick the values you do not want to look at. #}
+<div class="filter-panel" id="filter-panel">
+  <div class="filter-head">
+    <strong>Show</strong>
+    <span class="muted" id="filter-summary"></span>
+    <button type="button" class="mini" id="filter-reset">reset</button>
+  </div>
+  {% for group in filter_options %}
+  <div class="filter-row" data-column="{{ group.column }}">
+    <span class="filter-name">{{ group.label }}</span>
+    <span class="chips">
+      {% for value in group['values'] %}
+      <label class="chip"><input type="checkbox" checked
+             data-column="{{ group.column }}" value="{{ value.key }}">{{ value.label }}</label>
+      {% endfor %}
+    </span>
+    <button type="button" class="mini link-ish" data-all="{{ group.column }}">all</button>
+    <button type="button" class="mini link-ish" data-none="{{ group.column }}">none</button>
+  </div>
+  {% endfor %}
+</div>
+{% endif %}
+<p><a class="button" href="{{ url_for('run_results_csv', run_id=run.run_id) }}">Download CSV</a>
+   <span class="muted">-- click any point for that combination's details</span></p>
 <iframe id="plot-frame" src="{{ url_for('run_plot', run_id=run.run_id) }}"></iframe>
 {% endif %}
 
@@ -147,11 +293,38 @@
 <iframe id="heatmap-frame" class="heatmap"></iframe>
 {% endif %}
 
+{% if rows.skipped_total %}
+{# Folded away, and only a sample of the rows: a sweep that oversteps the
+   geometry can skip tens of thousands of combinations, and they all say
+   the same few things. #}
+<details class="collapsible">
+  <summary>Skipped combinations <span class="muted">({{ rows.skipped_total }})</span></summary>
+  <p class="muted">These were never built -- their distortion does not fit on the PCB. Each row says
+    which parameter to change and the largest value that would have fitted.
+    {% if rows.skipped_hidden %}
+    Showing the first {{ rows.skipped_sample|length }}; {{ rows.skipped_hidden }} more are in
+    <code>state.json</code>.
+    {% endif %}</p>
+  <table>
+  <thead><tr><th>Combination</th><th>Parameters</th><th>Why it was skipped</th></tr></thead>
+  <tbody>
+  {% for combo_id, combo in rows.skipped_sample.items() %}
+  <tr class="skipped">
+    <td>{{ combo_id }}</td>
+    <td>{{ combo_params(combo) }}</td>
+    <td class="skip-reason">{{ combo.skip_reason }}</td>
+  </tr>
+  {% endfor %}
+  </tbody>
+  </table>
+</details>
+{% endif %}
+
 {% if not is_running %}
 <details class="danger-zone">
   <summary>Delete this run</summary>
   <p>This permanently removes <code>{{ run.run_dir }}</code>
-     ({{ "%.0f"|format(disk_usage_mb) }} MB, {{ run.state.combos|length }} combination(s)) --
+     ({{ "%.0f"|format(disk_usage_mb) }} MB, {{ rows.total }} combination(s)) --
      its STEP files, analysed projects, results and plots -- along with anything these tasks
      still have in the queue folder. It cannot be undone.</p>
   <form method="post" action="{{ url_for('delete_run', run_id=run.run_id) }}" id="delete-form">
@@ -161,6 +334,14 @@
   </form>
 </details>
 {% endif %}
+
+<dialog class="combo-window" id="combo-window">
+  <header>
+    <h3 id="combo-window-title">Combination</h3>
+    <button type="button" class="close" id="combo-window-close">Close</button>
+  </header>
+  <div class="cw-body" id="combo-window-body"></div>
+</dialog>
 
 <script>
 // The delete button stays disabled until the run's own id has been typed
@@ -222,9 +403,12 @@ async function poll() {
   for (const [comboId, combo] of Object.entries(data.combos || {})) {
     const row = document.querySelector('tr[data-combo="' + CSS.escape(comboId) + '"]');
     if (!row) continue;
-    paint(row.querySelector("td.step"), combo.step_status, "pending");
-    paint(row.querySelector("td.queue"), combo.queue_status, "not queued");
-    paint(row.querySelector("td.post"), combo.post_status, "pending");
+    // A combination whose geometry does not fit is never built, so its
+    // cells read "skipped" rather than sitting at "pending" forever.
+    const skipped = Boolean(combo.skip_reason);
+    paint(row.querySelector("td.step"), combo.step_status, skipped ? "skipped" : "pending");
+    paint(row.querySelector("td.queue"), combo.queue_status, skipped ? "--" : "not queued");
+    paint(row.querySelector("td.post"), combo.post_status, skipped ? "--" : "pending");
   }
 
   const finishedWithAPlot = data.stage === "complete" && !hadPlot;
@@ -248,6 +432,40 @@ setInterval(poll, 4000);
 
   var base = "{{ url_for('run_plot', run_id=run.run_id) }}";
 
+  // Filter state: a column is only sent when some of its values are
+  // unticked, so the usual "everything on" case keeps the URL short and
+  // the server does no filtering at all.
+  var panel = document.getElementById("filter-panel");
+  var summary = document.getElementById("filter-summary");
+
+  function boxes(column) {
+    return panel
+      ? [].slice.call(panel.querySelectorAll('input[type=checkbox][data-column="' + column + '"]'))
+      : [];
+  }
+
+  function columns() {
+    return panel
+      ? [].slice.call(panel.querySelectorAll(".filter-row")).map(function (row) { return row.dataset.column; })
+      : [];
+  }
+
+  function applyFilters(params) {
+    if (!panel) { return; }
+    var hidden = 0;
+    columns().forEach(function (column) {
+      var all = boxes(column);
+      var on = all.filter(function (b) { return b.checked; });
+      hidden += all.length - on.length;
+      if (on.length !== all.length) {
+        params.set("f_" + column, on.map(function (b) { return b.value; }).join(","));
+      }
+    });
+    if (summary) {
+      summary.textContent = hidden ? hidden + " value(s) hidden" : "everything";
+    }
+  }
+
   function render() {
     var params = new URLSearchParams({
       x: x.value,
@@ -255,7 +473,30 @@ setInterval(poll, 4000);
       theme: window.themeIsDark() ? "dark" : "light",
     });
     if (colour && colour.value) { params.set("color", colour.value); }
+    applyFilters(params);
     frame.src = base + "?" + params.toString();
+  }
+
+  if (panel) {
+    panel.addEventListener("change", function (event) {
+      if (event.target.matches('input[type=checkbox]')) { render(); }
+    });
+    panel.addEventListener("click", function (event) {
+      var wantAll = event.target.dataset ? event.target.dataset.all : null;
+      var wantNone = event.target.dataset ? event.target.dataset.none : null;
+      if (!wantAll && !wantNone) { return; }
+      boxes(wantAll || wantNone).forEach(function (b) { b.checked = !!wantAll; });
+      render();
+    });
+    var reset = document.getElementById("filter-reset");
+    if (reset) {
+      reset.addEventListener("click", function () {
+        columns().forEach(function (column) {
+          boxes(column).forEach(function (b) { b.checked = true; });
+        });
+        render();
+      });
+    }
   }
 
   [x, y, colour].forEach(function (select) {
@@ -294,6 +535,394 @@ setInterval(poll, 4000);
   window.addEventListener("themechange", render);
   render();
 })();
+
+// --- the window a clicked point opens ---------------------------
+// The figure lives in an iframe and posts the combination it was
+// clicked on (see plotting._CLICK_BRIDGE); everything shown here is
+// fetched on demand, since a sweep can have hundreds of combinations
+// and only the clicked one is ever wanted.
+(function () {
+  var dialog = document.getElementById("combo-window");
+  if (!dialog) { return; }
+  var title = document.getElementById("combo-window-title");
+  var body = document.getElementById("combo-window-body");
+  var detailsBase = "{{ url_for('run_status', run_id=run.run_id) }}/combos/";
+
+  function esc(text) {
+    var div = document.createElement("div");
+    div.textContent = text == null ? "" : text;
+    return div.innerHTML;
+  }
+
+  function rows(entries) {
+    return entries.map(function (entry) {
+      var unit = entry.unit ? " " + esc(entry.unit) : "";
+      return "<tr><td>" + esc(entry.label) + "</td><td>" + esc(entry.value) + unit + "</td></tr>";
+    }).join("");
+  }
+
+  function statusLine(status) {
+    return ["step", "queue", "post"].map(function (key) {
+      return '<tr><td>' + key.replace("post", "post-processing").replace("queue", "analysis") +
+             '</td><td class="status-' + esc(status[key]).replace(/\s+/g, "_") + '">' +
+             esc(status[key]) + "</td></tr>";
+    }).join("");
+  }
+
+  function draw(data) {
+    var html = "";
+    if (data.skip_reason) {
+      html += '<div class="note-box">Skipped: ' + esc(data.skip_reason) + "</div>";
+    }
+    if (data.error) {
+      html += '<div class="error-box"><pre>' + esc(data.error) + "</pre></div>";
+    }
+
+    html += "<h4>Swept parameters</h4><table>" +
+            (data.swept.length ? rows(data.swept) : "<tr><td colspan=2>none</td></tr>") + "</table>";
+    if (data.pinned.length) {
+      html += "<h4>Pinned for the run</h4><table>" + rows(data.pinned) + "</table>";
+    }
+    html += "<h4>Progress</h4><table>" + statusLine(data.status) + "</table>";
+
+    (data.results || []).forEach(function (result) {
+      html += "<h4>Results" + (result.mode ? " -- mode " + result.mode : "") + "</h4><table>" +
+              rows(result.values) + "</table>";
+    });
+
+    var actions = data.actions || {};
+    html += '<div class="cw-actions">';
+    if (actions.step_url) {
+      html += '<button type="button" class="mini cw-3d" data-url="' + esc(actions.step_url) +
+              '" data-title="' + esc(data.combo_id) + '">3D view</button>';
+    }
+    if (actions.aedt_url) {
+      html += '<button type="button" class="mini cw-aedt" data-url="' + esc(actions.aedt_url) +
+              '">Open in AEDT</button>';
+    }
+    if (actions.heatmap) {
+      html += '<button type="button" class="mini cw-heatmap" data-combo="' + esc(data.combo_id) +
+              '">Show its chip field</button>';
+    }
+    html += '<a class="button" href="' + esc(actions.start_url) + '">Use as a starting point</a>';
+    html += "</div>";
+    html += '<p class="cw-msg muted"></p>';
+
+    body.innerHTML = html;
+  }
+
+  async function open(comboId) {
+    title.textContent = comboId;
+    body.innerHTML = '<p class="muted">Loading...</p>';
+    if (!dialog.open) { dialog.showModal(); }
+    try {
+      var res = await fetch(detailsBase + encodeURIComponent(comboId) + "/details.json");
+      if (!res.ok) { throw new Error("could not load this combination"); }
+      draw(await res.json());
+    } catch (e) {
+      body.innerHTML = '<p class="muted">' + esc(e.message || e) + "</p>";
+    }
+  }
+
+  window.addEventListener("message", function (event) {
+    var data = event.data;
+    if (data && data.source === "eigenmode-plot" && data.comboId) { open(data.comboId); }
+  });
+
+  // Actions inside the window reuse the same endpoints the table rows do.
+  body.addEventListener("click", async function (event) {
+    var message = body.querySelector(".cw-msg");
+    var aedt = event.target.closest("button.cw-aedt");
+    if (aedt) {
+      aedt.disabled = true;
+      if (message) { message.textContent = "opening..."; }
+      try {
+        var res = await fetch(aedt.dataset.url, { method: "POST" });
+        var data = await res.json();
+        if (message) { message.textContent = data.ok ? "opened -- check the AEDT window"
+                                                     : (data.error || "could not open"); }
+      } catch (e) {
+        if (message) { message.textContent = "could not reach the server"; }
+      } finally {
+        aedt.disabled = false;
+      }
+      return;
+    }
+    var view = event.target.closest("button.cw-3d");
+    if (view && window.showStepViewer) {
+      window.showStepViewer(view.dataset.url, view.dataset.title);
+      return;
+    }
+    var heat = event.target.closest("button.cw-heatmap");
+    if (heat) {
+      var picker = document.getElementById("heatmap-combo");
+      if (picker) {
+        picker.value = heat.dataset.combo;
+        picker.dispatchEvent(new Event("change"));
+        dialog.close();
+        picker.scrollIntoView({ behavior: "smooth", block: "center" });
+      }
+    }
+  });
+
+  document.getElementById("combo-window-close").addEventListener("click", function () {
+    dialog.close();
+  });
+  document.addEventListener("keydown", function (event) {
+    if (event.key === "Escape" && dialog.open) { dialog.close(); }
+  });
+})();
+
+// --- open a combination's project in AEDT -----------------------
+// Fires a POST at the server, which hands the .aedt file to AEDT on this
+// machine (the UI is localhost-only). The row's little status span says
+// how it went, since the AEDT window comes up outside the browser.
+document.querySelectorAll("button.open-aedt").forEach(function (button) {
+  button.addEventListener("click", async function () {
+    var msg = button.parentElement.querySelector(".row-msg");
+    var show = function (text) { if (msg) { msg.textContent = text; } };
+    button.disabled = true;
+    show("opening…");
+    try {
+      var res = await fetch(button.dataset.url, { method: "POST" });
+      var data = await res.json();
+      show(data.ok ? "opened — check the AEDT window" : (data.error || "could not open"));
+    } catch (e) {
+      show("could not reach the server");
+    } finally {
+      button.disabled = false;
+    }
+  });
+});
 </script>
+
+{% if step_viewer_available %}
+<dialog class="viewer3d" id="viewer3d">
+  <header>
+    <h3 id="viewer3d-title">3D view</h3>
+    <button type="button" class="close" id="viewer3d-close">Close</button>
+  </header>
+  <div class="body">
+    <div class="canvas-wrap" id="viewer3d-canvas-wrap"></div>
+    <div class="side" id="viewer3d-parts"></div>
+  </div>
+  <p class="vstatus" id="viewer3d-status"></p>
+</dialog>
+
+<script type="module">
+// Quick 3D view of a combination's STEP file, entirely in the browser:
+// occt-import-js (OpenCascade compiled to WASM) turns the STEP into
+// triangle meshes, three.js draws them. Both come from /vendor and are
+// only fetched the first time the button is clicked -- the WASM is ~7 MB,
+// so the run page itself stays as light as it was.
+const dialog = document.getElementById("viewer3d");
+const titleEl = document.getElementById("viewer3d-title");
+const statusEl = document.getElementById("viewer3d-status");
+const partsEl = document.getElementById("viewer3d-parts");
+const canvasWrap = document.getElementById("viewer3d-canvas-wrap");
+
+// distinct, mid-tone colours that read on the page's own background in
+// either theme -- used only for meshes the STEP itself gives no colour.
+const PALETTE = [0x4f9dc9, 0xe08a4a, 0x67b98e, 0xc76b98, 0xb0a24a, 0x8a7fd0, 0x5cb0b0, 0xd07f6b];
+
+let three = null;      // { THREE, OrbitControls }, loaded once
+let occt = null;       // the occt-import-js module, loaded once
+let active = null;     // teardown handle for whatever is on screen
+
+function setStatus(text) { statusEl.textContent = text || ""; }
+
+async function loadThree() {
+  if (!three) {
+    const [THREE, controls] = await Promise.all([
+      import("three"),
+      import("{{ url_for('vendor_file', name='OrbitControls.js') }}"),
+    ]);
+    three = { THREE, OrbitControls: controls.OrbitControls };
+  }
+  return three;
+}
+
+function loadOcct() {
+  if (!occt) {
+    occt = new Promise((resolve, reject) => {
+      const s = document.createElement("script");
+      s.src = "{{ url_for('vendor_file', name='occt-import-js.js') }}";
+      s.onload = () => window.occtimportjs({
+        locateFile: () => "{{ url_for('vendor_file', name='occt-import-js.wasm') }}",
+      }).then(resolve, reject);
+      s.onerror = () => reject(new Error("could not load occt-import-js"));
+      document.head.appendChild(s);
+    });
+  }
+  return occt;
+}
+
+function teardown() {
+  if (active) { active(); active = null; }
+  canvasWrap.replaceChildren();   // drop the old <canvas> and its GL context
+  partsEl.replaceChildren();
+}
+
+function buildScene(THREE, OrbitControls, meshes) {
+  const canvas = document.createElement("canvas");
+  canvasWrap.appendChild(canvas);
+  const sizeTo = () => {
+    const w = Math.max(320, canvasWrap.clientWidth);
+    const h = Math.max(320, Math.round(window.innerHeight * 0.6));
+    return [w, h];
+  };
+  let [w, h] = sizeTo();
+
+  const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
+  renderer.setPixelRatio(window.devicePixelRatio || 1);
+  renderer.setSize(w, h, false);
+  canvas.style.height = h + "px";
+
+  const scene = new THREE.Scene();
+  const camera = new THREE.PerspectiveCamera(45, w / h, 0.01, 1e6);
+  scene.add(new THREE.AmbientLight(0xffffff, 0.65));
+  const key = new THREE.DirectionalLight(0xffffff, 0.9); key.position.set(1, 1.2, 1); scene.add(key);
+  const fill = new THREE.DirectionalLight(0xffffff, 0.45); fill.position.set(-1, -0.6, -0.8); scene.add(fill);
+
+  const group = new THREE.Group();
+  meshes.forEach((m, i) => {
+    const pos = m.attributes && m.attributes.position && m.attributes.position.array;
+    if (!pos || !pos.length) { return; }
+    const g = new THREE.BufferGeometry();
+    g.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3));
+    if (m.attributes.normal && m.attributes.normal.array) {
+      g.setAttribute("normal", new THREE.Float32BufferAttribute(m.attributes.normal.array, 3));
+    }
+    if (m.index && m.index.array) { g.setIndex(m.index.array); }
+    if (!m.attributes.normal) { g.computeVertexNormals(); }
+
+    const c = m.color
+      ? new THREE.Color(m.color[0], m.color[1], m.color[2])
+      : new THREE.Color(PALETTE[i % PALETTE.length]);
+    const mesh = new THREE.Mesh(g, new THREE.MeshStandardMaterial({
+      color: c, metalness: 0.1, roughness: 0.75, side: THREE.DoubleSide,
+    }));
+    mesh.name = m.name || ("solid " + (i + 1));
+    if (/vacuum|air/i.test(mesh.name)) { mesh.visible = false; }  // the air volume hides everything
+    group.add(mesh);
+
+    const label = document.createElement("label");
+    const cb = document.createElement("input");
+    cb.type = "checkbox"; cb.checked = mesh.visible;
+    cb.addEventListener("change", () => { mesh.visible = cb.checked; });
+    label.append(cb, " " + mesh.name);
+    partsEl.appendChild(label);
+  });
+  scene.add(group);
+
+  const box = new THREE.Box3().setFromObject(group);
+  if (box.isEmpty()) { throw new Error("the STEP file has no visible geometry"); }
+  const center = box.getCenter(new THREE.Vector3());
+  const radius = Math.max(box.getBoundingSphere(new THREE.Sphere()).radius, 1e-3);
+
+  // Fit the view to the box, not its bounding sphere: these models are
+  // flat, elongated slabs seen at an angle, so the sphere (driven by the
+  // long diagonal) would frame them far too loosely. Push the camera in
+  // until the outermost projected corner sits near the frustum edge.
+  const view = new THREE.Vector3(1, 0.55, 1).normalize();
+  const corners = [];
+  for (const x of [box.min.x, box.max.x]) {
+    for (const y of [box.min.y, box.max.y]) {
+      for (const z of [box.min.z, box.max.z]) { corners.push(new THREE.Vector3(x, y, z)); }
+    }
+  }
+  let dist = radius * 3;
+  for (let iter = 0; iter < 4; iter++) {
+    camera.position.copy(center).addScaledVector(view, dist);
+    camera.lookAt(center);
+    camera.near = Math.max(dist / 5000, 1e-3);
+    camera.far = dist * 100;
+    camera.updateProjectionMatrix();
+    camera.updateMatrixWorld();
+    let worst = 0;
+    for (const c of corners) {
+      const ndc = c.clone().project(camera);
+      worst = Math.max(worst, Math.abs(ndc.x), Math.abs(ndc.y));
+    }
+    if (worst > 0.86 && worst < 0.96) { break; }
+    dist *= worst / 0.9;
+  }
+  camera.position.copy(center).addScaledVector(view, dist);
+  camera.lookAt(center);
+  camera.updateProjectionMatrix();
+
+  const controls = new OrbitControls(camera, renderer.domElement);
+  controls.target.copy(center);
+  controls.update();
+
+  let raf = 0;
+  const tick = () => { controls.update(); renderer.render(scene, camera); raf = requestAnimationFrame(tick); };
+  tick();
+
+  const onResize = () => {
+    [w, h] = sizeTo();
+    renderer.setSize(w, h, false);
+    canvas.style.height = h + "px";
+    camera.aspect = w / h;
+    camera.updateProjectionMatrix();
+  };
+  window.addEventListener("resize", onResize);
+
+  active = () => {
+    cancelAnimationFrame(raf);
+    window.removeEventListener("resize", onResize);
+    controls.dispose();
+    group.traverse((o) => {
+      if (o.geometry) { o.geometry.dispose(); }
+      if (o.material) { o.material.dispose(); }
+    });
+    renderer.dispose();
+  };
+}
+
+function closeViewer() {
+  teardown();
+  if (dialog.open) { dialog.close(); }
+}
+
+async function show(url, title) {
+  teardown();
+  titleEl.textContent = title;
+  if (!dialog.open) { dialog.showModal(); }
+  setStatus("loading the 3D engine…");
+  try {
+    const [{ THREE, OrbitControls }, occtModule] = await Promise.all([loadThree(), loadOcct()]);
+    setStatus("downloading geometry…");
+    const resp = await fetch(url);
+    if (!resp.ok) { throw new Error("could not fetch the STEP file"); }
+    const buffer = new Uint8Array(await resp.arrayBuffer());
+    setStatus("reading the STEP file…");
+    const result = occtModule.ReadStepFile(buffer, null);
+    if (!result || !result.success || !result.meshes || !result.meshes.length) {
+      throw new Error("occt-import-js could not read this STEP file");
+    }
+    buildScene(THREE, OrbitControls, result.meshes);
+    setStatus(result.meshes.length + " solid(s) — drag to orbit, scroll to zoom");
+  } catch (e) {
+    setStatus("could not show this model — " + (e && e.message ? e.message : e));
+  }
+}
+
+document.querySelectorAll("button.view-3d").forEach((button) => {
+  button.addEventListener("click", () => show(button.dataset.url, button.dataset.title || "3D view"));
+});
+// The combination window offers the same view, and lives in a classic
+// script that cannot import from this module -- so hand it a way in.
+window.showStepViewer = show;
+// Close only on deliberate action. The dialog's own close/cancel events
+// are not fired reliably everywhere, and wiring teardown to them turned
+// out to also strip a freshly built scene on some browsers -- so Escape
+// is handled here instead, and nothing listens to the dialog events.
+document.getElementById("viewer3d-close").addEventListener("click", closeViewer);
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && dialog.open) { closeViewer(); }
+});
+</script>
+{% endif %}
 </body>
 </html>

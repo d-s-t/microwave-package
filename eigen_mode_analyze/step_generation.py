@@ -190,10 +190,24 @@ def generate_step_files(
     remaining geometry is still being built. SolidWorks drives one
     document here, so the combos themselves stay strictly sequential.
     """
+    # Combinations whose geometry cannot physically fit (see
+    # constraints.py) are never handed to SolidWorks -- they are marked
+    # at run creation and reported on the run page instead.
+    skipped = {
+        combo_id: run.state["combos"][combo_id]["skip_reason"]
+        for combo_id in combos
+        if run.state["combos"][combo_id].get("skip_reason")
+    }
+    for combo_id, reason in skipped.items():
+        if run.state["combos"][combo_id].get("step_status") != "skipped":
+            run.update_combo(combo_id, step_status="skipped")
+        log(f"Skipping {combo_id} -- {reason}")
+
     pending = {
         combo_id: params
         for combo_id, params in combos.items()
-        if run.state["combos"][combo_id].get("step_status") != "done"
+        if combo_id not in skipped
+        and run.state["combos"][combo_id].get("step_status") != "done"
     }
     if not pending:
         log("All STEP files already generated -- skipping SolidWorks step.")

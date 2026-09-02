@@ -53,6 +53,20 @@ at a time, never in parallel) -- the plot appears there automatically
 once everything's done. Existing runs (including ones interrupted
 mid-way) are listed on the home page and can be resumed with one click.
 
+Each combination on a run's status page has an **Open in AEDT** button
+(opens that combination's project in a visible AEDT window on this
+machine) and, once the STEP viewer's assets are present, a **3D view**
+button that shows the combination's geometry in the browser -- no
+external program. Those assets (three.js + occt-import-js, ~8 MB, not
+committed) are fetched once with:
+
+```
+python -m eigen_mode_analyze.fetch_vendor
+```
+
+Skip it and everything else still works; the 3D view button just stays
+hidden.
+
 ### Command line
 
 ```
