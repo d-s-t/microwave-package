@@ -330,6 +330,10 @@ def new_run():
             "mat_chip": request.form.get("mat_chip", "silicon"),
             "mat_vacuum": request.form.get("mat_vacuum", "vacuum"),
             "perfect_e_box": "perfect_e_box" in request.form,
+            "mat_conductor_pcb": request.form.get("mat_conductor_pcb", "copper"),
+            "mat_conductor_chip": request.form.get("mat_conductor_chip", "niobium"),
+            "perfect_e_conductors": "perfect_e_conductors" in request.form,
+            "perfect_e_connector": "perfect_e_connector" in request.form,
         },
     }
     run = Run.create(sweep_params, settings, parameter_defaults)

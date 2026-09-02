@@ -87,36 +87,72 @@ def calculate_min_freq(dimensions_txt_content: str, safety_factor: float = 0.4, 
     return max(naive_min_freq_ghz * safety_factor, floor_ghz)
 
 
-def assign_materials_and_boundaries(hfss, mat_settings: dict) -> Dict[str, object]:
+# How an imported solid's name decides its material and boundary.
+#
+# This used to be an if/elif chain of substring tests, which was fine
+# while every body was either the box, the lid, the PCB or the chip. It
+# stops being fine the moment copper exists: "pcb_copper" contains
+# "pcb", so the old chain would have assigned it Rogers and nobody would
+# have noticed until the eigenfrequencies came out wrong.
+#
+# So the rules are explicit and ORDERED, most specific first, and the
+# first match wins. `perfect_e` names the setting that decides whether
+# the body also gets a perfect-E boundary; None means never.
+#
+# Names come from the STEP, which gets them from the SolidWorks
+# components -- see base_parts/altium/README.md for where copper body
+# names come from.
+MATERIAL_RULES = [
+    # (substring, key in objects_dict, material setting, perfect-E setting)
+    ("vacuum",          "vacuum",          "mat_vacuum",          None),
+    ("chip_lid",        "chip_lid",        "mat_box",             "perfect_e_box"),
+    ("chip_conductor",  "chip_conductor",  "mat_conductor_chip",  "perfect_e_conductors"),
+    ("chip_substrate",  "chip",            "mat_chip",            None),
+    ("pcb_copper",      "pcb_copper",      "mat_conductor_pcb",   "perfect_e_conductors"),
+    ("pcb_via",         "pcb_vias",        "mat_conductor_pcb",   "perfect_e_conductors"),
+    ("pcb_substrate",   "pcb",             "mat_pcb",             None),
+    ("wirebond",        "wirebond",        "mat_conductor_pcb",   "perfect_e_conductors"),
+    ("connector",       "connector",       "mat_box",             "perfect_e_connector"),
+    # The bare names come last, so the specific ones above win.
+    ("lid",             "lid",             "mat_box",             "perfect_e_box"),
+    ("box",             "box",             "mat_box",             "perfect_e_box"),
+    ("chip",            "chip",            "mat_chip",            None),
+    ("pcb",             "pcb",             "mat_pcb",             None),
+]
+
+
+def assign_materials_and_boundaries(hfss, mat_settings: dict, log=logger.info) -> Dict[str, object]:
+    """Give every solid in the imported model its material and boundary.
+
+    A body whose name matches no rule is left alone and WARNED ABOUT
+    rather than silently defaulting. A mis-exported or renamed body is
+    the kind of thing that otherwise shows up as a puzzling frequency
+    shift days later.
+    """
     objects_dict = {}
+    unmatched = []
+
     for obj in hfss.modeler.solid_objects:
         name = obj.name.lower()
+        for pattern, key, material_key, perfect_e_key in MATERIAL_RULES:
+            if pattern not in name:
+                continue
+            material = mat_settings.get(material_key)
+            if material:
+                obj.material_name = material
+            objects_dict.setdefault(key, obj)
+            if perfect_e_key and mat_settings.get(perfect_e_key):
+                hfss.assign_perfect_e(assignment=obj.name)
+            break
+        else:
+            unmatched.append(obj.name)
 
-        if "vacuum" in name:
-            obj.material_name = mat_settings["mat_vacuum"]
-            objects_dict["vacuum"] = obj
-        elif "pcb" in name:
-            obj.material_name = mat_settings["mat_pcb"]
-            objects_dict["pcb"] = obj
-        elif "chip" in name and "lid" not in name:
-            obj.material_name = mat_settings["mat_chip"]
-            objects_dict["chip"] = obj
-        elif "chip_lid" in name:
-            obj.material_name = mat_settings["mat_box"]
-            objects_dict["chip_lid"] = obj
-            if mat_settings["perfect_e_box"]:
-                hfss.assign_perfect_e(assignment=obj.name)
-        elif "lid" in name:
-            obj.material_name = mat_settings["mat_box"]
-            objects_dict["lid"] = obj
-            if mat_settings["perfect_e_box"]:
-                hfss.assign_perfect_e(assignment=obj.name)
-        elif "box" in name:
-            obj.material_name = mat_settings["mat_box"]
-            objects_dict["box"] = obj
-            if mat_settings["perfect_e_box"]:
-                hfss.assign_perfect_e(assignment=obj.name)
-
+    if unmatched:
+        log(
+            "WARNING: no material rule matched these solids, so they keep "
+            "the modeller default: " + ", ".join(sorted(unmatched))
+            + ". Check the body names against MATERIAL_RULES."
+        )
     return objects_dict
 
 
