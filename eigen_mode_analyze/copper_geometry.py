@@ -442,8 +442,15 @@ def bond_path(spec: BondSpec, frame: Frame, v: float, segments: int = 12) -> Lis
     return points
 
 
-def build_wirebonds(modeler, spec: BondSpec, frame: Frame, log=logger.info) -> List[str]:
-    """Create one row of bond wires as swept circular profiles."""
+def build_wirebonds(modeler, spec: BondSpec, frame: Frame, name: str = "wirebond",
+                    log=logger.info) -> List[str]:
+    """Create one row of bond wires as swept circular profiles.
+
+    `name` must be unique per row. HFSS will not accept a duplicate name
+    and quietly assigns its own -- NewObject_something -- which then
+    matches no material rule and lands in the model as vacuum. Both rows
+    still contain "wirebond", which is what the rule matches on.
+    """
     names = []
     for i in range(spec.count):
         v = (i - (spec.count - 1) / 2.0) * spec.pitch
@@ -458,9 +465,9 @@ def build_wirebonds(modeler, spec: BondSpec, frame: Frame, log=logger.info) -> L
         return []
     if len(names) > 1:
         modeler.unite(names)
-    modeler[names[0]].name = "wirebond"
-    log(f"Built {spec.count} wire bonds as 'wirebond'")
-    return ["wirebond"]
+    modeler[names[0]].name = name
+    log(f"Built {spec.count} wire bonds as {name!r}")
+    return [name]
 
 
 def clear_chip_area(
@@ -499,3 +506,24 @@ def clear_chip_area(
     tool.name = "chip_area_cut"
     modeler.subtract(list(targets), ["chip_area_cut"], keep_originals=False)
     log(f"Cleared the die footprint out of {', '.join(targets)}.")
+
+
+def drill_vias(modeler, substrate: str, vias: str, log=logger.info) -> None:
+    """Cut the via barrels out of the substrate.
+
+    Without this the barrels and the board claim the same volume. HFSS
+    either errors or resolves the overlap by material priority, and the
+    quiet case is the dangerous one: the model still solves, with copper
+    and dielectric occupying one region.
+
+    The barrels are kept -- they are the conductor being modelled; it is
+    the board that gets the holes.
+    """
+    try:
+        modeler.subtract(substrate, [vias], keep_originals=True)
+        log(f"Drilled {vias} out of {substrate}.")
+    except Exception as exc:
+        log(
+            f"WARNING: could not drill {vias} out of {substrate} ({exc}). "
+            "The board and its vias overlap and the model should not be trusted."
+        )

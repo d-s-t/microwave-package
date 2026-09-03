@@ -158,14 +158,18 @@ End;
   ground plane on the far side of the substrate, and -- where the board
   has two layers to stitch -- a via fence down both sides of the line. }
 Procedure BuildBoard(Board : IPCB_Board; HalfL, HalfS, Trace, Gap,
-                     ViaDia, ViaPitch, ViaClear : Double;
+                     ViaDia, ViaPitch, ViaClear, TraceHalfL : Double;
                      WantVias : Boolean; WantBackPlane : Boolean;
                      Var nVias : Integer);
 Var
     GndInner, FenceY, X : Double;
 Begin
     SetOutline(Board, HalfL, HalfS);
-    AddTrack(Board, -HalfL, 0.0, HalfL, 0.0, Trace, eTopLayer);
+
+    { The centre conductor stops at the launch rather than running to the
+      board edge. Running it out to the edge is what let the connector
+      land bridge the signal into both coplanar grounds. }
+    AddTrack(Board, -TraceHalfL, 0.0, TraceHalfL, 0.0, Trace, eTopLayer);
 
     GndInner := Trace / 2.0 + Gap;
     AddRect(Board, -HalfL,  GndInner, HalfL,  HalfS,    eTopLayer);
@@ -286,16 +290,28 @@ End;
   exactly what the model needs. What the layout owes the bonds is the
   pads at each end, which is what this places. }
 Function AddBondFingers(Board : IPCB_Board;
-                        X, PadPitch, Count, PadW, PadH : Double) : Integer;
+                        X, PadPitch, Count, PadW, PadH, GndInner : Double) : Integer;
 Var
-    i : Integer;
-    Y : Double;
+    i, nGround : Integer;
+    Y, FirstY  : Double;
 Begin
-    Result := 0;
-    For i := 0 To Round(Count) - 1 Do
+    { One finger on the centre conductor for the signal bond; the rest
+      are ground bonds and belong ON the ground, not in the gap. Spacing
+      them evenly about the centre line put them straddling the gap edge,
+      which is metal the real board does not have in the one place the
+      field is most sensitive to it. }
+    AddPad(Board, X, 0.0, PadW, PadH, eTopLayer);
+    Result := 1;
+
+    FirstY := GndInner + PadH / 2.0;
+    nGround := Round(Count) - 1;
+    For i := 0 To nGround - 1 Do
     Begin
-        Y := (i - (Count - 1) / 2.0) * PadPitch;
-        AddPad(Board, X, Y, PadW, PadH, eTopLayer);
+        Y := FirstY + (i div 2) * PadPitch;
+        If (i mod 2) = 0 Then
+            AddPad(Board, X, Y, PadW, PadH, eTopLayer)
+        Else
+            AddPad(Board, X, -Y, PadW, PadH, eTopLayer);
         Result := Result + 1;
     End;
 End;
@@ -379,7 +395,8 @@ Begin
 
     PCBServer.PreProcess;
     Try
-        BuildBoard(Board, HalfL, HalfS, Trace, Gap, ViaDia, ViaPitch, ViaClear, True, True, nVias);
+        BuildBoard(Board, HalfL, HalfS, Trace, Gap, ViaDia, ViaPitch, ViaClear,
+                   HalfL - PortSpace - PortLen / 2.0, True, True, nVias);
         Say('package_vias=' + IntToStr(nVias));
         Say('package_body=ok');
     Except
@@ -387,17 +404,33 @@ Begin
     End;
     PCBServer.PostProcess;
 
+    { The SMP launch.
+
+      The previous version dropped a port_length/4 square on the centre
+      line. At 1.275 mm that is far wider than the gap edge at about
+      0.37 mm, so it shorted the signal into both grounds -- the bridge
+      between the two ground sides visible in the 3D view.
+
+      The land is therefore no wider than the trace, which makes a short
+      impossible by construction: it stays inside the corridor the two
+      coplanar grounds already leave. The connector body is
+      port_length x port_width and its OUTER edge sits port_space from
+      the board edge, so the launch centre is one half-body further in.
+
+      Exact SMP land dimensions belong to the connector datasheet; what
+      is fixed here is the placement and the clearance. }
     PCBServer.PreProcess;
     Try
         For i := 0 To Round(PortCount) - 1 Do
         Begin
             If i = 0 Then
-                PortX := -HalfL + PortSpace
+                PortX := -(HalfL - PortSpace - PortLen / 2.0)
             Else
-                PortX := HalfL - PortSpace;
-            AddPad(Board, PortX, 0.0, PortLen / 4.0, PortWid / 4.0, eTopLayer);
+                PortX :=  (HalfL - PortSpace - PortLen / 2.0);
+            AddPad(Board, PortX, 0.0, PortLen / 3.0, Trace, eTopLayer);
         End;
         Say('package_ports=' + IntToStr(Round(PortCount)));
+        Say('port_centre_mm=' + FloatToStr(HalfL - PortSpace - PortLen / 2.0));
     Except
         Say('package_ports=FAIL');
     End;
@@ -425,8 +458,10 @@ Begin
       themselves are built in HFSS -- see AddBondFingers. }
     PCBServer.PreProcess;
     Try
-        nBonds := AddBondFingers(Board, -ChipHalfL - BondSpan, PadPitch, BondCount, PadW, PadH)
-                + AddBondFingers(Board,  ChipHalfL + BondSpan, PadPitch, BondCount, PadW, PadH);
+        nBonds := AddBondFingers(Board, -ChipHalfL - BondSpan, PadPitch, BondCount,
+                                 PadW, PadH, Trace / 2.0 + Gap)
+                + AddBondFingers(Board,  ChipHalfL + BondSpan, PadPitch, BondCount,
+                                 PadW, PadH, Trace / 2.0 + Gap);
         Say('package_bond_fingers=' + IntToStr(nBonds));
     Except
         Say('package_bond_fingers=FAIL');
@@ -464,7 +499,7 @@ Begin
             { No via fence on the die: it carries a single metal layer,
               so there is nothing to stitch to. }
             BuildBoard(Board, ChipHalfL, ChipHalfS, Trace, ChipGap,
-                       ViaDia, ViaPitch, ViaClear, False, False, nVias);
+                       ViaDia, ViaPitch, ViaClear, ChipHalfL, False, False, nVias);
             Say('chip_body=ok');
         Except
             Say('chip_body=FAIL');
@@ -473,14 +508,13 @@ Begin
 
         PCBServer.PreProcess;
         Try
-            For i := 0 To Round(BondCount) - 1 Do
-            Begin
-                AddPad(Board, -ChipHalfL + PadW,
-                       (i - (BondCount - 1) / 2.0) * PadPitch, PadW, PadH, eTopLayer);
-                AddPad(Board, ChipHalfL - PadW,
-                       (i - (BondCount - 1) / 2.0) * PadPitch, PadW, PadH, eTopLayer);
-            End;
-            Say('chip_bond_pads=' + IntToStr(Round(BondCount) * 2));
+            { Same rule as the board: signal pad on the line, ground
+              pads clear of the die's own gap. }
+            nBonds := AddBondFingers(Board, -ChipHalfL + PadW, PadPitch, BondCount,
+                                     PadW, PadH, Trace / 2.0 + ChipGap)
+                    + AddBondFingers(Board,  ChipHalfL - PadW, PadPitch, BondCount,
+                                     PadW, PadH, Trace / 2.0 + ChipGap);
+            Say('chip_bond_pads=' + IntToStr(nBonds));
         Except
             Say('chip_bond_pads=FAIL');
         End;

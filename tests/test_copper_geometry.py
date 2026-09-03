@@ -401,3 +401,119 @@ class TestClearChipArea(unittest.TestCase):
         cg.clear_chip_area(modeler, FRAME, STACK, 3.15, 3.15, [], log=lambda _m: None)
         self.assertEqual(modeler.boxes, [])
         self.assertEqual(modeler.subtractions, [])
+
+
+class TestWireBondNaming(unittest.TestCase):
+    """Each row of bonds needs its own name.
+
+    HFSS will not take a duplicate: it invents NewObject_something
+    instead, which matches no material rule and lands in the model as
+    vacuum. That is exactly how one of the two bond rows went missing.
+    """
+
+    SPEC = cg.BondSpec(u_start=-4.15, u_end=-2.85, w_start=1.381, w_end=1.381,
+                       count=3, pitch=0.4, height=0.2, diameter=0.025)
+
+    def test_the_name_is_used(self):
+        modeler = FakeModeler()
+        made = cg.build_wirebonds(modeler, self.SPEC, FRAME, name="wirebond_a",
+                                  log=lambda _m: None)
+        self.assertEqual(made, ["wirebond_a"])
+
+    def test_two_rows_get_different_names(self):
+        modeler = FakeModeler()
+        a = cg.build_wirebonds(modeler, self.SPEC, FRAME, name="wirebond_a", log=lambda _m: None)
+        b = cg.build_wirebonds(modeler, self.SPEC, FRAME, name="wirebond_b", log=lambda _m: None)
+        self.assertNotEqual(a, b)
+
+    def test_both_names_still_match_the_material_rule(self):
+        from eigen_mode_analyze import model_builder
+
+        patterns = [rule[0] for rule in model_builder.MATERIAL_RULES]
+        for name in ("wirebond_a", "wirebond_b"):
+            self.assertTrue(any(p in name for p in patterns), name)
+
+
+class TestDrillVias(unittest.TestCase):
+    def test_the_board_is_drilled_and_the_barrels_kept(self):
+        """A barrel and the board cannot share a volume. It is the board
+        that gets the hole; the barrels are the conductor being
+        modelled."""
+        modeler = FakeModeler()
+        cg.drill_vias(modeler, "pcb_substrate", "pcb_vias", log=lambda _m: None)
+        target, tools, keep = modeler.subtractions[0]
+        self.assertEqual(target, "pcb_substrate")
+        self.assertEqual(tools, ["pcb_vias"])
+        self.assertTrue(keep, "the via barrels must survive the drilling")
+
+    def test_a_failure_is_loud(self):
+        class Failing(FakeModeler):
+            def subtract(self, *a, **k):
+                raise RuntimeError("nope")
+
+        messages = []
+        cg.drill_vias(Failing(), "pcb_substrate", "pcb_vias", log=messages.append)
+        self.assertTrue(any("WARNING" in m for m in messages))
+        self.assertTrue(any("overlap" in m for m in messages))
+
+
+class TestExportedLayoutIsSane(unittest.TestCase):
+    """Geometric facts about the real generated board.
+
+    These are the failures that only showed up once the model was looked
+    at in 3D, so they are checked against the actual export rather than a
+    fixture.
+    """
+
+    PATH = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "base_parts", "altium", "generated", "copper.txt",
+    )
+
+    def setUp(self):
+        if not os.path.isfile(self.PATH):
+            self.skipTest("copper.txt not present -- run the Altium generator first")
+        from eigen_mode_analyze import equations as eq, paths
+
+        self.v = eq.get_numeric_parameters(eq.read_file(str(paths.DEFAULT_EQUATIONS_FILE)))
+        self.pkg = cg.read_file(self.PATH)["package"]
+        self.trace = self.v["cpw_trace_width"]
+
+    def _gap_edge(self):
+        from eigen_mode_analyze import altium_generation as ag
+
+        return self.trace / 2 + ag.build_params(self.v)["pcb_cpw_gap"]
+
+    def test_the_centre_conductor_stops_before_the_board_edge(self):
+        """Running it to the edge is what let the connector land bridge
+        the signal into both grounds."""
+        half_l = self.v["pcb_length"] / 2
+        expected = half_l - self.v["port_space"] - self.v["port_length"] / 2
+        track = self.pkg.tracks[0]
+        self.assertAlmostEqual(abs(track.x2), expected, places=6)
+        self.assertLess(abs(track.x2), half_l)
+
+    def test_no_pad_intrudes_into_the_cpw_gap(self):
+        """A pad straddling the gap edge is metal the real board does not
+        have, in the one place the field is most sensitive to it."""
+        edge = self._gap_edge()
+        for pad in self.pkg.pads:
+            inner = abs(pad.y) - pad.ysize / 2
+            outer = abs(pad.y) + pad.ysize / 2
+            on_signal = outer <= self.trace / 2 + 1e-9
+            if on_signal:
+                continue
+            self.assertGreaterEqual(
+                inner, edge - 1e-6,
+                f"pad at y={pad.y} reaches {inner:.4f}, inside the gap edge {edge:.4f}",
+            )
+
+    def test_the_launch_cannot_short_the_grounds(self):
+        """The land is no wider than the trace, so it stays inside the
+        corridor the coplanar grounds already leave."""
+        half_l = self.v["pcb_length"] / 2
+        launch_x = half_l - self.v["port_space"] - self.v["port_length"] / 2
+        launches = [p for p in self.pkg.pads if abs(abs(p.x) - launch_x) < 1e-6]
+        self.assertTrue(launches, "no launch pad found")
+        for pad in launches:
+            self.assertLessEqual(pad.ysize, self.trace + 1e-9)

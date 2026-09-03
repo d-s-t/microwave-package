@@ -244,6 +244,9 @@ def build_layout(hfss, combo_dir: str, dimensions_txt_content: str, log=logger.i
             targets=[name for names in made.values() for name in names],
             log=log,
         )
+        # A via barrel and the board cannot share a volume: drill them.
+        if "pcb_vias" in made:
+            cg.drill_vias(hfss.modeler, "pcb_substrate", "pcb_vias", log=log)
 
     chip = boards.get("chip")
     if chip is not None and len(chip):
@@ -258,7 +261,7 @@ def build_layout(hfss, combo_dir: str, dimensions_txt_content: str, log=logger.i
         half_chip = v.get("chip_length", 6.3) / 2.0
         span = v.get("bonding_clearence", 1.0)
         inset = v.get("bond_pad_length", 0.3)
-        for sign in (-1.0, +1.0):
+        for side, sign in (("a", -1.0), ("b", +1.0)):
             cg.build_wirebonds(
                 hfss.modeler,
                 cg.BondSpec(
@@ -271,7 +274,7 @@ def build_layout(hfss, combo_dir: str, dimensions_txt_content: str, log=logger.i
                     height=v.get("bond_height", 0.2),
                     diameter=v.get("bond_wire_diameter", 0.025),
                 ),
-                frame, log=log,
+                frame, name=f"wirebond_{side}", log=log,
             )
 
 
@@ -342,6 +345,28 @@ def build_copper(hfss, combo_dir: str, dimensions_txt_content: str, log=logger.i
             )
 
 
+def _assign_material(hfss, obj, material: str, log) -> bool:
+    """Set a body's material and CHECK IT TOOK.
+
+    Assigning a material the library does not have does not raise -- the
+    body simply stays on the modeller default, which is vacuum. In the
+    tree that is indistinguishable from a deliberate choice, so a
+    conductor can end up modelled as empty space with nothing said. Read
+    it back and report when it did not stick.
+    """
+    try:
+        obj.material_name = material
+    except Exception as exc:
+        log(f"WARNING: assigning {material!r} to {obj.name} raised {exc}.")
+        return False
+
+    try:
+        applied = (obj.material_name or "").strip().lower()
+    except Exception:
+        return True  # cannot read it back; assume the write worked
+    return applied == material.strip().lower()
+
+
 def assign_materials_and_boundaries(hfss, mat_settings: dict, log=logger.info) -> Dict[str, object]:
     """Give every solid in the imported model its material and boundary.
 
@@ -354,6 +379,7 @@ def assign_materials_and_boundaries(hfss, mat_settings: dict, log=logger.info) -
     unmatched = []
     unnamed = []
     fell_back = set()
+    rejected = []
 
     for obj in hfss.modeler.solid_objects:
         name = obj.name.lower()
@@ -364,7 +390,8 @@ def assign_materials_and_boundaries(hfss, mat_settings: dict, log=logger.info) -
             if material:
                 if not mat_settings.get(material_key):
                     fell_back.add(material_key)
-                obj.material_name = material
+                if not _assign_material(hfss, obj, material, log):
+                    rejected.append(f"{obj.name} ({material})")
             else:
                 unnamed.append(obj.name)
             objects_dict.setdefault(key, obj)
@@ -374,6 +401,13 @@ def assign_materials_and_boundaries(hfss, mat_settings: dict, log=logger.info) -
         else:
             unmatched.append(obj.name)
 
+    if rejected:
+        log(
+            "WARNING: the modeller would not accept these materials, so those "
+            "bodies keep its default of vacuum: " + ", ".join(sorted(rejected))
+            + ". A name the material library does not have is the usual cause; "
+            "add it to the library or set a different one in the run settings."
+        )
     if fell_back:
         # Worth saying out loud. A run whose settings predate a material
         # key posts an empty string for it, and an unset material leaves
