@@ -128,6 +128,16 @@
 <p>Stage: <strong id="stage">{{ run.state.stage }}</strong>
    -- <span id="running-indicator">{{ "running" if is_running else "not running" }}</span></p>
 
+{% if run.state.stage == "geometry_ready" %}
+<div class="note-box">
+  <strong>Geometry is built; the queue was offline.</strong>
+  Every STEP file for this run has been generated on this machine, but the task
+  queue could not be reached, so nothing was handed to the worker. Reconnect and
+  press <em>Resume this run</em> -- the finished geometry is kept and will not be
+  rebuilt.
+</div>
+{% endif %}
+
 {% if run.state.stage == "error" and run.state.error %}
 <div class="error-box">
   <strong>The pipeline stopped with an error:</strong>

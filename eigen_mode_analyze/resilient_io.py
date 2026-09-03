@@ -51,3 +51,43 @@ def call_with_retry(fn: Callable, *args, queue_root: Optional[str] = None, poll_
         except OSError as exc:
             logger.warning("Filesystem operation failed (%s); will wait and retry.", exc)
             time.sleep(poll_seconds)
+
+
+def queue_from_env(env_var: str = "ANSYS_ANALYZE_QUEUE_PATH"):
+    """`QueuePaths` for the configured queue, WITHOUT touching it.
+
+    `QueuePaths.from_env` creates the queue's subfolders as it goes,
+    which raises the moment the share is unreachable -- and it is called
+    while a run is being started, so an offline share used to mean no run
+    could even be created. Preparing a run offline is a normal thing to
+    want: the geometry is built on this machine and only the handoff
+    needs the network.
+
+    The constructor itself is pure string joining, so this is safe to
+    call with the share down. `ensure_queue_ready` does the part that
+    needs the share, when the share is actually there.
+    """
+    import os
+
+    from ansys_analyze_common import queue_common
+
+    root = os.environ.get(env_var)
+    if not root:
+        raise EnvironmentError(
+            f"Environment variable {env_var} is not set. Point it at a "
+            "folder both the modeling machine and the analysis machine "
+            "can reach (e.g. a shared/network drive) that should hold "
+            "the task queue."
+        )
+    return queue_common.QueuePaths(root)
+
+
+def ensure_queue_ready(queue, poll_seconds: float = 10.0,
+                       on_wait: Optional[Callable[[str], None]] = None) -> None:
+    """Wait for the queue to be reachable, then create its subfolders.
+
+    The half of `QueuePaths.from_env` that needs the share, deferred to
+    the point where the share is genuinely needed.
+    """
+    wait_until_available(queue.root, poll_seconds=poll_seconds, on_wait=on_wait)
+    queue.ensure_exist()
