@@ -15,7 +15,7 @@ import argparse
 import logging
 import sys
 import threading
-from typing import Optional
+from typing import List, Optional
 
 from ansys_analyze_common import queue_common
 
@@ -39,19 +39,51 @@ def run_pipeline(run: Run, queue: "queue_common.QueuePaths", log=logger.info, st
     combos = {cid: c["params"] for cid, c in run.state["combos"].items()}
     aedt_version = analysis_settings.get("aedt_version")
 
+    # Combinations whose geometry is built but which could not be handed
+    # over, because the queue was unreachable at the time.
+    deferred: List[str] = []
+
     def queue_combo(combo_id: str) -> None:
-        """Build the AEDT model for one finished STEP and queue it."""
+        """Build the AEDT model for one finished STEP, and hand it over
+        if the queue is reachable.
+
+        The two halves are deliberately separate. Building the model is
+        local work that needs AEDT and no network, so it happens either
+        way; only the copy into the queue needs the share. That is what
+        makes a run preparable offline: everything that can be computed
+        here is computed, and all that is left for later is the handoff.
+        """
         combo = run.state["combos"][combo_id]
         if combo.get("task_id") or combo.get("step_status") != "done":
             return
-        resilient_io.wait_until_available(
-            queue.root, on_wait=lambda p: log(f"Queue path {p} unreachable -- waiting for it to come back...")
-        )
+
         dimensions_txt_content = eq.read_file(f"{run.combo_dir(combo_id)}/dimensions.txt")
+        object_names = model_builder.build_model(
+            combo_id, combo["step_path"], dimensions_txt_content, run, analysis_settings,
+            aedt_version, analysis_settings.get("student_version", True),
+            analysis_settings.get("graphical", False), log=log,
+        )
+        if object_names is None:
+            # Already queued, or the project could not be made ready --
+            # build_model has said which.
+            return
+
+        if not resilient_io.path_available(queue.root):
+            # Do NOT wait here. Waiting would stall the sweep on its
+            # first combination with nothing to show for the time. The
+            # model is built and saved; only the handoff is missing, and
+            # resuming later picks up exactly there.
+            if combo_id not in deferred:
+                deferred.append(combo_id)
+                run.update_combo(combo_id, queue_status="deferred")
+            return
+
+        resilient_io.ensure_queue_ready(
+            queue, on_wait=lambda p: log(f"Queue path {p} unreachable -- waiting for it to come back...")
+        )
         resilient_io.call_with_retry(
-            model_builder.build_and_queue,
-            combo_id, combo["step_path"], dimensions_txt_content, run, queue, analysis_settings,
-            aedt_version, analysis_settings.get("student_version", True), analysis_settings.get("graphical", False),
+            model_builder.queue_model,
+            combo_id, combo["step_path"], run, queue, object_names,
             queue_root=queue.root, log=log,
         )
 
@@ -60,6 +92,22 @@ def run_pipeline(run: Run, queue: "queue_common.QueuePaths", log=logger.info, st
     # already analysing report progress to the UI while the remaining
     # geometry is still being built. The STEP files themselves are still
     # produced one at a time: they share a single SolidWorks document.
+    # Probe the queue once, up front. A DISCONNECTED MAPPED DRIVE takes
+    # about twenty seconds to answer the first time in a process, because
+    # Windows tries to reconnect it before giving up -- so without this
+    # the run would appear to hang at a random moment with nothing said.
+    # Later probes in this process are cached and instant.
+    log(f"Checking the queue at {queue.root} (a disconnected network drive can take ~20s to answer)...")
+    if resilient_io.path_available(queue.root):
+        resilient_io.ensure_queue_ready(queue)
+        log("Queue is reachable.")
+    else:
+        log(
+            f"Queue at {queue.root} is NOT reachable. The geometry will still be built "
+            "on this machine; handing it to the worker is deferred until you reconnect "
+            "and resume this run."
+        )
+
     log("Stage 1/4: generating STEP files, building AEDT models, and queuing analysis tasks...")
     run.set_stage("generating_and_queuing")
 
@@ -108,6 +156,21 @@ def run_pipeline(run: Run, queue: "queue_common.QueuePaths", log=logger.info, st
 
     if stop_event is not None and stop_event.is_set():
         monitor_thread.join(timeout=30)
+        return
+
+    if deferred:
+        # The geometry is built and saved; only the handoff is missing.
+        # Resuming this run once the share is back picks up exactly here,
+        # because every finished STEP is skipped and every combination
+        # without a task_id gets queued.
+        monitor_thread.join(timeout=30)
+        run.set_stage("geometry_ready")
+        log(
+            f"{len(deferred)} combination(s) are fully built -- geometry and AEDT "
+            f"project both -- but the queue at {queue.root} is unreachable, so nothing "
+            "was handed to the worker. Reconnect and resume this run to hand them over; "
+            "nothing will be rebuilt, the projects are just copied across."
+        )
         return
 
     # Post-processing drives a local AEDT session. When the worker has its
@@ -248,7 +311,7 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s: %(message)s", stream=sys.stdout)
     args = parse_args()
-    queue = queue_common.QueuePaths.from_env("ANSYS_ANALYZE_QUEUE_PATH")
+    queue = resilient_io.queue_from_env("ANSYS_ANALYZE_QUEUE_PATH")
 
     if args.resume:
         run = Run.load(args.resume)
