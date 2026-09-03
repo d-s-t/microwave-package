@@ -473,47 +473,68 @@ class TestExportedLayoutIsSane(unittest.TestCase):
     def setUp(self):
         if not os.path.isfile(self.PATH):
             self.skipTest("copper.txt not present -- run the Altium generator first")
-        from eigen_mode_analyze import equations as eq, paths
+        from eigen_mode_analyze import altium_generation as ag, equations as eq, paths, smp
 
+        self.smp = smp
         self.v = eq.get_numeric_parameters(eq.read_file(str(paths.DEFAULT_EQUATIONS_FILE)))
         self.pkg = cg.read_file(self.PATH)["package"]
         self.trace = self.v["cpw_trace_width"]
+        self.gap_edge = self.trace / 2 + ag.build_params(self.v)["pcb_cpw_gap"]
+        self.half_l = self.v["pcb_length"] / 2
+        self.launch_x = smp.launch_centre(self.half_l, self.v["port_space"])
+        self.launch_inner = smp.launch_inner_edge(self.half_l, self.v["port_space"])
 
-    def _gap_edge(self):
-        from eigen_mode_analyze import altium_generation as ag
+    def _launch_pads(self):
+        """Everything outboard of where the launch begins.
 
-        return self.trace / 2 + ag.build_params(self.v)["pcb_cpw_gap"]
+        The connector's own grounds are allowed to cross the centre line
+        -- the strap exists to short the two coplanar grounds together
+        behind the launch. Nothing inboard of it may.
+        """
+        return [p for p in self.pkg.pads if abs(p.x) >= self.launch_inner - 1e-6]
 
-    def test_the_centre_conductor_stops_before_the_board_edge(self):
-        """Running it to the edge is what let the connector land bridge
-        the signal into both grounds."""
-        half_l = self.v["pcb_length"] / 2
-        expected = half_l - self.v["port_space"] - self.v["port_length"] / 2
+    def test_the_centre_conductor_stops_at_the_launch(self):
+        """Running it further is what let the connector land bridge the
+        signal into both grounds."""
         track = self.pkg.tracks[0]
-        self.assertAlmostEqual(abs(track.x2), expected, places=6)
-        self.assertLess(abs(track.x2), half_l)
+        self.assertAlmostEqual(abs(track.x2), self.launch_x, places=6)
+        self.assertLess(abs(track.x2), self.half_l)
 
-    def test_no_pad_intrudes_into_the_cpw_gap(self):
-        """A pad straddling the gap edge is metal the real board does not
-        have, in the one place the field is most sensitive to it."""
-        edge = self._gap_edge()
+    def test_the_trace_stops_before_the_ground_strap(self):
+        """The strap joins the two ground sides. The signal reaching it
+        would be a dead short."""
+        track = self.pkg.tracks[0]
+        strap = max(self.pkg.pads, key=lambda p: p.x)
+        self.assertGreater(strap.x - strap.xsize / 2, track.x2)
+
+    def test_the_launch_lands_port_space_from_the_board_edge(self):
+        outer = max(p.x + p.xsize / 2 for p in self.pkg.pads)
+        self.assertAlmostEqual(outer, self.half_l - self.v["port_space"], places=6)
+
+    def test_the_signal_land_stays_inside_the_gap(self):
+        """It is wider than the trace, but must still clear the grounds."""
+        lands = [p for p in self.pkg.pads if abs(abs(p.x) - self.launch_x) < 1e-6]
+        self.assertTrue(lands, "no signal land at the launch centre")
+        for pad in lands:
+            self.assertLess(pad.ysize / 2, self.gap_edge)
+
+    def test_no_pad_inboard_of_the_launch_intrudes_into_the_gap(self):
+        """The bond fingers. A pad straddling the gap edge is metal the
+        real board does not have, in the one place the field is most
+        sensitive to it."""
+        launch = {id(p) for p in self._launch_pads()}
+        checked = 0
         for pad in self.pkg.pads:
+            if id(pad) in launch:
+                continue
+            checked += 1
             inner = abs(pad.y) - pad.ysize / 2
             outer = abs(pad.y) + pad.ysize / 2
-            on_signal = outer <= self.trace / 2 + 1e-9
-            if on_signal:
-                continue
+            if outer <= self.trace / 2 + 1e-9:
+                continue          # the signal bond, on the centre conductor
             self.assertGreaterEqual(
-                inner, edge - 1e-6,
-                f"pad at y={pad.y} reaches {inner:.4f}, inside the gap edge {edge:.4f}",
+                inner, self.gap_edge - 1e-6,
+                f"pad at y={pad.y} reaches {inner:.4f}, inside the gap edge "
+                f"{self.gap_edge:.4f}",
             )
-
-    def test_the_launch_cannot_short_the_grounds(self):
-        """The land is no wider than the trace, so it stays inside the
-        corridor the coplanar grounds already leave."""
-        half_l = self.v["pcb_length"] / 2
-        launch_x = half_l - self.v["port_space"] - self.v["port_length"] / 2
-        launches = [p for p in self.pkg.pads if abs(abs(p.x) - launch_x) < 1e-6]
-        self.assertTrue(launches, "no launch pad found")
-        for pad in launches:
-            self.assertLessEqual(pad.ysize, self.trace + 1e-9)
+        self.assertGreater(checked, 0, "no inboard pads were actually checked")

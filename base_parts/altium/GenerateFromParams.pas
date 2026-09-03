@@ -289,6 +289,54 @@ End;
   bond_height and bond_wire_diameter, where the arc profile can be made
   exactly what the model needs. What the layout owes the bonds is the
   pads at each end, which is what this places. }
+{ The SMP launch, from the vendor land pattern.
+
+  Wuerth WR-SMP 60124102122403, read out of the KiCad footprint that
+  ships with the part and passed in through the parameter file, so the
+  vendor's numbers are not retyped here.
+
+  The connector works in its own frame: v runs along the signal axis
+  with the centre pin exiting toward +v, u runs across it. Three ground
+  pads form a U open toward +v, and its closed end -- the strap -- joins
+  the two sides of the ground. On a coplanar board those two sides are
+  the CPW's own grounds, so the strap deliberately shorts them behind
+  the launch. That is why the centre conductor has to stop at the signal
+  pad and never reach the strap.
+
+  Placement maps the connector frame onto the board with
+
+      board x = Sign * (Origin - v)      board y = u
+
+  and Origin is set so the outermost copper sits port_space from the
+  board edge. Sign mirrors the whole thing for the other end. }
+{ One land of the connector, mapped from the connector frame onto the
+  board. A pad's extent along board x is its size along v, and along y
+  its size along u -- the two frames are rotated a quarter turn.
+
+  Top level on purpose: DelphiScript has no closures, and a nested
+  procedure reading Board or Origin from the enclosing scope fails at
+  parse time with "Can't access top level variable". }
+Procedure AddLand(Board : IPCB_Board; Sign, Origin, U, V, SizeU, SizeV : Double);
+Begin
+    AddPad(Board, Sign * (Origin - V), U, SizeV, SizeU, eTopLayer);
+End;
+
+Procedure AddSmpLaunch(Board : IPCB_Board; P : TStringList; Sign, Origin : Double);
+Begin
+    AddLand(Board, Sign, Origin,
+            ParamOf(P, 'smp_sig_u', 0.0),   ParamOf(P, 'smp_sig_v', 2.9),
+            ParamOf(P, 'smp_sig_su', 0.48), ParamOf(P, 'smp_sig_sv', 1.4));
+    AddLand(Board, Sign, Origin,
+            ParamOf(P, 'smp_arml_u', -2.45), ParamOf(P, 'smp_arml_v', -0.1),
+            ParamOf(P, 'smp_arml_su', 0.3),  ParamOf(P, 'smp_arml_sv', 4.0));
+    AddLand(Board, Sign, Origin,
+            ParamOf(P, 'smp_armr_u', 2.45),  ParamOf(P, 'smp_armr_v', -0.2),
+            ParamOf(P, 'smp_armr_su', 0.3),  ParamOf(P, 'smp_armr_sv', 4.0));
+    AddLand(Board, Sign, Origin,
+            ParamOf(P, 'smp_strap_u', 0.0),  ParamOf(P, 'smp_strap_v', -2.45),
+            ParamOf(P, 'smp_strap_su', 4.0), ParamOf(P, 'smp_strap_sv', 0.3));
+End;
+
 Function AddBondFingers(Board : IPCB_Board;
                         X, PadPitch, Count, PadW, PadH, GndInner : Double) : Integer;
 Var
@@ -330,6 +378,7 @@ Var
     PortCount, PortSpace, PortLen, PortWid : Double;
     PortX : Double;
     ShieldInset, BondWire, BondHeight, BondSpan : Double;
+    SmpOrigin : Double;
     nVias : Integer;
     nRing : Integer;
     nBonds : Integer;
@@ -367,6 +416,8 @@ Begin
     PortSpace := ParamOf(P, 'port_space', 1.5);
     PortLen   := ParamOf(P, 'port_length', 5.1);
     PortWid   := ParamOf(P, 'port_width', 5.1);
+    { Placed so the outermost land sits port_space from the edge. }
+    SmpOrigin := HalfL - PortSpace + ParamOf(P, 'smp_outer_v', -2.6);
     ShieldInset := ParamOf(P, 'shield_ring_inset', 0.5);
     BondWire    := ParamOf(P, 'bond_wire_diameter', 0.025);
     BondHeight  := ParamOf(P, 'bond_height', 0.2);
@@ -396,7 +447,7 @@ Begin
     PCBServer.PreProcess;
     Try
         BuildBoard(Board, HalfL, HalfS, Trace, Gap, ViaDia, ViaPitch, ViaClear,
-                   HalfL - PortSpace - PortLen / 2.0, True, True, nVias);
+                   SmpOrigin - ParamOf(P, 'smp_sig_v', 2.9), True, True, nVias);
         Say('package_vias=' + IntToStr(nVias));
         Say('package_body=ok');
     Except
@@ -424,13 +475,13 @@ Begin
         For i := 0 To Round(PortCount) - 1 Do
         Begin
             If i = 0 Then
-                PortX := -(HalfL - PortSpace - PortLen / 2.0)
+                AddSmpLaunch(Board, P, -1.0, SmpOrigin)
             Else
-                PortX :=  (HalfL - PortSpace - PortLen / 2.0);
-            AddPad(Board, PortX, 0.0, PortLen / 3.0, Trace, eTopLayer);
+                AddSmpLaunch(Board, P,  1.0, SmpOrigin);
         End;
         Say('package_ports=' + IntToStr(Round(PortCount)));
-        Say('port_centre_mm=' + FloatToStr(HalfL - PortSpace - PortLen / 2.0));
+        Say('smp_origin_mm=' + FloatToStr(SmpOrigin));
+        Say('signal_pad_mm=' + FloatToStr(SmpOrigin - ParamOf(P, 'smp_sig_v', 2.9)));
     Except
         Say('package_ports=FAIL');
     End;

@@ -274,15 +274,19 @@ def check_layout(values: Dict[str, float]) -> Optional[str]:
             f"chip_side, or widen pcb_side"
         )
 
-    # Bond fingers sit between the die and the port, and must not run
-    # into either.
+    # Bond fingers sit between the die and the launch, and must not run
+    # into either. The launch extent comes from the connector's own land
+    # pattern, not from port_length -- that parameter describes the
+    # aperture in the box wall, not this footprint.
+    from . import smp
+
     finger_x = get("chip_length") / 2.0 + get("bonding_clearence")
-    port_inner = half_length - get("port_space") - get("port_length") / 4.0
-    if finger_x >= port_inner:
+    launch_inner = smp.launch_inner_edge(half_length, get("port_space"))
+    if finger_x >= launch_inner:
         return (
-            f"the bond fingers reach {_fmt(finger_x)} mm but the port starts at "
-            f"{_fmt(port_inner)} mm -- reduce bonding_clearence, or move the port out "
-            f"with port_space"
+            f"the bond fingers reach {_fmt(finger_x)} mm but the SMP launch starts at "
+            f"{_fmt(launch_inner)} mm -- reduce bonding_clearence, or move the "
+            f"connector out with port_space"
         )
 
     # A row of bonds has to fit across the die.

@@ -202,9 +202,13 @@ def build_params(
     rather than recomputed downstream, so the run keeps a record of the
     geometry it actually built.
     """
-    from . import cpw
+    from . import cpw, smp
 
     out = dict(values)
+    # The connector land pattern travels with the parameters so the
+    # vendor's numbers live in one place rather than being retyped into
+    # the DelphiScript.
+    out.update(smp.as_parameters())
     trace = values["cpw_trace_width"]
 
     out["pcb_cpw_gap"] = cpw.solve_gap_for_z0(
