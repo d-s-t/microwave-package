@@ -332,7 +332,8 @@ End;
   ground plane on the far side of the substrate, and -- where the board
   has two layers to stitch -- a via fence down both sides of the line. }
 Procedure BuildBoard(Board : IPCB_Board; HalfL, HalfS, Trace, Gap,
-                     ViaDia, ViaPitch, ViaClear, TraceHalfL : Double;
+                     ViaDia, ViaPitch, ViaClear, TraceHalfL,
+                     FenceHalfL, FenceInnerL : Double;
                      WantVias : Boolean; WantBackPlane : Boolean;
                      Var nVias : Integer);
 Var
@@ -349,6 +350,17 @@ Begin
     AddRect(Board, -HalfL,  GndInner, HalfL,  HalfS,    eTopLayer);
     AddRect(Board, -HalfL, -HalfS,    HalfL, -GndInner, eTopLayer);
 
+    { Ground behind each launch. Without it the CPW corridor runs bare
+      all the way to the board edge, leaving a slot in the ground behind
+      the connector where there should be metal. The connector's own
+      strap already ties the two sides together here, so filling it
+      shorts nothing that was not already shorted. }
+    If FenceHalfL < HalfL Then
+    Begin
+        AddRect(Board, -HalfL, -GndInner, -FenceHalfL, GndInner, eTopLayer);
+        AddRect(Board,  FenceHalfL, -GndInner, HalfL,  GndInner, eTopLayer);
+    End;
+
     { The die carries metal on ONE face. Giving it a back plane would
       put a conductor between the die and the board that the real part
       does not have, right where the fields are strongest. }
@@ -361,12 +373,24 @@ Begin
         FenceY := GndInner + ViaClear + ViaDia / 2.0;
         If FenceY + ViaDia / 2.0 < HalfS Then
         Begin
-            X := -HalfL + ViaPitch;
-            While X < HalfL - ViaPitch / 2.0 Do
+            { The fence runs between the die and each launch, and
+              nowhere else.
+
+              It stops at FenceHalfL because beyond that is the
+              connector, and a via under its land is a hole under a
+              solder joint. It stops again at FenceInnerL because inside
+              that is the die pocket -- there is no board there to
+              stitch, and the bond fingers are, which is where the fence
+              was landing vias straight on top of them. }
+            X := -FenceHalfL;
+            While X <= FenceHalfL Do
             Begin
-                AddVia(Board, X,  FenceY, ViaDia, ViaDia / 2.0);
-                AddVia(Board, X, -FenceY, ViaDia, ViaDia / 2.0);
-                nVias := nVias + 2;
+                If Abs(X) >= FenceInnerL Then
+                Begin
+                    AddVia(Board, X,  FenceY, ViaDia, ViaDia / 2.0);
+                    AddVia(Board, X, -FenceY, ViaDia, ViaDia / 2.0);
+                    nVias := nVias + 2;
+                End;
                 X := X + ViaPitch;
             End;
         End;
@@ -421,7 +445,7 @@ Var
     ViaDia, ViaPitch, ViaClear : Double;
     PadW, PadH : Double;
     PortCount, PortSpace : Double;
-    ShieldInset, SmpOrigin : Double;
+    ShieldInset, SmpOrigin, BondSpan : Double;
     nVias, nRing, nBonds, i : Integer;
 Begin
     Rpt := TStringList.Create;
@@ -452,7 +476,8 @@ Begin
     PadH      := ParamOf(P, 'bond_pad_width', 0.15);
     PortCount := ParamOf(P, 'port_count', 2);
     PortSpace := ParamOf(P, 'port_space', 1.5);
-    ShieldInset := ParamOf(P, 'shield_ring_inset', 0.5);
+    ShieldInset := ParamOf(P, 'shield_ring_inset', 0.9);
+    BondSpan    := ParamOf(P, 'bonding_clearence', 0.4);
     OutDir    := P.Values['out_dir'];
     BondPath  := OutDir + '\bonds.txt';
 
@@ -482,8 +507,14 @@ Begin
 
     PCBServer.PreProcess;
     Try
+        { The fence and the ground fill both stop where the launch
+          begins -- its innermost land. }
         BuildBoard(Board, HalfL, HalfS, Trace, Gap, ViaDia, ViaPitch, ViaClear,
-                   SmpOrigin - ParamOf(P, 'smp_sig_v', 2.9), True, True, nVias);
+                   SmpOrigin - ParamOf(P, 'smp_sig_v', 2.9),
+                   SmpOrigin - ParamOf(P, 'smp_inner_v', 3.6),
+                   { clear of the bond fingers at the die }
+                   ChipHalfL + BondSpan + PadW / 2.0 + ViaDia,
+                   True, True, nVias);
         Say('package_vias=' + IntToStr(nVias));
         Say('package_body=ok');
     Except
@@ -563,7 +594,8 @@ Begin
             { No via fence and no back plane on the die: it carries a
               single metal layer. }
             BuildBoard(Board, ChipHalfL, ChipHalfS, Trace, ChipGap,
-                       ViaDia, ViaPitch, ViaClear, ChipHalfL, False, False, nVias);
+                       ViaDia, ViaPitch, ViaClear, ChipHalfL, ChipHalfL, 0.0,
+                       False, False, nVias);
             Say('chip_body=ok');
         Except
             Say('chip_body=FAIL');

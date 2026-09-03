@@ -576,3 +576,47 @@ class TestExportedLayoutIsSane(unittest.TestCase):
             here = [b for b in layout
                     if b.kind == bonds.SIGNAL and (b.pcb_x > 0) == (sign > 0)]
             self.assertEqual(len(here), 2)
+
+    def test_no_via_lands_on_a_bond_pad(self):
+        """The fence used to run straight across the die region, putting
+        vias on top of the bond fingers. Nothing in the tree shows that;
+        it only appears in the 3D view."""
+        worst = None
+        for via in self.pkg.vias:
+            radius = via.diameter / 2
+            for pad in self.pkg.pads:
+                dx = max(abs(via.x - pad.x) - pad.xsize / 2, 0.0)
+                dy = max(abs(via.y - pad.y) - pad.ysize / 2, 0.0)
+                clearance = (dx * dx + dy * dy) ** 0.5 - radius
+                if worst is None or clearance < worst[0]:
+                    worst = (clearance, via, pad)
+        self.assertIsNotNone(worst, "no vias or no pads to compare")
+        clearance, via, pad = worst
+        self.assertGreater(
+            clearance, 0,
+            f"via at ({via.x}, {via.y}) overlaps the pad at ({pad.x}, {pad.y})",
+        )
+
+    def test_no_via_sits_under_the_connector(self):
+        """A via under a land is a hole under a solder joint."""
+        under = [v for v in self.pkg.vias if abs(v.x) >= self.launch_inner]
+        self.assertEqual(under, [], f"{len(under)} vias under the launch")
+
+    def test_the_fence_does_not_cross_the_die_pocket(self):
+        """There is no board there to stitch -- it is a cutout."""
+        die_half = self.v["chip_length"] / 2
+        fence = [v for v in self.pkg.vias if abs(v.y) < 1.0]
+        self.assertTrue(fence, "no fence vias found")
+        self.assertTrue(all(abs(v.x) > die_half for v in fence))
+
+    def test_ground_is_filled_behind_each_launch(self):
+        """Otherwise the CPW corridor runs bare to the board edge,
+        leaving a slot in the ground behind the connector."""
+        half_l = self.v["pcb_length"] / 2
+        fills = [r for r in self.pkg.regions
+                 if r.layer == "top"
+                 and max(abs(p[1]) for p in r.points) <= self.gap_edge + 1e-6]
+        self.assertEqual(len(fills), 2, "expected one ground fill behind each launch")
+        for r in fills:
+            xs = [p[0] for p in r.points]
+            self.assertAlmostEqual(max(abs(x) for x in xs), half_l, places=6)

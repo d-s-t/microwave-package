@@ -34,7 +34,7 @@
 
 "wing_width"= 1	' mounting wing width
 
-"bonding_clearence"= 1
+"bonding_clearence"= 0.4	' gap from the die edge to the bond fingers
 
 "no_distortion" = 1 ' (boolean) when set to 1, no distortions are present. when set to 0, distortions are added to the box and holes to the PCB.
 
@@ -52,7 +52,7 @@
 
 "via_gnd_clearance"= 0.15	' setback of the via fence from the edge of the CPW gap
 
-"shield_ring_inset"= 0.5	' setback of the shield ring from the chip pocket edge
+"shield_ring_inset"= 0.9	' shield ring setback from the die: must clear the bond fingers
 
 "bond_pad_length"= 0.3	' bonding pad size along the feedline
 
@@ -68,7 +68,7 @@
 
 "chip_metal_thickness"= 0.0002	' thickness of the chip conductor (200 nm)
 
-"box_height"= "wall_width" + "pedestal_depth" + "pcb_width"
+"box_height"= "wall_width" + "pedestal_depth" + "pcb_width" + 2 * "copper_thickness"
 
 "box_length"= "pcb_length" + 2 * "wall_width"
 

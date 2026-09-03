@@ -274,6 +274,19 @@ def check_layout(values: Dict[str, float]) -> Optional[str]:
             f"chip_side, or widen pcb_side"
         )
 
+    # The shield ring goes OUTSIDE the bond fingers. Working inward from
+    # the die the order is: die, bond fingers, shield ring. Get that
+    # backwards and the ring's vias land on the fingers -- which the
+    # generator would build without complaint.
+    finger_outer = get("chip_length") / 2.0 + get("bonding_clearence") + get("bond_pad_length") / 2.0
+    ring_inner = get("chip_length") / 2.0 + get("shield_ring_inset") - via_dia / 2.0
+    if ring_inner <= finger_outer:
+        return (
+            f"the shield ring reaches in to {_fmt(ring_inner)} mm but the bond fingers "
+            f"already extend to {_fmt(finger_outer)} mm, so its vias would land on them "
+            f"-- increase shield_ring_inset, or reduce bonding_clearence"
+        )
+
     # Bond fingers sit between the die and the launch, and must not run
     # into either. The launch extent comes from the connector's own land
     # pattern, not from port_length -- that parameter describes the
