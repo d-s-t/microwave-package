@@ -159,7 +159,8 @@ End;
   has two layers to stitch -- a via fence down both sides of the line. }
 Procedure BuildBoard(Board : IPCB_Board; HalfL, HalfS, Trace, Gap,
                      ViaDia, ViaPitch, ViaClear : Double;
-                     WantVias : Boolean; Var nVias : Integer);
+                     WantVias : Boolean; WantBackPlane : Boolean;
+                     Var nVias : Integer);
 Var
     GndInner, FenceY, X : Double;
 Begin
@@ -169,7 +170,12 @@ Begin
     GndInner := Trace / 2.0 + Gap;
     AddRect(Board, -HalfL,  GndInner, HalfL,  HalfS,    eTopLayer);
     AddRect(Board, -HalfL, -HalfS,    HalfL, -GndInner, eTopLayer);
-    AddRect(Board, -HalfL, -HalfS,    HalfL,  HalfS,    eBottomLayer);
+
+    { The die carries metal on ONE face. Giving it a back plane would
+      put a conductor between the die and the board that the real part
+      does not have, right where the fields are strongest. }
+    If WantBackPlane Then
+        AddRect(Board, -HalfL, -HalfS, HalfL, HalfS, eBottomLayer);
 
     nVias := 0;
     If WantVias Then
@@ -373,7 +379,7 @@ Begin
 
     PCBServer.PreProcess;
     Try
-        BuildBoard(Board, HalfL, HalfS, Trace, Gap, ViaDia, ViaPitch, ViaClear, True, nVias);
+        BuildBoard(Board, HalfL, HalfS, Trace, Gap, ViaDia, ViaPitch, ViaClear, True, True, nVias);
         Say('package_vias=' + IntToStr(nVias));
         Say('package_body=ok');
     Except
@@ -458,7 +464,7 @@ Begin
             { No via fence on the die: it carries a single metal layer,
               so there is nothing to stitch to. }
             BuildBoard(Board, ChipHalfL, ChipHalfS, Trace, ChipGap,
-                       ViaDia, ViaPitch, ViaClear, False, nVias);
+                       ViaDia, ViaPitch, ViaClear, False, False, nVias);
             Say('chip_body=ok');
         Except
             Say('chip_body=FAIL');

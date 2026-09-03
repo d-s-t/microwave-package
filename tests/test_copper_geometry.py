@@ -354,3 +354,50 @@ class TestAgainstRealExport(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestClearChipArea(unittest.TestCase):
+    """The board is pocketed for the die, so copper must not cross that
+    footprint -- it would be hanging over a hole, or trapped under the
+    die where the real board has none. Either way it is a stray
+    conductor exactly where the fields are strongest."""
+
+    def _clear(self, targets=("pcb_copper_top", "pcb_copper_bottom")):
+        modeler = FakeModeler()
+        cg.clear_chip_area(modeler, FRAME, STACK, 3.15, 3.15, targets,
+                           log=lambda _m: None)
+        return modeler
+
+    def test_the_cut_covers_the_die_footprint(self):
+        modeler = self._clear()
+        _origin, sizes = modeler.boxes[0]
+        self.assertAlmostEqual(sizes[0], 6.3)
+        self.assertAlmostEqual(sizes[2], 6.3)
+
+    def test_the_cut_spans_past_both_copper_layers(self):
+        """It has to reach above the top copper and below the bottom
+        copper, or one layer survives the cut."""
+        modeler = self._clear()
+        origin, sizes = modeler.boxes[0]
+        low, high = origin[1], origin[1] + sizes[1]
+        self.assertLess(low, STACK.pcb_bottom - STACK.copper_thickness)
+        self.assertGreater(high, STACK.pcb_top + STACK.copper_thickness)
+
+    def test_both_layers_are_cut_together(self):
+        modeler = self._clear()
+        target, tools, keep = modeler.subtractions[0]
+        self.assertEqual(target, ["pcb_copper_top", "pcb_copper_bottom"])
+        self.assertEqual(tools, ["chip_area_cut"])
+        self.assertFalse(keep, "the cutting tool must be consumed")
+
+    def test_the_tool_is_named_not_left_anonymous(self):
+        """An unnamed leftover shows up in the tree as NewObject_* with
+        no material, which is how a stray body hides in plain sight."""
+        modeler = self._clear()
+        self.assertEqual(modeler[modeler.boxes and "box1"].name, "chip_area_cut")
+
+    def test_nothing_to_cut_is_a_no_op(self):
+        modeler = FakeModeler()
+        cg.clear_chip_area(modeler, FRAME, STACK, 3.15, 3.15, [], log=lambda _m: None)
+        self.assertEqual(modeler.boxes, [])
+        self.assertEqual(modeler.subtractions, [])

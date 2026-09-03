@@ -219,5 +219,110 @@ class TestSupersededSolids(unittest.TestCase):
             self._drop(["pcb_substrate", "chip_substrate", "pcb_copper_top"]), []
         )
 
+
+class TestChipCopperIsAConductor(unittest.TestCase):
+    """Regression: the bodies the copper builder actually makes.
+
+    The earlier tests only ever used a body called `chip_conductor`,
+    which no part of the pipeline produces. The real names are
+    `chip_copper_top` and `chip_copper_bottom`, and with no rule of their
+    own they matched the bare "chip" rule and were built as SILICON -- a
+    conductor modelled as a dielectric, which solves happily and is
+    completely wrong.
+    """
+
+    def test_chip_copper_is_not_silicon(self):
+        hfss, _ = assign(["chip_copper_top", "chip_copper_bottom"])
+        for obj in hfss.modeler.solid_objects:
+            self.assertEqual(obj.material_name, "niobium", obj.name)
+
+    def test_chip_copper_gets_perfect_e(self):
+        hfss, _ = assign(["chip_copper_top"])
+        self.assertEqual(hfss.perfect_e, ["chip_copper_top"])
+
+    def test_chip_vias_are_conductor(self):
+        hfss, _ = assign(["chip_vias"])
+        self.assertEqual(hfss.modeler.solid_objects[0].material_name, "niobium")
+
+    def test_every_name_the_builder_produces_is_covered(self):
+        """Ties the rules to the builder, so a rename on either side
+        cannot quietly go back to silent mis-assignment."""
+        produced = [
+            "pcb_substrate", "pcb_copper_top", "pcb_copper_bottom", "pcb_vias",
+            "chip_substrate", "chip_copper_top", "chip_copper_bottom", "wirebond",
+        ]
+        expected = {
+            "pcb_substrate": "Rogers TMM 10i (tm)",
+            "pcb_copper_top": "copper",
+            "pcb_copper_bottom": "copper",
+            "pcb_vias": "copper",
+            "chip_substrate": "silicon",
+            "chip_copper_top": "niobium",
+            "chip_copper_bottom": "niobium",
+            "wirebond": "copper",
+        }
+        hfss, _ = assign(produced)
+        got = {o.name: o.material_name for o in hfss.modeler.solid_objects}
+        self.assertEqual(got, expected)
+
+
+class TestMaterialFallbacks(unittest.TestCase):
+    """An empty material setting is not "leave it alone".
+
+    A run whose settings predate a key posts an empty string for it, and
+    an unset material leaves the body on HFSS's default -- vacuum, which
+    in the tree is indistinguishable from a deliberate choice. That is
+    how copper, vias and bonds all came out as vacuum.
+    """
+
+    def test_a_missing_key_falls_back_rather_than_leaving_vacuum(self):
+        settings = {k: v for k, v in SETTINGS.items() if k != "mat_conductor_pcb"}
+        hfss, _ = assign(["pcb_copper_top"], settings)
+        self.assertEqual(hfss.modeler.solid_objects[0].material_name, "copper")
+
+    def test_an_empty_string_falls_back_too(self):
+        """The actual failure: the form posts "" for a blank field."""
+        settings = dict(SETTINGS, mat_conductor_pcb="", mat_conductor_chip="")
+        hfss, _ = assign(["pcb_copper_top", "chip_copper_top"], settings)
+        got = {o.name: o.material_name for o in hfss.modeler.solid_objects}
+        self.assertEqual(got["pcb_copper_top"], "copper")
+        self.assertEqual(got["chip_copper_top"], "niobium")
+
+    def test_falling_back_is_announced(self):
+        settings = dict(SETTINGS, mat_conductor_pcb="")
+        messages = []
+        assign(["pcb_copper_top"], settings, log=messages.append)
+        self.assertTrue(any("mat_conductor_pcb" in m for m in messages))
+
+    def test_an_explicit_value_is_never_overridden(self):
+        settings = dict(SETTINGS, mat_conductor_pcb="gold")
+        hfss, _ = assign(["pcb_copper_top"], settings)
+        self.assertEqual(hfss.modeler.solid_objects[0].material_name, "gold")
+
+    def test_every_material_key_the_rules_use_has_a_fallback(self):
+        """Structural: a rule naming a key with no fallback can still
+        strand a body on vacuum."""
+        used = {rule[2] for rule in model_builder.MATERIAL_RULES}
+        missing = used - set(model_builder.MATERIAL_FALLBACKS)
+        self.assertEqual(missing, set(), f"no fallback for {missing}")
+
+
+class TestRuleTableIsSane(unittest.TestCase):
+    def test_defined_exactly_once(self):
+        """It was defined twice for a while, and the second, stale copy
+        silently won -- which made a fix to the first one do nothing."""
+        import inspect
+
+        source = inspect.getsource(model_builder)
+        self.assertEqual(source.count("\nMATERIAL_RULES = ["), 1)
+
+    def test_specific_rules_precede_the_bare_ones(self):
+        patterns = [rule[0] for rule in model_builder.MATERIAL_RULES]
+        for specific, bare in (("chip_copper", "chip"), ("chip_substrate", "chip"),
+                               ("pcb_copper", "pcb"), ("pcb_substrate", "pcb"),
+                               ("chip_lid", "chip")):
+            self.assertLess(patterns.index(specific), patterns.index(bare),
+                            f"{specific} must be tested before {bare}")
+
 if __name__ == "__main__":
     unittest.main()

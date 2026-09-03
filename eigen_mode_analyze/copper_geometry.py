@@ -461,3 +461,41 @@ def build_wirebonds(modeler, spec: BondSpec, frame: Frame, log=logger.info) -> L
     modeler[names[0]].name = "wirebond"
     log(f"Built {spec.count} wire bonds as 'wirebond'")
     return ["wirebond"]
+
+
+def clear_chip_area(
+    modeler,
+    frame: Frame,
+    stack: Stack,
+    chip_half_length: float,
+    chip_half_side: float,
+    targets: Sequence[str],
+    log=logger.info,
+) -> None:
+    """Cut the die's footprint out of the board's copper.
+
+    The board is pocketed for the die, so copper crossing that footprint
+    would be hanging over a hole -- or, where the pocket is blind because
+    the board is thicker than the die, sitting under the die with no gap.
+    Either way it is copper that is not there on the real board, and a
+    stray conductor is exactly the sort of thing that moves a mode.
+
+    The cut spans the full stack plus a copper thickness at each end, so
+    it takes the top and bottom layers together however the pocket
+    turned out.
+    """
+    if not targets:
+        return
+
+    margin = max(stack.copper_thickness, stack.chip_metal_thickness) * 2.0
+    origin, sizes = frame.box(
+        -chip_half_length, -chip_half_side, chip_half_length, chip_half_side,
+        stack.pcb_bottom - margin,
+        (stack.pcb_top - stack.pcb_bottom) + 2 * margin,
+    )
+    tool = modeler.create_box(origin=origin, sizes=sizes)
+    # Named rather than left as NewObject_*, so an operation that fails
+    # to consume it is obvious in the tree instead of anonymous.
+    tool.name = "chip_area_cut"
+    modeler.subtract(list(targets), ["chip_area_cut"], keep_originals=False)
+    log(f"Cleared the die footprint out of {', '.join(targets)}.")

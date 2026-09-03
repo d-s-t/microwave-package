@@ -234,13 +234,13 @@
   </fieldset>
   <fieldset>
     <legend>Materials / boundaries</legend>
-    <label>Box material <input type="text" name="mat_box" value="{{ materials.mat_box }}"></label><br>
-    <label>PCB material <input type="text" name="mat_pcb" value="{{ materials.mat_pcb }}"></label><br>
-    <label>Chip material <input type="text" name="mat_chip" value="{{ materials.mat_chip }}"></label><br>
-    <label>Vacuum material <input type="text" name="mat_vacuum" value="{{ materials.mat_vacuum }}"></label><br>
+    <label>Box material <input type="text" name="mat_box" value="{{ materials.mat_box or 'aluminum' }}"></label><br>
+    <label>PCB material <input type="text" name="mat_pcb" value="{{ materials.mat_pcb or 'Rogers TMM 10i (tm)' }}"></label><br>
+    <label>Chip material <input type="text" name="mat_chip" value="{{ materials.mat_chip or 'silicon' }}"></label><br>
+    <label>Vacuum material <input type="text" name="mat_vacuum" value="{{ materials.mat_vacuum or 'vacuum' }}"></label><br>
     <label><input type="checkbox" name="perfect_e_box" {% if materials.perfect_e_box %}checked{% endif %}> Perfect E on box/lid/chip_lid</label><br>
-    <label>PCB conductor <input type="text" name="mat_conductor_pcb" value="{{ materials.mat_conductor_pcb }}"></label><br>
-    <label>Chip conductor <input type="text" name="mat_conductor_chip" value="{{ materials.mat_conductor_chip }}"></label><br>
+    <label>PCB conductor <input type="text" name="mat_conductor_pcb" value="{{ materials.mat_conductor_pcb or 'copper' }}"></label><br>
+    <label>Chip conductor <input type="text" name="mat_conductor_chip" value="{{ materials.mat_conductor_chip or 'niobium' }}"></label><br>
     <label><input type="checkbox" name="perfect_e_conductors" {% if materials.perfect_e_conductors %}checked{% endif %}> Perfect E on the conductors</label><br>
     <label><input type="checkbox" name="perfect_e_connector" {% if materials.perfect_e_connector %}checked{% endif %}> Perfect E on the connector</label>
     <p style="font-size:0.85em;opacity:0.75;margin:0.4em 0 0">

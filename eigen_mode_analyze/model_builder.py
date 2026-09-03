@@ -87,6 +87,20 @@ def calculate_min_freq(dimensions_txt_content: str, safety_factor: float = 0.4, 
     return max(naive_min_freq_ghz * safety_factor, floor_ghz)
 
 
+# What a material setting falls back to when the run does not carry one.
+# Runs created before a key existed post an empty string for it, and an
+# empty material is not "leave it alone" -- it leaves the body on HFSS's
+# default of vacuum, which is indistinguishable from a real choice.
+MATERIAL_FALLBACKS = {
+    "mat_box": "aluminum",
+    "mat_pcb": "Rogers TMM 10i (tm)",
+    "mat_chip": "silicon",
+    "mat_vacuum": "vacuum",
+    "mat_conductor_pcb": "copper",
+    "mat_conductor_chip": "niobium",
+}
+
+
 # How an imported solid's name decides its material and boundary.
 #
 # This used to be an if/elif chain of substring tests, which was fine
@@ -102,11 +116,18 @@ def calculate_min_freq(dimensions_txt_content: str, safety_factor: float = 0.4, 
 # Names come from the STEP, which gets them from the SolidWorks
 # components -- see base_parts/altium/README.md for where copper body
 # names come from.
+#
+# Note that the chip's copper needs its own rules ahead of the bare
+# "chip" one. Without them "chip_copper_top" matched "chip" and was
+# given SILICON -- a conductor modelled as a dielectric, which solves
+# perfectly happily and is completely wrong.
 MATERIAL_RULES = [
     # (substring, key in objects_dict, material setting, perfect-E setting)
     ("vacuum",          "vacuum",          "mat_vacuum",          None),
     ("chip_lid",        "chip_lid",        "mat_box",             "perfect_e_box"),
     ("chip_conductor",  "chip_conductor",  "mat_conductor_chip",  "perfect_e_conductors"),
+    ("chip_copper",     "chip_copper",     "mat_conductor_chip",  "perfect_e_conductors"),
+    ("chip_via",        "chip_vias",       "mat_conductor_chip",  "perfect_e_conductors"),
     ("chip_substrate",  "chip",            "mat_chip",            None),
     ("pcb_copper",      "pcb_copper",      "mat_conductor_pcb",   "perfect_e_conductors"),
     ("pcb_via",         "pcb_vias",        "mat_conductor_pcb",   "perfect_e_conductors"),
@@ -209,10 +230,19 @@ def build_layout(hfss, combo_dir: str, dimensions_txt_content: str, log=logger.i
 
     package = boards.get("package")
     if package is not None and len(package):
-        cg.build(
+        made = cg.build(
             hfss.modeler, package, frame,
             top_face=stack.pcb_top, bottom_face=stack.pcb_bottom,
             thickness=stack.copper_thickness, prefix="pcb", log=log,
+        )
+        # The board is pocketed for the die, so any copper crossing that
+        # footprint is copper the real board does not have.
+        cg.clear_chip_area(
+            hfss.modeler, frame, stack,
+            chip_half_length=v.get("chip_length", 6.3) / 2.0,
+            chip_half_side=v.get("chip_side", 6.3) / 2.0,
+            targets=[name for names in made.values() for name in names],
+            log=log,
         )
 
     chip = boards.get("chip")
@@ -245,38 +275,6 @@ def build_layout(hfss, combo_dir: str, dimensions_txt_content: str, log=logger.i
             )
 
 
-# How an imported solid's name decides its material and boundary.
-#
-# This used to be an if/elif chain of substring tests, which was fine
-# while every body was either the box, the lid, the PCB or the chip. It
-# stops being fine the moment copper exists: "pcb_copper" contains
-# "pcb", so the old chain would have assigned it Rogers and nobody would
-# have noticed until the eigenfrequencies came out wrong.
-#
-# So the rules are explicit and ORDERED, most specific first, and the
-# first match wins. `perfect_e` names the setting that decides whether
-# the body also gets a perfect-E boundary; None means never.
-#
-# Names come from the STEP, which gets them from the SolidWorks
-# components -- see base_parts/altium/README.md for where copper body
-# names come from.
-MATERIAL_RULES = [
-    # (substring, key in objects_dict, material setting, perfect-E setting)
-    ("vacuum",          "vacuum",          "mat_vacuum",          None),
-    ("chip_lid",        "chip_lid",        "mat_box",             "perfect_e_box"),
-    ("chip_conductor",  "chip_conductor",  "mat_conductor_chip",  "perfect_e_conductors"),
-    ("chip_substrate",  "chip",            "mat_chip",            None),
-    ("pcb_copper",      "pcb_copper",      "mat_conductor_pcb",   "perfect_e_conductors"),
-    ("pcb_via",         "pcb_vias",        "mat_conductor_pcb",   "perfect_e_conductors"),
-    ("pcb_substrate",   "pcb",             "mat_pcb",             None),
-    ("wirebond",        "wirebond",        "mat_conductor_pcb",   "perfect_e_conductors"),
-    ("connector",       "connector",       "mat_box",             "perfect_e_connector"),
-    # The bare names come last, so the specific ones above win.
-    ("lid",             "lid",             "mat_box",             "perfect_e_box"),
-    ("box",             "box",             "mat_box",             "perfect_e_box"),
-    ("chip",            "chip",            "mat_chip",            None),
-    ("pcb",             "pcb",             "mat_pcb",             None),
-]
 
 
 def build_copper(hfss, combo_dir: str, dimensions_txt_content: str, log=logger.info) -> None:
@@ -354,15 +352,21 @@ def assign_materials_and_boundaries(hfss, mat_settings: dict, log=logger.info) -
     """
     objects_dict = {}
     unmatched = []
+    unnamed = []
+    fell_back = set()
 
     for obj in hfss.modeler.solid_objects:
         name = obj.name.lower()
         for pattern, key, material_key, perfect_e_key in MATERIAL_RULES:
             if pattern not in name:
                 continue
-            material = mat_settings.get(material_key)
+            material = mat_settings.get(material_key) or MATERIAL_FALLBACKS.get(material_key)
             if material:
+                if not mat_settings.get(material_key):
+                    fell_back.add(material_key)
                 obj.material_name = material
+            else:
+                unnamed.append(obj.name)
             objects_dict.setdefault(key, obj)
             if perfect_e_key and mat_settings.get(perfect_e_key):
                 hfss.assign_perfect_e(assignment=obj.name)
@@ -370,6 +374,21 @@ def assign_materials_and_boundaries(hfss, mat_settings: dict, log=logger.info) -
         else:
             unmatched.append(obj.name)
 
+    if fell_back:
+        # Worth saying out loud. A run whose settings predate a material
+        # key posts an empty string for it, and an unset material leaves
+        # the body on HFSS's default -- which is vacuum, and looks in the
+        # tree exactly like a deliberate choice.
+        log(
+            "NOTE: no value was configured for " + ", ".join(sorted(fell_back))
+            + "; used the built-in defaults instead."
+        )
+    if unnamed:
+        log(
+            "WARNING: these solids matched a rule but no material could be "
+            "resolved for them, so they keep the modeller default (vacuum): "
+            + ", ".join(sorted(unnamed))
+        )
     if unmatched:
         log(
             "WARNING: no material rule matched these solids, so they keep "
