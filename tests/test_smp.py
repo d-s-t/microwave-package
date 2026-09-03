@@ -82,3 +82,54 @@ class TestParameterHandoff(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestTheConnectorModel(unittest.TestCase):
+    """Placing the vendor solid on its launch.
+
+    Worth pinning because a frame error here is invisible in the tree:
+    the connector simply sits in the wrong plane, and the model still
+    solves.
+    """
+
+    def test_the_model_ships_with_the_repo(self):
+        from eigen_mode_analyze import paths
+
+        self.assertTrue(paths.SMP_MODEL_FILE.is_file(),
+                        "the vendor STEP should be in base_parts")
+
+    def test_the_rotation_matches_the_frame_used_everywhere_else(self):
+        """The model has Z up and the assembly has Y up. -90 about X is
+        the same mapping Frame applies; disagreeing would put the
+        connector in a different plane from the board."""
+        from eigen_mode_analyze import copper_geometry as cg
+
+        self.assertAlmostEqual(smp.model_rotation_degrees(), -90.0)
+
+        # Frame sends (u, v, w) to (u, w, -v); a -90 rotation about X
+        # sends (x, y, z) to (x, z, -y). Same thing.
+        frame = cg.Frame()
+        self.assertEqual(frame.point(1.0, 2.0, 3.0), [1.0, 3.0, -2.0])
+
+    def test_the_two_connectors_sit_at_opposite_ends(self):
+        from eigen_mode_analyze import copper_geometry as cg
+
+        frame = cg.Frame(x_offset=14.0, z_offset=6.0)
+        near = smp.model_offset(frame, 1.381, 13.0, 1.5, -1.0)
+        far = smp.model_offset(frame, 1.381, 13.0, 1.5, +1.0)
+        self.assertLess(near[0], frame.x_offset)
+        self.assertGreater(far[0], frame.x_offset)
+        self.assertAlmostEqual(frame.x_offset - near[0], far[0] - frame.x_offset)
+
+    def test_the_connector_sits_on_the_board_surface(self):
+        from eigen_mode_analyze import copper_geometry as cg
+
+        frame = cg.Frame(x_offset=14.0, z_offset=6.0)
+        offset = smp.model_offset(frame, 1.381, 13.0, 1.5, +1.0)
+        self.assertAlmostEqual(offset[1], 1.381, msg="height must be the board top face")
+
+    def test_the_name_it_gets_is_treated_as_a_conductor(self):
+        from eigen_mode_analyze import model_builder
+
+        patterns = [rule[0] for rule in model_builder.MATERIAL_RULES]
+        self.assertTrue(any(p in "connector_1" for p in patterns))

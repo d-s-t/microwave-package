@@ -171,6 +171,67 @@ def _drop_superseded_solids(hfss, log) -> None:
         log(f"Removed the imported {', '.join(doomed)} -- rebuilt from the layout instead.")
 
 
+def place_connectors(hfss, frame, board_top: float, half_length: float,
+                     port_space: float, count: int, log=logger.info) -> List[str]:
+    """Import the SMP connector model once per port and set it on its launch.
+
+    The vendor ships a single solid -- no separated pin, dielectric and
+    shell exists in any format they provide -- so each connector is one
+    body, named so the material rules give it a perfect-E boundary.
+
+    The import is identified by DIFFING the object list, because
+    import_3d_cad does not hand back what it created. Renaming
+    immediately matters: a second import would otherwise be
+    indistinguishable from the first.
+    """
+    from . import paths, smp
+
+    model = paths.SMP_MODEL_FILE
+    if not model.is_file():
+        log(f"No SMP model at {model} -- building the board without connectors.")
+        return []
+
+    placed = []
+    for index in range(int(count)):
+        sign = -1.0 if index == 0 else 1.0
+        before = set(hfss.modeler.object_names)
+        try:
+            hfss.modeler.import_3d_cad(str(model))
+        except Exception as exc:
+            log(f"WARNING: could not import the SMP model ({exc}); no connector placed.")
+            return placed
+
+        new = [n for n in hfss.modeler.object_names if n not in before]
+        if not new:
+            log("WARNING: importing the SMP model added no object; no connector placed.")
+            return placed
+
+        name = f"connector_{index + 1}"
+        obj = hfss.modeler[new[0]]
+        obj.name = name
+
+        try:
+            # Stand it up: the model has Z up, the assembly has Y up.
+            hfss.modeler.rotate(name, "X", smp.model_rotation_degrees())
+            if sign > 0:
+                # The far connector faces the other way.
+                hfss.modeler.rotate(name, "Y", 180.0)
+            hfss.modeler.move(
+                name,
+                smp.model_offset(frame, board_top, half_length, port_space, sign),
+            )
+        except Exception as exc:
+            log(f"WARNING: placed {name} but could not orient it ({exc}).")
+
+        placed.append(name)
+        try:
+            log(f"Placed {name}; bounding box {hfss.modeler[name].bounding_box}")
+        except Exception:
+            log(f"Placed {name}.")
+
+    return placed
+
+
 def build_layout(hfss, combo_dir: str, dimensions_txt_content: str, log=logger.info) -> None:
     """Rebuild the boards from the layout: substrates, copper and bonds.
 
@@ -255,6 +316,17 @@ def build_layout(hfss, combo_dir: str, dimensions_txt_content: str, log=logger.i
             top_face=stack.chip_top, bottom_face=stack.chip_bottom,
             thickness=stack.chip_metal_thickness, prefix="chip", log=log,
         )
+
+    # The connectors are real vendor geometry rather than a stand-in, so
+    # the launch is represented rather than left as bare copper.
+    place_connectors(
+        hfss, frame,
+        board_top=stack.pcb_top,
+        half_length=pcb_length / 2.0,
+        port_space=v.get("port_space", 1.5),
+        count=v.get("port_count", 2),
+        log=log,
+    )
 
     bond_count = int(v.get("bond_count", 0))
     if bond_count:

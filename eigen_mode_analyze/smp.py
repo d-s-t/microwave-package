@@ -92,3 +92,49 @@ def launch_inner_edge(half_length: float, port_space: float) -> float:
     past this point.
     """
     return launch_origin(half_length, port_space) - INNER_V
+
+
+# --- the connector's own 3D model -------------------------------------
+#
+# The vendor ships one solid. There is no separated pin / dielectric /
+# shell version in any format they provide -- STEP, IGES, Cadence, Eagle
+# and KiCad all carry a single closed shell -- so the part goes into the
+# model as one body and is treated as a perfect conductor. That loses the
+# dielectric inside the launch, which is a real approximation and worth
+# revisiting if the launch discontinuity turns out to matter.
+#
+# The STEP sits in the connector's own frame, which is NOT the footprint
+# frame and not the board's:
+#
+#     Xs  along the signal axis, but negated against the footprint's v
+#     Ys  across, matching the footprint's u
+#     Zs  height above the board
+#
+# so v = -Xs and u = Ys.
+
+MODEL_X_SPAN = (-3.30, 2.50)   # along the signal axis
+MODEL_Y_SPAN = (-2.50, 2.50)   # across
+
+
+def model_rotation_degrees() -> float:
+    """Rotation about X that stands the model up in assembly axes.
+
+    The model has Z up; the assembly has Y up. -90 degrees about X sends
+    (x, y, z) to (x, z, -y), which is the same mapping `Frame` applies to
+    everything else -- they have to agree or the connector lands in a
+    different plane from the board it sits on.
+    """
+    return -90.0
+
+
+def model_offset(frame, board_top: float, half_length: float,
+                 port_space: float, sign: float) -> list:
+    """Where to move the model after rotating it.
+
+    `sign` picks the end of the board: +1 is the +x end. The far
+    connector is the near one turned through half a revolution about the
+    up axis, so its offset is mirrored rather than recomputed.
+    """
+    origin = launch_origin(half_length, port_space)
+    x_along = sign * origin
+    return [x_along + frame.x_offset, board_top, frame.z_offset]

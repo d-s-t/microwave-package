@@ -25,6 +25,12 @@ ALTIUM_GENERATE_REPORT = ALTIUM_DIR / "generate_report.txt"
 ALTIUM_OUT_DIR = ALTIUM_DIR / "generated"
 ALTIUM_COPPER_REPORT = ALTIUM_OUT_DIR / "copper_report.txt"
 
+# The SMP connector's 3D model, as shipped by the vendor (Wuerth
+# WR-SMP 60124102122403). A single solid -- there is no separated
+# pin/dielectric/shell version of this part in any format the vendor
+# provides -- so it goes into the model as one body.
+SMP_MODEL_FILE = BASE_PARTS_DIR / "smp_connector.step"
+
 # One SVG per sweep parameter, showing which dimension that parameter
 # drives. Named after the parameter itself (wall_width.svg, ...) and
 # produced by base_parts/parameters_svg.py from parameters_visual.SLDDRW.
