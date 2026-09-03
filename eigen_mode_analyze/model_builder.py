@@ -235,6 +235,48 @@ def place_connectors(hfss, frame, board_top: float, half_length: float,
     return placed
 
 
+def cavity_frame(hfss, fallback_x: float, fallback_z: float, log=logger.info):
+    """Where the board sits, measured from the imported cavity.
+
+    The board is centred in the box's cavity, so the cavity's own centre
+    is the datum -- and measuring it beats computing it. The equations
+    give box_length as pcb_length + 2*wall_width, but the assembly also
+    carries mounting wings that extend it, so anything derived from
+    those two numbers alone lands half a wing out. Reading the imported
+    vacuum's bounding box gets it right without this code having to know
+    what else the mechanical design grew.
+
+    Falls back to the computed values, loudly, if the cavity is not
+    there to measure.
+    """
+    from . import copper_geometry as cg
+
+    for wanted in ("vacuum", "box"):
+        for obj in hfss.modeler.solid_objects:
+            if wanted not in obj.name.lower():
+                continue
+            try:
+                x_min, _y_min, z_min, x_max, _y_max, z_max = obj.bounding_box
+            except Exception:
+                continue
+            frame = cg.Frame(
+                x_offset=(x_min + x_max) / 2.0,
+                z_offset=(z_min + z_max) / 2.0,
+            )
+            log(
+                f"Board datum taken from {obj.name}: centre "
+                f"({frame.x_offset:.3f}, {frame.z_offset:.3f}) mm."
+            )
+            return frame
+
+    log(
+        "WARNING: no vacuum or box body to measure, so the board is placed from "
+        f"the equations instead ({fallback_x:.3f}, {fallback_z:.3f}). If the "
+        "assembly has mounting wings this will be off by half of one."
+    )
+    return cg.Frame(x_offset=fallback_x, z_offset=fallback_z)
+
+
 def build_layout(hfss, combo_dir: str, dimensions_txt_content: str, log=logger.info) -> None:
     """Rebuild the boards from the layout: substrates, copper and bonds.
 
@@ -259,12 +301,16 @@ def build_layout(hfss, combo_dir: str, dimensions_txt_content: str, log=logger.i
     wall = v.get("wall_width", 1.0)
     pedestal = v.get("pedestal_depth", 0.0)
 
-    # The assembly origin is a corner of the box, so the board centre
-    # sits half a box in along both in-plane axes. box_length and
-    # box_side are the equation file's own derived values.
-    frame = cg.Frame(
-        x_offset=(pcb_length + 2 * wall) / 2.0,
-        z_offset=(pcb_side + 2 * wall) / 2.0,
+    # The assembly origin is a corner, so the board centre sits inside
+    # the box -- but not simply half of (pcb_length + 2*wall_width),
+    # because the assembly also carries mounting wings that extend it.
+    # Measured from the cavity rather than computed, so the mechanical
+    # design can grow features this code has never heard of.
+    frame = cavity_frame(
+        hfss,
+        fallback_x=(pcb_length + 2 * wall) / 2.0,
+        fallback_z=(pcb_side + 2 * wall) / 2.0,
+        log=log,
     )
 
     # Heights follow box_height = wall_width + pedestal_depth +

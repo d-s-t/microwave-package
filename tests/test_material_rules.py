@@ -324,5 +324,80 @@ class TestRuleTableIsSane(unittest.TestCase):
             self.assertLess(patterns.index(specific), patterns.index(bare),
                             f"{specific} must be tested before {bare}")
 
+
+class TestCavityFrame(unittest.TestCase):
+    """Where the board's centre is taken from.
+
+    Computing it as half of (pcb_length + 2*wall_width) ignores the
+    mounting wings, which extend the assembly, so everything built from
+    that datum lands half a wing out along X. Measuring the cavity
+    instead is right whatever else the mechanical design carries.
+    """
+
+    class Solid:
+        def __init__(self, name, box):
+            self.name = name
+            self.bounding_box = box
+            self.material_name = None
+
+    class Modeler:
+        def __init__(self, solids):
+            self._solids = solids
+
+        @property
+        def modeler(self):
+            return self
+
+        @property
+        def solid_objects(self):
+            return self._solids
+
+    def _frame(self, solids, fx=14.0, fz=6.0, log=lambda _m: None):
+        return model_builder.cavity_frame(self.Modeler(solids), fx, fz, log=log)
+
+    def test_the_centre_comes_from_the_cavity_not_the_equations(self):
+        """A board with wings: the cavity centre is 19, while the
+        equations would have said 14."""
+        frame = self._frame([self.Solid("vacuum", [5.0, 1.0, 1.0, 33.0, 2.0, 11.0])])
+        self.assertAlmostEqual(frame.x_offset, 19.0)
+        self.assertAlmostEqual(frame.z_offset, 6.0)
+
+    def test_the_box_is_used_when_there_is_no_vacuum(self):
+        frame = self._frame([self.Solid("box", [0.0, 0.0, 0.0, 38.0, 3.0, 12.0])])
+        self.assertAlmostEqual(frame.x_offset, 19.0)
+        self.assertAlmostEqual(frame.z_offset, 6.0)
+
+    def test_the_vacuum_wins_over_the_box(self):
+        """The cavity is what the board sits in; the box includes walls
+        and wings."""
+        frame = self._frame([
+            self.Solid("box", [0.0, 0.0, 0.0, 38.0, 3.0, 12.0]),
+            self.Solid("vacuum", [6.0, 1.0, 1.0, 32.0, 2.0, 11.0]),
+        ])
+        self.assertAlmostEqual(frame.x_offset, 19.0)
+
+    def test_falling_back_is_loud(self):
+        """Silently using the computed value is how the wings were
+        missed in the first place."""
+        messages = []
+        frame = self._frame([self.Solid("lid", [0, 0, 0, 1, 1, 1])],
+                            log=messages.append)
+        self.assertAlmostEqual(frame.x_offset, 14.0)
+        self.assertTrue(any("WARNING" in m for m in messages))
+        self.assertTrue(any("wing" in m for m in messages))
+
+    def test_an_unreadable_bounding_box_falls_back(self):
+        class Broken:
+            name = "vacuum"
+
+            @property
+            def bounding_box(self):
+                raise RuntimeError("cannot measure")
+
+        messages = []
+        frame = self._frame([Broken()], log=messages.append)
+        self.assertAlmostEqual(frame.x_offset, 14.0)
+        self.assertTrue(any("WARNING" in m for m in messages))
+
 if __name__ == "__main__":
     unittest.main()
