@@ -179,10 +179,13 @@ def place_connectors(hfss, frame, board_top: float, half_length: float,
     shell exists in any format they provide -- so each connector is one
     body, named so the material rules give it a perfect-E boundary.
 
-    The import is identified by DIFFING the object list, because
-    import_3d_cad does not hand back what it created. Renaming
-    immediately matters: a second import would otherwise be
-    indistinguishable from the first.
+    Placement is by BOUNDING BOX, not by the model's own origin. A
+    vendor model's origin can sit anywhere, and this one's does not
+    coincide with the footprint origin, which is what left the
+    connectors offset from their launches. Aligning measured faces
+    instead is self-correcting: the outer face lands port_space from the
+    board edge, the underside sits on the board, and the body is centred
+    across it, whatever the file happens to use as its datum.
     """
     from . import paths, smp
 
@@ -201,33 +204,33 @@ def place_connectors(hfss, frame, board_top: float, half_length: float,
             log(f"WARNING: could not import the SMP model ({exc}); no connector placed.")
             return placed
 
-        new = [n for n in hfss.modeler.object_names if n not in before]
-        if not new:
+        new_objects = [n for n in hfss.modeler.object_names if n not in before]
+        if not new_objects:
             log("WARNING: importing the SMP model added no object; no connector placed.")
             return placed
 
         name = f"connector_{index + 1}"
-        obj = hfss.modeler[new[0]]
-        obj.name = name
+        hfss.modeler[new_objects[0]].name = name
 
         try:
             # Stand it up: the model has Z up, the assembly has Y up.
             hfss.modeler.rotate(name, "X", smp.model_rotation_degrees())
-            if sign > 0:
-                # The far connector faces the other way.
+            # Turn it to face the board. The near connector is the far
+            # one through half a revolution about the up axis.
+            if sign < 0:
                 hfss.modeler.rotate(name, "Y", 180.0)
-            hfss.modeler.move(
-                name,
-                smp.model_offset(frame, board_top, half_length, port_space, sign),
-            )
+
+            box = hfss.modeler[name].bounding_box
+            move = smp.model_alignment(box, frame, board_top, half_length, port_space, sign)
+            hfss.modeler.move(name, move)
+            log(f"Placed {name}: bounding box now {hfss.modeler[name].bounding_box}")
         except Exception as exc:
-            log(f"WARNING: placed {name} but could not orient it ({exc}).")
+            log(
+                f"WARNING: {name} was imported but could not be positioned ({exc}). "
+                "It is in the model at the wrong place."
+            )
 
         placed.append(name)
-        try:
-            log(f"Placed {name}; bounding box {hfss.modeler[name].bounding_box}")
-        except Exception:
-            log(f"Placed {name}.")
 
     return placed
 
@@ -328,28 +331,24 @@ def build_layout(hfss, combo_dir: str, dimensions_txt_content: str, log=logger.i
         log=log,
     )
 
-    bond_count = int(v.get("bond_count", 0))
-    if bond_count:
-        half_chip = v.get("chip_length", 6.3) / 2.0
-        span = v.get("bonding_clearence", 1.0)
-        inset = v.get("bond_pad_length", 0.3)
-        for side, sign in (("a", -1.0), ("b", +1.0)):
-            cg.build_wirebonds(
-                hfss.modeler,
-                cg.BondSpec(
-                    u_start=sign * (half_chip + span),
-                    u_end=sign * (half_chip - inset),
-                    w_start=stack.pcb_top,
-                    w_end=stack.chip_top,
-                    count=bond_count,
-                    pitch=v.get("bond_pad_pitch", 0.4),
-                    height=v.get("bond_height", 0.2),
-                    diameter=v.get("bond_wire_diameter", 0.025),
-                ),
-                frame, name=f"wirebond_{side}", log=log,
-            )
+    # The wires come from the same layout file Altium placed the pads
+    # from, so each one lands on its pad.
+    from . import bonds as bond_layout
 
-
+    bonds_path = os.path.join(combo_dir, "bonds.txt")
+    if os.path.isfile(bonds_path):
+        cg.build_bond_wires(
+            hfss.modeler,
+            bond_layout.read_file(bonds_path),
+            frame,
+            pcb_top=stack.pcb_top,
+            chip_top=stack.chip_top,
+            height=v.get("bond_height", 0.2),
+            diameter=v.get("bond_wire_diameter", 0.025),
+            log=log,
+        )
+    else:
+        log("No bonds.txt for this combination -- the die is not bonded.")
 
 
 def build_copper(hfss, combo_dir: str, dimensions_txt_content: str, log=logger.info) -> None:
@@ -417,26 +416,63 @@ def build_copper(hfss, combo_dir: str, dimensions_txt_content: str, log=logger.i
             )
 
 
-def _assign_material(hfss, obj, material: str, log) -> bool:
-    """Set a body's material and CHECK IT TOOK.
+# Tried in turn when the preferred material will not stick. The last
+# one is deliberately dull: a conductor modelled as the wrong metal is a
+# small error, while one left as vacuum is a completely different model.
+LAST_RESORT_CONDUCTOR = "copper"
+LAST_RESORT_DIELECTRIC = "Rogers TMM 10i (tm)"
 
-    Assigning a material the library does not have does not raise -- the
-    body simply stays on the modeller default, which is vacuum. In the
-    tree that is indistinguishable from a deliberate choice, so a
-    conductor can end up modelled as empty space with nothing said. Read
-    it back and report when it did not stick.
+
+def _try_material(hfss, obj, material: str) -> bool:
+    """Set a body's material and check it actually took.
+
+    Assigning a name the library does not have does NOT raise -- the body
+    simply stays on the modeller default, which is vacuum, and in the
+    tree that is indistinguishable from a deliberate choice.
     """
     try:
         obj.material_name = material
-    except Exception as exc:
-        log(f"WARNING: assigning {material!r} to {obj.name} raised {exc}.")
+    except Exception:
         return False
-
     try:
-        applied = (obj.material_name or "").strip().lower()
+        return (obj.material_name or "").strip().lower() == material.strip().lower()
     except Exception:
         return True  # cannot read it back; assume the write worked
-    return applied == material.strip().lower()
+
+
+def _assign_material(hfss, obj, material: str, is_conductor: bool, log) -> bool:
+    """Give a body a material, falling back until one sticks.
+
+    Niobium is the case this exists for: it is the right material for a
+    superconducting die but many libraries do not carry it, and the
+    failure is silent. Rather than leave the body as vacuum -- which is
+    not a conductor at all, and changes the physics rather than
+    approximating it -- try to add the material, then settle for a plain
+    metal and say so.
+    """
+    if _try_material(hfss, obj, material):
+        return True
+
+    # Some libraries will take it once it exists.
+    try:
+        hfss.materials.add_material(material)
+        if _try_material(hfss, obj, material):
+            log(f"Added {material!r} to the project material library for {obj.name}.")
+            return True
+    except Exception:
+        pass
+
+    stand_in = LAST_RESORT_CONDUCTOR if is_conductor else LAST_RESORT_DIELECTRIC
+    if stand_in != material and _try_material(hfss, obj, stand_in):
+        log(
+            f"WARNING: the material library would not take {material!r} for "
+            f"{obj.name}, so it is {stand_in!r} instead. Add {material!r} to the "
+            "library if its properties matter -- with a perfect-E boundary they "
+            "do not."
+        )
+        return True
+
+    return False
 
 
 def assign_materials_and_boundaries(hfss, mat_settings: dict, log=logger.info) -> Dict[str, object]:
@@ -462,7 +498,8 @@ def assign_materials_and_boundaries(hfss, mat_settings: dict, log=logger.info) -
             if material:
                 if not mat_settings.get(material_key):
                     fell_back.add(material_key)
-                if not _assign_material(hfss, obj, material, log):
+                is_conductor = "conductor" in material_key
+                if not _assign_material(hfss, obj, material, is_conductor, log):
                     rejected.append(f"{obj.name} ({material})")
             else:
                 unnamed.append(obj.name)

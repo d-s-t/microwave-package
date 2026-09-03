@@ -138,3 +138,30 @@ def model_offset(frame, board_top: float, half_length: float,
     origin = launch_origin(half_length, port_space)
     x_along = sign * origin
     return [x_along + frame.x_offset, board_top, frame.z_offset]
+
+
+def model_alignment(bounding_box, frame, board_top: float, half_length: float,
+                    port_space: float, sign: float) -> list:
+    """How far to move an imported connector so it sits on its launch.
+
+    Takes the model's measured bounding box -- `[xmin, ymin, zmin, xmax,
+    ymax, zmax]` in assembly axes, after it has been stood upright -- and
+    returns the translation that puts:
+
+      * its outer face exactly `port_space` from the board edge,
+      * its underside on the board's top face,
+      * its body centred across the board.
+
+    Working from measured faces rather than the model's own origin is
+    deliberate. A vendor model's datum can be anywhere -- this one's is
+    not the footprint origin -- and assuming otherwise is what left the
+    connectors sitting away from their launches.
+    """
+    x_min, y_min, z_min, x_max, y_max, z_max = bounding_box
+
+    outer = frame.x_offset + sign * (half_length - port_space)
+    # The outer face is whichever end points at the nearer board edge.
+    dx = outer - (x_max if sign > 0 else x_min)
+    dy = board_top - y_min
+    dz = frame.z_offset - (z_min + z_max) / 2.0
+    return [dx, dy, dz]

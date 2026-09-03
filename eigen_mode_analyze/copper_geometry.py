@@ -395,78 +395,64 @@ def _unite_as(modeler, parts: Sequence[str], name: str) -> List[str]:
 
 # --- wire bonds -------------------------------------------------------
 #
-# Bonds are built here rather than in Altium. AD26 models bond wires --
-# it has wirebond rules, violation types and JEDEC profile constants --
-# but exposes no wirebond entry in its scriptable object-id enum, so a
+# Built here rather than in Altium. AD26 models bond wires -- it has
+# wirebond rules, violation types and JEDEC profile constants -- but
+# exposes no wirebond entry in its scriptable object-id enum, so a
 # script cannot create one. That turned out not to matter: a bond is EM
 # geometry, not layout, and building it here means the loop profile is
-# exactly what the model needs and the solid is named `wirebond`, which
-# is what the material rules look for.
+# exactly what the model needs.
+#
+# The endpoints come from `bonds.py`, the same file Altium places its
+# pads from, so a wire always lands on its pad.
 
 
-@dataclass(frozen=True)
-class BondSpec:
-    """One row of bonds, from a board pad across to a die pad.
-
-    `u_start`/`u_end` are along the feedline and `w_start`/`w_end` are
-    the two pad heights -- equal, when the die sits flush in its pocket.
-    """
-    u_start: float
-    u_end: float
-    w_start: float
-    w_end: float
-    count: int
-    pitch: float
-    height: float
-    diameter: float
-
-
-def bond_path(spec: BondSpec, frame: Frame, v: float, segments: int = 12) -> List[List[float]]:
+def wire_path(bond, frame: Frame, pcb_top: float, chip_top: float,
+              height: float, segments: int = 12) -> List[List[float]]:
     """Points along one bond loop, in assembly coordinates.
 
-    A real bond leaves the pad steeply, arcs over, and comes down on the
-    die -- it is not a straight line, and the loop is what keeps it clear
-    of the die edge. A half sine gives that shape with the apex `height`
-    above the ends, and needs no special-casing when the two ends sit at
-    different heights.
+    A real bond leaves the pad steeply, arcs over and comes down on the
+    die; the loop is what keeps it clear of the die edge. A half sine
+    gives that shape with the apex `height` above the ends, and needs no
+    special-casing when the two ends sit at different heights -- which
+    they do not, now the die is let into the board flush.
     """
     import math
 
     points = []
     for i in range(segments + 1):
         t = i / segments
-        u = spec.u_start + (spec.u_end - spec.u_start) * t
-        w = spec.w_start + (spec.w_end - spec.w_start) * t
-        w += spec.height * math.sin(math.pi * t)
+        u = bond.pcb_x + (bond.chip_x - bond.pcb_x) * t
+        v = bond.pcb_y + (bond.chip_y - bond.pcb_y) * t
+        w = pcb_top + (chip_top - pcb_top) * t + height * math.sin(math.pi * t)
         points.append(frame.point(u, v, w))
     return points
 
 
-def build_wirebonds(modeler, spec: BondSpec, frame: Frame, name: str = "wirebond",
-                    log=logger.info) -> List[str]:
-    """Create one row of bond wires as swept circular profiles.
+def build_bond_wires(modeler, bond_list, frame: Frame, pcb_top: float,
+                     chip_top: float, height: float, diameter: float,
+                     name: str = "wirebond", log=logger.info) -> List[str]:
+    """Create every bond wire as a swept circular profile.
 
-    `name` must be unique per row. HFSS will not accept a duplicate name
-    and quietly assigns its own -- NewObject_something -- which then
-    matches no material rule and lands in the model as vacuum. Both rows
-    still contain "wirebond", which is what the rule matches on.
+    They are united into one body: the model wants a handful of named
+    solids, not one per wire, and the material rules match on the name.
     """
-    names = []
-    for i in range(spec.count):
-        v = (i - (spec.count - 1) / 2.0) * spec.pitch
+    made = []
+    for bond in bond_list:
         wire = modeler.create_polyline(
-            points=bond_path(spec, frame, v),
+            points=wire_path(bond, frame, pcb_top, chip_top, height),
             xsection_type="Circle",
-            xsection_width=spec.diameter,
+            xsection_width=diameter,
         )
-        names.append(wire.name)
+        made.append(wire.name)
 
-    if not names:
+    if not made:
         return []
-    if len(names) > 1:
-        modeler.unite(names)
-    modeler[names[0]].name = name
-    log(f"Built {spec.count} wire bonds as {name!r}")
+    if len(made) > 1:
+        modeler.unite(made)
+    modeler[made[0]].name = name
+
+    signal = sum(1 for b in bond_list if b.kind == "signal")
+    log(f"Built {len(made)} bond wires as {name!r} ({signal} signal, {len(made) - signal} ground)")
     return [name]
 
 

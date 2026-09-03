@@ -19,11 +19,27 @@
   * The CPW gap is never a drawn input. It is solved for 50 ohm in
     Python, per substrate, arriving as pcb_cpw_gap and chip_cpw_gap.
 
+  * Bond pad positions are not computed here either. They come from
+    bonds.txt, which HFSS also reads to build the wires, so a wire
+    cannot land beside its pad.
+
   * Every feature is guarded and counted separately, because Altium
     leaves no stack trace, no exit code and no dialog for a runtime
     error. The report file is the only diagnostic there is.
 
-  API spellings established empirically, none of them guessable:
+  DelphiScript traps this file has already fallen into:
+
+  * Block comments do not nest. An inner closing brace ends the header
+    early and the prose after it is parsed as code.
+  * There are no closures. A nested procedure reading a variable from
+    its enclosing scope fails with "Can't access top level variable".
+  * Continue, and Try/Finally wrapped around Try/Except, appear to leave
+    the parser out of step; it then reports the confusion as a
+    redeclaration at the NEXT declaration rather than where it happened.
+  * A routine defined twice is not rejected outright but eventually
+    breaks parsing in ways that point somewhere else entirely.
+
+  API spellings established empirically:
 
       Client.OpenNewDocument -- four arguments; three returns nil
       BoardOutline.Segments[i] returns the record BY VALUE, so it must
@@ -32,7 +48,6 @@
       PCBServer.PCBContourFactory for region outlines
       Doc.SetFileName then Doc.DoFileSave
 
-  Note: Pascal block comments do not nest.
   Altium internal units are 1/10000 mil; MMsToCoord converts.
 }
 
@@ -55,6 +70,28 @@ Var
 Begin
     V := P.Values[Name];
     If V = '' Then Result := Default Else Result := StrToFloat(V);
+End;
+
+{ One field of a pipe-separated record, 1-based. }
+Function Field(S : String; Index : Integer) : String;
+Var
+    fieldNo, sep : Integer;
+Begin
+    Result := '';
+    For fieldNo := 1 To Index Do
+    Begin
+        sep := Pos('|', S);
+        If sep = 0 Then
+        Begin
+            Result := S;
+            S := '';
+        End
+        Else
+        Begin
+            Result := Copy(S, 1, sep - 1);
+            S := Copy(S, sep + 1, Length(S));
+        End;
+    End;
 End;
 
 { Objects added from a script have to be announced, or they are not
@@ -131,6 +168,105 @@ Begin
     Announce(Board, Pd);
 End;
 
+{ One land of the SMP connector, mapped from the connector frame onto
+  the board. A pad's extent along board x is its size along v, and along
+  y its size along u -- the two frames are rotated a quarter turn.
+
+  Top level on purpose: DelphiScript has no closures. }
+Procedure AddLand(Board : IPCB_Board; Sign, Origin, U, V, SizeU, SizeV : Double);
+Begin
+    AddPad(Board, Sign * (Origin - V), U, SizeV, SizeU, eTopLayer);
+End;
+
+{ The SMP launch, from the vendor land pattern.
+
+  Wuerth WR-SMP 60124102122403, read out of the KiCad footprint that
+  ships with the part and passed in through the parameter file, so the
+  vendor's numbers are not retyped here.
+
+  The three ground pads form a U open toward +v, and its closed end --
+  the strap -- joins the two sides of the ground. On a coplanar board
+  those two sides are the CPW's own grounds, so the strap deliberately
+  shorts them behind the launch. That is why the centre conductor stops
+  at the signal pad and never reaches the strap. }
+Procedure AddSmpLaunch(Board : IPCB_Board; P : TStringList; Sign, Origin : Double);
+Begin
+    AddLand(Board, Sign, Origin,
+            ParamOf(P, 'smp_sig_u', 0.0),   ParamOf(P, 'smp_sig_v', 2.9),
+            ParamOf(P, 'smp_sig_su', 0.48), ParamOf(P, 'smp_sig_sv', 1.4));
+    AddLand(Board, Sign, Origin,
+            ParamOf(P, 'smp_arml_u', -2.45), ParamOf(P, 'smp_arml_v', -0.1),
+            ParamOf(P, 'smp_arml_su', 0.3),  ParamOf(P, 'smp_arml_sv', 4.0));
+    AddLand(Board, Sign, Origin,
+            ParamOf(P, 'smp_armr_u', 2.45),  ParamOf(P, 'smp_armr_v', -0.2),
+            ParamOf(P, 'smp_armr_su', 0.3),  ParamOf(P, 'smp_armr_sv', 4.0));
+    AddLand(Board, Sign, Origin,
+            ParamOf(P, 'smp_strap_u', 0.0),  ParamOf(P, 'smp_strap_v', -2.45),
+            ParamOf(P, 'smp_strap_su', 4.0), ParamOf(P, 'smp_strap_sv', 0.3));
+End;
+
+{ Bond pads, placed from the shared layout file.
+
+  The positions are computed in Python (eigen_mode_analyze/bonds.py) and
+  written to bonds.txt, because HFSS builds the wires from the same
+  file. Working them out separately in both places would let the pads
+  and the wires drift apart the first time a parameter changed.
+
+  There is no bond count: the number follows from the die perimeter and
+  the pad pitch, the way it does on the bench.
+
+  OnChip selects which end of each bond to place -- the die's pad or the
+  board's finger. Both come from the same record, so they cannot end up
+  describing different bonds.
+
+  The wires themselves are NOT drawn here. AD26 has wirebond rules,
+  violation types and JEDEC profiles but no wirebond entry in its
+  scriptable object-id enum, so PCBObjectFactory cannot make one. }
+Function AddBondPads(Board : IPCB_Board; BondPath : String;
+                     PadW, PadH : Double; OnChip : Boolean) : Integer;
+Var
+    Lines : TStringList;
+    n     : Integer;
+    Line  : String;
+    X, Y  : Double;
+    Ok    : Boolean;
+Begin
+    Result := 0;
+    Lines := TStringList.Create;
+
+    Ok := True;
+    Try
+        Lines.LoadFromFile(BondPath);
+    Except
+        Ok := False;
+    End;
+
+    If Ok Then
+    Begin
+        For n := 0 To Lines.Count - 1 Do
+        Begin
+            Line := Trim(Lines[n]);
+            If (Line <> '') And (Copy(Line, 1, 1) <> '#') Then
+            Begin
+                If OnChip Then
+                Begin
+                    X := StrToFloat(Field(Line, 4));
+                    Y := StrToFloat(Field(Line, 5));
+                End
+                Else
+                Begin
+                    X := StrToFloat(Field(Line, 2));
+                    Y := StrToFloat(Field(Line, 3));
+                End;
+                AddPad(Board, X, Y, PadW, PadH, eTopLayer);
+                Result := Result + 1;
+            End;
+        End;
+    End;
+
+    Lines.Free;
+End;
+
 Procedure SetOutline(Board : IPCB_Board; HalfL, HalfS : Double);
 Var
     i   : Integer;
@@ -140,6 +276,9 @@ Begin
     Board.BoardOutline.PointCount := 4;
     For i := 0 To 3 Do
     Begin
+        { Segments[i] returns the record BY VALUE: editing it in place
+          is silently discarded, and the board stays at its default
+          6 x 4 inches while reporting success. }
         Seg := Board.BoardOutline.Segments[i];
         Seg.Kind := ePolySegmentLine;
         Case i Of
@@ -154,6 +293,41 @@ Begin
     Board.BoardOutline.Rebuild;
 End;
 
+{ A ring of stitching vias around the chip pocket.
+
+  The ring deliberately BREAKS where the CPW crosses it. A via dropped
+  into the signal corridor would short the line to ground while the
+  generator cheerfully reported success. Corridor is the half-height of
+  the keep-out: trace plus gap plus a via radius of margin. }
+Function AddShieldRing(Board : IPCB_Board;
+                       HalfX, HalfY, ViaDia, ViaPitch, Corridor : Double) : Integer;
+Var
+    X, Y : Double;
+Begin
+    Result := 0;
+
+    X := -HalfX;
+    While X <= HalfX Do
+    Begin
+        AddVia(Board, X,  HalfY, ViaDia, ViaDia / 2.0);
+        AddVia(Board, X, -HalfY, ViaDia, ViaDia / 2.0);
+        Result := Result + 2;
+        X := X + ViaPitch;
+    End;
+
+    Y := -HalfY + ViaPitch;
+    While Y < HalfY Do
+    Begin
+        If Abs(Y) > Corridor Then
+        Begin
+            AddVia(Board, -HalfX, Y, ViaDia, ViaDia / 2.0);
+            AddVia(Board,  HalfX, Y, ViaDia, ViaDia / 2.0);
+            Result := Result + 2;
+        End;
+        Y := Y + ViaPitch;
+    End;
+End;
+
 { Outline, centre conductor, coplanar grounds either side of the gap, a
   ground plane on the far side of the substrate, and -- where the board
   has two layers to stitch -- a via fence down both sides of the line. }
@@ -166,9 +340,9 @@ Var
 Begin
     SetOutline(Board, HalfL, HalfS);
 
-    { The centre conductor stops at the launch rather than running to the
-      board edge. Running it out to the edge is what let the connector
-      land bridge the signal into both coplanar grounds. }
+    { The centre conductor stops at the launch rather than running to
+      the board edge. Running it out to the edge is what let the
+      connector land bridge the signal into both coplanar grounds. }
     AddTrack(Board, -TraceHalfL, 0.0, TraceHalfL, 0.0, Trace, eTopLayer);
 
     GndInner := Trace / 2.0 + Gap;
@@ -234,136 +408,6 @@ Begin
     Say(Tag + '_inmem_regions=' + IntToStr(nR));
 End;
 
-{ A ring of stitching vias around the chip pocket.
-
-  The ring deliberately BREAKS where the CPW crosses it. A via dropped
-  into the signal corridor would short the line to ground, and the
-  generator would cheerfully report success while producing a dead
-  board. `Corridor` is the half-height of the keep-out: trace plus gap
-  plus a via radius of margin. }
-Function AddShieldRing(Board : IPCB_Board;
-                       HalfX, HalfY, ViaDia, ViaPitch, Corridor : Double) : Integer;
-Var
-    X, Y : Double;
-    n    : Integer;
-Begin
-    n := 0;
-
-    { Top and bottom runs: full width, no corridor to worry about. }
-    X := -HalfX;
-    While X <= HalfX Do
-    Begin
-        AddVia(Board, X,  HalfY, ViaDia, ViaDia / 2.0);
-        AddVia(Board, X, -HalfY, ViaDia, ViaDia / 2.0);
-        n := n + 2;
-        X := X + ViaPitch;
-    End;
-
-    { Left and right runs: skip anything inside the signal corridor. }
-    Y := -HalfY + ViaPitch;
-    While Y < HalfY Do
-    Begin
-        If Abs(Y) > Corridor Then
-        Begin
-            AddVia(Board, -HalfX, Y, ViaDia, ViaDia / 2.0);
-            AddVia(Board,  HalfX, Y, ViaDia, ViaDia / 2.0);
-            n := n + 2;
-        End;
-        Y := Y + ViaPitch;
-    End;
-
-    Result := n;
-End;
-
-{ Bond fingers: the landing pads the wire bonds will run to.
-
-  The bonds themselves are NOT drawn here. AD26 clearly models bond
-  wires -- it has wirebond rules, violation types, JEDEC profile
-  constants and export support -- but there is no wirebond entry in the
-  scriptable object-id enum at all. Of its 52 object ids, none is a
-  wirebond, so PCBObjectFactory cannot make one. That is the same
-  partial exposure that blocked the 3D exporter.
-
-  It costs nothing, because a bond is EM geometry rather than layout:
-  copper_geometry builds the loops directly in HFSS from bond_count,
-  bond_height and bond_wire_diameter, where the arc profile can be made
-  exactly what the model needs. What the layout owes the bonds is the
-  pads at each end, which is what this places. }
-{ The SMP launch, from the vendor land pattern.
-
-  Wuerth WR-SMP 60124102122403, read out of the KiCad footprint that
-  ships with the part and passed in through the parameter file, so the
-  vendor's numbers are not retyped here.
-
-  The connector works in its own frame: v runs along the signal axis
-  with the centre pin exiting toward +v, u runs across it. Three ground
-  pads form a U open toward +v, and its closed end -- the strap -- joins
-  the two sides of the ground. On a coplanar board those two sides are
-  the CPW's own grounds, so the strap deliberately shorts them behind
-  the launch. That is why the centre conductor has to stop at the signal
-  pad and never reach the strap.
-
-  Placement maps the connector frame onto the board with
-
-      board x = Sign * (Origin - v)      board y = u
-
-  and Origin is set so the outermost copper sits port_space from the
-  board edge. Sign mirrors the whole thing for the other end. }
-{ One land of the connector, mapped from the connector frame onto the
-  board. A pad's extent along board x is its size along v, and along y
-  its size along u -- the two frames are rotated a quarter turn.
-
-  Top level on purpose: DelphiScript has no closures, and a nested
-  procedure reading Board or Origin from the enclosing scope fails at
-  parse time with "Can't access top level variable". }
-Procedure AddLand(Board : IPCB_Board; Sign, Origin, U, V, SizeU, SizeV : Double);
-Begin
-    AddPad(Board, Sign * (Origin - V), U, SizeV, SizeU, eTopLayer);
-End;
-
-Procedure AddSmpLaunch(Board : IPCB_Board; P : TStringList; Sign, Origin : Double);
-Begin
-    AddLand(Board, Sign, Origin,
-            ParamOf(P, 'smp_sig_u', 0.0),   ParamOf(P, 'smp_sig_v', 2.9),
-            ParamOf(P, 'smp_sig_su', 0.48), ParamOf(P, 'smp_sig_sv', 1.4));
-    AddLand(Board, Sign, Origin,
-            ParamOf(P, 'smp_arml_u', -2.45), ParamOf(P, 'smp_arml_v', -0.1),
-            ParamOf(P, 'smp_arml_su', 0.3),  ParamOf(P, 'smp_arml_sv', 4.0));
-    AddLand(Board, Sign, Origin,
-            ParamOf(P, 'smp_armr_u', 2.45),  ParamOf(P, 'smp_armr_v', -0.2),
-            ParamOf(P, 'smp_armr_su', 0.3),  ParamOf(P, 'smp_armr_sv', 4.0));
-    AddLand(Board, Sign, Origin,
-            ParamOf(P, 'smp_strap_u', 0.0),  ParamOf(P, 'smp_strap_v', -2.45),
-            ParamOf(P, 'smp_strap_su', 4.0), ParamOf(P, 'smp_strap_sv', 0.3));
-End;
-
-Function AddBondFingers(Board : IPCB_Board;
-                        X, PadPitch, Count, PadW, PadH, GndInner : Double) : Integer;
-Var
-    i, nGround : Integer;
-    Y, FirstY  : Double;
-Begin
-    { One finger on the centre conductor for the signal bond; the rest
-      are ground bonds and belong ON the ground, not in the gap. Spacing
-      them evenly about the centre line put them straddling the gap edge,
-      which is metal the real board does not have in the one place the
-      field is most sensitive to it. }
-    AddPad(Board, X, 0.0, PadW, PadH, eTopLayer);
-    Result := 1;
-
-    FirstY := GndInner + PadH / 2.0;
-    nGround := Round(Count) - 1;
-    For i := 0 To nGround - 1 Do
-    Begin
-        Y := FirstY + (i div 2) * PadPitch;
-        If (i mod 2) = 0 Then
-            AddPad(Board, X, Y, PadW, PadH, eTopLayer)
-        Else
-            AddPad(Board, X, -Y, PadW, PadH, eTopLayer);
-        Result := Result + 1;
-    End;
-End;
-
 Procedure GenerateFromParams;
 Var
     P            : TStringList;
@@ -371,18 +415,14 @@ Var
     ChipDoc      : IServerDocument;
     Board        : IPCB_Board;
     OutDir       : String;
+    BondPath     : String;
     HalfL, HalfS, Trace, Gap : Double;
     ChipHalfL, ChipHalfS, ChipGap : Double;
     ViaDia, ViaPitch, ViaClear : Double;
-    PadW, PadH, PadPitch, BondCount : Double;
-    PortCount, PortSpace, PortLen, PortWid : Double;
-    PortX : Double;
-    ShieldInset, BondWire, BondHeight, BondSpan : Double;
-    SmpOrigin : Double;
-    nVias : Integer;
-    nRing : Integer;
-    nBonds : Integer;
-    i : Integer;
+    PadW, PadH : Double;
+    PortCount, PortSpace : Double;
+    ShieldInset, SmpOrigin : Double;
+    nVias, nRing, nBonds, i : Integer;
 Begin
     Rpt := TStringList.Create;
     Rpt.Add('stage=start');
@@ -410,19 +450,15 @@ Begin
     ViaClear  := ParamOf(P, 'via_gnd_clearance', 0.15);
     PadW      := ParamOf(P, 'bond_pad_length', 0.3);
     PadH      := ParamOf(P, 'bond_pad_width', 0.15);
-    PadPitch  := ParamOf(P, 'bond_pad_pitch', 0.4);
-    BondCount := ParamOf(P, 'bond_count', 3);
     PortCount := ParamOf(P, 'port_count', 2);
     PortSpace := ParamOf(P, 'port_space', 1.5);
-    PortLen   := ParamOf(P, 'port_length', 5.1);
-    PortWid   := ParamOf(P, 'port_width', 5.1);
-    { Placed so the outermost land sits port_space from the edge. }
-    SmpOrigin := HalfL - PortSpace + ParamOf(P, 'smp_outer_v', -2.6);
     ShieldInset := ParamOf(P, 'shield_ring_inset', 0.5);
-    BondWire    := ParamOf(P, 'bond_wire_diameter', 0.025);
-    BondHeight  := ParamOf(P, 'bond_height', 0.2);
-    BondSpan    := ParamOf(P, 'bonding_clearence', 1.0);
     OutDir    := P.Values['out_dir'];
+    BondPath  := OutDir + '\bonds.txt';
+
+    { Placed so the outermost land sits port_space from the board edge. }
+    SmpOrigin := HalfL - PortSpace + ParamOf(P, 'smp_outer_v', -2.6);
+
     Say('pcb_gap_um=' + FloatToStr(Gap * 1000));
     Say('chip_gap_um=' + FloatToStr(ChipGap * 1000));
 
@@ -455,21 +491,6 @@ Begin
     End;
     PCBServer.PostProcess;
 
-    { The SMP launch.
-
-      The previous version dropped a port_length/4 square on the centre
-      line. At 1.275 mm that is far wider than the gap edge at about
-      0.37 mm, so it shorted the signal into both grounds -- the bridge
-      between the two ground sides visible in the 3D view.
-
-      The land is therefore no wider than the trace, which makes a short
-      impossible by construction: it stays inside the corridor the two
-      coplanar grounds already leave. The connector body is
-      port_length x port_width and its OUTER edge sits port_space from
-      the board edge, so the launch centre is one half-body further in.
-
-      Exact SMP land dimensions belong to the connector datasheet; what
-      is fixed here is the placement and the clearance. }
     PCBServer.PreProcess;
     Try
         For i := 0 To Round(PortCount) - 1 Do
@@ -480,19 +501,12 @@ Begin
                 AddSmpLaunch(Board, P,  1.0, SmpOrigin);
         End;
         Say('package_ports=' + IntToStr(Round(PortCount)));
-        Say('smp_origin_mm=' + FloatToStr(SmpOrigin));
         Say('signal_pad_mm=' + FloatToStr(SmpOrigin - ParamOf(P, 'smp_sig_v', 2.9)));
     Except
         Say('package_ports=FAIL');
     End;
     PCBServer.PostProcess;
 
-    Try
-        Board.ViewManager_FullUpdate;
-    Except
-    End;
-
-    { Shield ring around the chip pocket, broken where the CPW crosses. }
     PCBServer.PreProcess;
     Try
         nRing := AddShieldRing(Board,
@@ -505,19 +519,19 @@ Begin
     End;
     PCBServer.PostProcess;
 
-    { Bond fingers facing the die, one row each side. The wires
-      themselves are built in HFSS -- see AddBondFingers. }
     PCBServer.PreProcess;
     Try
-        nBonds := AddBondFingers(Board, -ChipHalfL - BondSpan, PadPitch, BondCount,
-                                 PadW, PadH, Trace / 2.0 + Gap)
-                + AddBondFingers(Board,  ChipHalfL + BondSpan, PadPitch, BondCount,
-                                 PadW, PadH, Trace / 2.0 + Gap);
-        Say('package_bond_fingers=' + IntToStr(nBonds));
+        nBonds := AddBondPads(Board, BondPath, PadW, PadH, False);
+        Say('package_bond_pads=' + IntToStr(nBonds));
     Except
-        Say('package_bond_fingers=FAIL');
+        Say('package_bond_pads=FAIL');
     End;
     PCBServer.PostProcess;
+
+    Try
+        Board.ViewManager_FullUpdate;
+    Except
+    End;
 
     ReportCounts(Board, 'package');
 
@@ -529,8 +543,7 @@ Begin
             Say('saved_package=ok');
             { Close it once saved. Documents left open accumulate across
               runs, all claiming the same path, and a later reader can
-              be handed a previous run's copy -- which is how an export
-              once reported the board before its bond fingers existed. }
+              be handed a previous run's copy. }
             Client.CloseDocument(Doc);
         Except
             Say('saved_package=FAIL');
@@ -547,8 +560,8 @@ Begin
 
         PCBServer.PreProcess;
         Try
-            { No via fence on the die: it carries a single metal layer,
-              so there is nothing to stitch to. }
+            { No via fence and no back plane on the die: it carries a
+              single metal layer. }
             BuildBoard(Board, ChipHalfL, ChipHalfS, Trace, ChipGap,
                        ViaDia, ViaPitch, ViaClear, ChipHalfL, False, False, nVias);
             Say('chip_body=ok');
@@ -559,12 +572,7 @@ Begin
 
         PCBServer.PreProcess;
         Try
-            { Same rule as the board: signal pad on the line, ground
-              pads clear of the die's own gap. }
-            nBonds := AddBondFingers(Board, -ChipHalfL + PadW, PadPitch, BondCount,
-                                     PadW, PadH, Trace / 2.0 + ChipGap)
-                    + AddBondFingers(Board,  ChipHalfL - PadW, PadPitch, BondCount,
-                                     PadW, PadH, Trace / 2.0 + ChipGap);
+            nBonds := AddBondPads(Board, BondPath, PadW, PadH, True);
             Say('chip_bond_pads=' + IntToStr(nBonds));
         Except
             Say('chip_bond_pads=FAIL');

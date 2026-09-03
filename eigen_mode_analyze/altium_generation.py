@@ -269,6 +269,17 @@ def generate_for_combo(
         extra={"out_dir": str(paths.ALTIUM_OUT_DIR)},
     )
 
+    # The bond layout is computed once and shared: Altium places the pads
+    # from it and HFSS builds the wires from it, so the two cannot drift
+    # apart when a parameter changes.
+    from . import bonds as bond_layout
+
+    os.makedirs(paths.ALTIUM_OUT_DIR, exist_ok=True)
+    bond_layout.write_file(
+        str(paths.ALTIUM_BONDS_FILE),
+        bond_layout.layout(values, params["pcb_cpw_gap"]),
+    )
+
     ok, report = run_script(
         str(paths.ALTIUM_GENERATOR), "GenerateFromParams",
         str(paths.ALTIUM_GENERATE_REPORT), log=log,
@@ -288,11 +299,14 @@ def generate_for_combo(
         return False, "Altium reported success but wrote no copper.txt"
 
     os.makedirs(combo_dir, exist_ok=True)
+    for name, path in (("copper.txt", source), ("bonds.txt", paths.ALTIUM_BONDS_FILE)):
+        if not os.path.isfile(path):
+            continue
+        with open(path, "r", encoding="utf-8") as src:
+            content = src.read()
+        with open(os.path.join(combo_dir, name), "w", encoding="utf-8") as dst:
+            dst.write(content)
     destination = os.path.join(combo_dir, "copper.txt")
-    with open(source, "r", encoding="utf-8") as src:
-        content = src.read()
-    with open(destination, "w", encoding="utf-8") as dst:
-        dst.write(content)
 
     # The copper belongs to this combination, so it is kept with it
     # rather than left in the shared output folder to be overwritten by

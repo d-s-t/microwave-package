@@ -296,45 +296,70 @@ class TestBuildingCopper(unittest.TestCase):
         self.assertNotIn("chip_vias", created)
 
 
-class TestWireBonds(unittest.TestCase):
-    SPEC = cg.BondSpec(
-        u_start=-4.15, u_end=-2.85, w_start=1.381, w_end=1.381,
-        count=3, pitch=0.4, height=0.2, diameter=0.025,
-    )
+class TestBondWires(unittest.TestCase):
+    """Wires are built from the same file Altium places the pads from,
+    so a wire cannot land beside its pad."""
 
-    def test_path_starts_and_ends_on_the_pads(self):
-        pts = cg.bond_path(self.SPEC, FRAME, v=0.0)
-        self.assertAlmostEqual(pts[0][0], -4.15 + 14.0)
-        self.assertAlmostEqual(pts[0][1], 1.381)
-        self.assertAlmostEqual(pts[-1][0], -2.85 + 14.0)
+    def _bonds(self):
+        from eigen_mode_analyze.bonds import Bond
 
-    def test_loop_rises_above_both_ends(self):
-        """A straight wire would clip the die edge."""
-        pts = cg.bond_path(self.SPEC, FRAME, v=0.0)
-        self.assertGreater(max(p[1] for p in pts), self.SPEC.w_start)
+        return [
+            Bond("signal", -4.15, -0.05, -2.85, -0.05),
+            Bond("signal", -4.15, 0.05, -2.85, 0.05),
+            Bond("ground", -4.15, -0.60, -2.85, -0.60),
+        ]
 
-    def test_the_loop_rises_along_y(self):
-        """The apex must be in height, not sideways."""
-        pts = cg.bond_path(self.SPEC, FRAME, v=0.0)
-        self.assertEqual(len({round(p[2], 9) for p in pts}), 1,
-                         "a bond at fixed v must not wander across the board")
-
-    def test_bonds_spread_symmetrically_across_the_board(self):
+    def _build(self, height=0.2):
         modeler = FakeModeler()
-        cg.build_wirebonds(modeler, self.SPEC, FRAME, log=lambda _m: None)
-        zs = sorted({round(p[2], 6) for path in modeler.polylines for p in path})
-        self.assertEqual(zs, [6.0 - 0.4, 6.0, 6.0 + 0.4])
+        made = cg.build_bond_wires(modeler, self._bonds(), FRAME,
+                                   pcb_top=1.381, chip_top=1.381,
+                                   height=height, diameter=0.025,
+                                   log=lambda _m: None)
+        return modeler, made
 
-    def test_one_wire_per_bond_united_under_the_rule_name(self):
-        modeler = FakeModeler()
-        created = cg.build_wirebonds(modeler, self.SPEC, FRAME, log=lambda _m: None)
+    def test_one_wire_per_bond(self):
+        modeler, _ = self._build()
         self.assertEqual(len(modeler.polylines), 3)
-        self.assertEqual(created, ["wirebond"])
 
-    def test_no_bonds_requested_makes_nothing(self):
+    def test_they_become_one_named_body(self):
+        modeler, made = self._build()
+        self.assertEqual(made, ["wirebond"])
+        self.assertTrue(modeler.unites)
+
+    def test_a_wire_starts_and_ends_on_its_pads(self):
+        from eigen_mode_analyze.bonds import Bond
+
+        bond = Bond("signal", -4.15, -0.05, -2.85, -0.05)
+        path = cg.wire_path(bond, FRAME, 1.381, 1.381, 0.2)
+        self.assertEqual(path[0], FRAME.point(bond.pcb_x, bond.pcb_y, 1.381))
+        self.assertEqual(path[-1], FRAME.point(bond.chip_x, bond.chip_y, 1.381))
+
+    def test_the_loop_rises_above_both_ends(self):
+        from eigen_mode_analyze.bonds import Bond
+
+        path = cg.wire_path(Bond("signal", -4.15, 0, -2.85, 0), FRAME, 1.381, 1.381, 0.2)
+        self.assertGreater(max(p[1] for p in path), 1.381)
+
+    def test_the_apex_follows_bond_height(self):
+        from eigen_mode_analyze.bonds import Bond
+
+        low = cg.wire_path(Bond("signal", -4, 0, -3, 0), FRAME, 1.381, 1.381, 0.1)
+        high = cg.wire_path(Bond("signal", -4, 0, -3, 0), FRAME, 1.381, 1.381, 0.4)
+        self.assertGreater(max(p[1] for p in high), max(p[1] for p in low))
+
+    def test_the_loop_rises_in_height_not_sideways(self):
+        from eigen_mode_analyze.bonds import Bond
+
+        path = cg.wire_path(Bond("ground", -4.15, 0.6, -2.85, 0.6), FRAME, 1.381, 1.381, 0.2)
+        self.assertEqual(len({round(p[2], 9) for p in path}), 1)
+
+    def test_no_bonds_makes_nothing(self):
         modeler = FakeModeler()
-        spec = cg.BondSpec(**{**self.SPEC.__dict__, "count": 0})
-        self.assertEqual(cg.build_wirebonds(modeler, spec, FRAME, log=lambda _m: None), [])
+        self.assertEqual(
+            cg.build_bond_wires(modeler, [], FRAME, 1.381, 1.381, 0.2, 0.025,
+                                log=lambda _m: None),
+            [],
+        )
 
 
 class TestAgainstRealExport(unittest.TestCase):
@@ -404,34 +429,24 @@ class TestClearChipArea(unittest.TestCase):
 
 
 class TestWireBondNaming(unittest.TestCase):
-    """Each row of bonds needs its own name.
-
-    HFSS will not take a duplicate: it invents NewObject_something
-    instead, which matches no material rule and lands in the model as
-    vacuum. That is exactly how one of the two bond rows went missing.
-    """
-
-    SPEC = cg.BondSpec(u_start=-4.15, u_end=-2.85, w_start=1.381, w_end=1.381,
-                       count=3, pitch=0.4, height=0.2, diameter=0.025)
+    """HFSS will not take a duplicate name: it invents
+    NewObject_something instead, which matches no material rule and
+    lands in the model as vacuum."""
 
     def test_the_name_is_used(self):
+        from eigen_mode_analyze.bonds import Bond
+
         modeler = FakeModeler()
-        made = cg.build_wirebonds(modeler, self.SPEC, FRAME, name="wirebond_a",
-                                  log=lambda _m: None)
+        made = cg.build_bond_wires(modeler, [Bond("ground", -4, 0.6, -3, 0.6)],
+                                   FRAME, 1.381, 1.381, 0.2, 0.025,
+                                   name="wirebond_a", log=lambda _m: None)
         self.assertEqual(made, ["wirebond_a"])
 
-    def test_two_rows_get_different_names(self):
-        modeler = FakeModeler()
-        a = cg.build_wirebonds(modeler, self.SPEC, FRAME, name="wirebond_a", log=lambda _m: None)
-        b = cg.build_wirebonds(modeler, self.SPEC, FRAME, name="wirebond_b", log=lambda _m: None)
-        self.assertNotEqual(a, b)
-
-    def test_both_names_still_match_the_material_rule(self):
+    def test_the_default_name_matches_the_material_rule(self):
         from eigen_mode_analyze import model_builder
 
         patterns = [rule[0] for rule in model_builder.MATERIAL_RULES]
-        for name in ("wirebond_a", "wirebond_b"):
-            self.assertTrue(any(p in name for p in patterns), name)
+        self.assertTrue(any(p in "wirebond" for p in patterns))
 
 
 class TestDrillVias(unittest.TestCase):
@@ -518,23 +533,46 @@ class TestExportedLayoutIsSane(unittest.TestCase):
         for pad in lands:
             self.assertLess(pad.ysize / 2, self.gap_edge)
 
-    def test_no_pad_inboard_of_the_launch_intrudes_into_the_gap(self):
-        """The bond fingers. A pad straddling the gap edge is metal the
-        real board does not have, in the one place the field is most
-        sensitive to it."""
+    def test_no_pad_inboard_of_the_launch_touches_the_ground(self):
+        """The bond pads.
+
+        A signal pad straddles the centre line and may be a little wider
+        than the trace -- pads usually are -- but it must not reach the
+        ground. A ground pad must stay off the gap entirely: metal at
+        the gap edge sits where the field between line and ground is
+        strongest.
+        """
         launch = {id(p) for p in self._launch_pads()}
-        checked = 0
+        signal = ground = 0
         for pad in self.pkg.pads:
             if id(pad) in launch:
                 continue
-            checked += 1
             inner = abs(pad.y) - pad.ysize / 2
             outer = abs(pad.y) + pad.ysize / 2
-            if outer <= self.trace / 2 + 1e-9:
-                continue          # the signal bond, on the centre conductor
-            self.assertGreaterEqual(
-                inner, self.gap_edge - 1e-6,
-                f"pad at y={pad.y} reaches {inner:.4f}, inside the gap edge "
-                f"{self.gap_edge:.4f}",
-            )
-        self.assertGreater(checked, 0, "no inboard pads were actually checked")
+            if pad.y - pad.ysize / 2 <= 0 <= pad.y + pad.ysize / 2:
+                signal += 1
+                self.assertLess(
+                    outer, self.gap_edge,
+                    f"signal pad at y={pad.y} reaches {outer:.4f}, into the ground "
+                    f"at {self.gap_edge:.4f}",
+                )
+            else:
+                ground += 1
+                self.assertGreaterEqual(
+                    inner, self.gap_edge - 1e-6,
+                    f"ground pad at y={pad.y} reaches {inner:.4f}, inside the gap "
+                    f"edge {self.gap_edge:.4f}",
+                )
+        self.assertGreater(signal, 0, "no signal pads were checked")
+        self.assertGreater(ground, 0, "no ground pads were checked")
+
+    def test_two_signal_wires_land_at_each_end(self):
+        """Two wires in parallel rather than one, to halve the series
+        inductance at the launch."""
+        from eigen_mode_analyze import bonds
+
+        layout = bonds.layout(self.v, self.gap_edge - self.trace / 2)
+        for sign in (-1, 1):
+            here = [b for b in layout
+                    if b.kind == bonds.SIGNAL and (b.pcb_x > 0) == (sign > 0)]
+            self.assertEqual(len(here), 2)

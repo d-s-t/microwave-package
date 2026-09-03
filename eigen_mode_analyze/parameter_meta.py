@@ -52,7 +52,6 @@ LABELS: Dict[str, str] = {
     "bond_pad_length": "Bond pad length",
     "bond_pad_width": "Bond pad width",
     "bond_pad_pitch": "Bond pad pitch",
-    "bond_count": "Wire bonds per side",
     "bond_height": "Bond loop height",
     "bond_wire_diameter": "Bond wire diameter",
     # metallisation
@@ -74,7 +73,7 @@ MICRON_PARAMETERS = {
 }
 
 # Counts rather than lengths: no unit at all.
-INTEGER_PARAMETERS = {"port_count", "bond_count"}
+INTEGER_PARAMETERS = {"port_count"}
 
 # On/off flags in the equations file (a plain 0 or 1). The form gives
 # these their own named control instead of a value-or-range box, so they
@@ -151,7 +150,7 @@ GROUPS: List[dict] = [
             "cpw_trace_width",
             "via_diameter", "via_pitch", "via_gnd_clearance", "shield_ring_inset",
             "bond_pad_length", "bond_pad_width", "bond_pad_pitch",
-            "bond_count", "bond_height", "bond_wire_diameter",
+            "bond_height", "bond_wire_diameter",
         ],
     },
     {

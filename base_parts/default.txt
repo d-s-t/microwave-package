@@ -36,13 +36,13 @@
 
 "bonding_clearence"= 1
 
-"no_distortion" = 0 ' (boolean) when set to 1, no distortions are present. when set to 0, distortions are added to the box and holes to the PCB.
+"no_distortion" = 1 ' (boolean) when set to 1, no distortions are present. when set to 0, distortions are added to the box and holes to the PCB.
 
-"distortion_radius" = 1
+"distortion_radius" = 0.6
 
-"distortion_x" = 1
+"distortion_x" = 0.0
 
-"distortion_y" = 1
+"distortion_y" = 0.8
 
 "cpw_trace_width"= 0.2	' width of the CPW signal trace (the gap is solved for 50 ohm, not typed)
 
@@ -59,8 +59,6 @@
 "bond_pad_width"= 0.15	' bonding pad size across the feedline
 
 "bond_pad_pitch"= 0.4	' centre-to-centre spacing of the bonding pads
-
-"bond_count"= 3	' number of wire bonds per side
 
 "bond_height"= 0.2	' height of the bond loop apex above the pad
 

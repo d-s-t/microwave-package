@@ -24,6 +24,9 @@ ALTIUM_PARAMS_FILE = ALTIUM_DIR / "params.txt"
 ALTIUM_GENERATE_REPORT = ALTIUM_DIR / "generate_report.txt"
 ALTIUM_OUT_DIR = ALTIUM_DIR / "generated"
 ALTIUM_COPPER_REPORT = ALTIUM_OUT_DIR / "copper_report.txt"
+# The bond layout, computed in Python and read by both Altium (for
+# the pads) and HFSS (for the wires), so the two agree.
+ALTIUM_BONDS_FILE = ALTIUM_OUT_DIR / "bonds.txt"
 
 # The SMP connector's 3D model, as shipped by the vendor (Wuerth
 # WR-SMP 60124102122403). A single solid -- there is no separated
