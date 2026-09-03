@@ -38,6 +38,7 @@ from ansys_analyze_common import queue_common
 from . import equations as eq
 from . import (constraints, model_builder, parameter_meta, paths, pipeline,
                plotting, post_processing)
+from . import resilient_io
 from .pipeline import run_pipeline
 from .run_manager import Run
 from .sweep import SweepParameter, expand_values, split_swept_and_fixed
@@ -55,7 +56,10 @@ _stop_events: Dict[str, threading.Event] = {}
 
 
 def _start_pipeline_thread(run: Run) -> None:
-    queue = queue_common.QueuePaths.from_env("ANSYS_ANALYZE_QUEUE_PATH")
+    # Deliberately does not touch the share: a run has to be startable
+    # with the queue offline, because the geometry is built here and
+    # only the handoff needs the network.
+    queue = resilient_io.queue_from_env("ANSYS_ANALYZE_QUEUE_PATH")
     stop_event = threading.Event()
     _stop_events[run.run_id] = stop_event
 
@@ -482,7 +486,9 @@ def delete_run(run_id):
 
     # anything of this run's still sitting in the queue goes too, so
     # deleting a run really does leave nothing behind
-    queue = queue_common.QueuePaths.from_env("ANSYS_ANALYZE_QUEUE_PATH")
+    # Lazily, so deleting a run still works with the share down: the
+    # per-task removals below already tolerate failing individually.
+    queue = resilient_io.queue_from_env("ANSYS_ANALYZE_QUEUE_PATH")
     for combo in run.state.get("combos", {}).values():
         task_id = combo.get("task_id")
         if not task_id:

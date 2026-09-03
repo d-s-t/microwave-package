@@ -519,24 +519,64 @@ def wait_until_unlocked(project_path: str, timeout: float = 15.0) -> bool:
     return True
 
 
-def build_and_queue(
+def reusable_model(run, combo_id: str, log=logger.info) -> Optional[Dict[str, str]]:
+    """The body names of an existing model that need not be rebuilt.
+
+    Returns None when the model genuinely has to be built. Split out from
+    `build_model` so this decision can be exercised without starting
+    AEDT -- it is the decision that makes resuming an offline-prepared
+    run cheap, so it is worth being sure about.
+
+    A model counts as reusable only if it was recorded as built, its
+    project file is still on disk, and its body names were kept. Any of
+    those missing means the record is stale and the model is rebuilt.
+    """
+    combo = run.state["combos"][combo_id]
+
+    if combo.get("task_id"):
+        log(f"{combo_id} already queued (task {combo['task_id']}) -- skipping.")
+        return combo.get("object_names") or {}
+
+    if combo.get("model_status") != "built":
+        return None
+    names = combo.get("object_names")
+    if not names:
+        # Without the body names there is nothing to build a task from.
+        return None
+    existing = combo.get("project_path") or project_file_for(run, combo_id)
+    if not os.path.isfile(existing):
+        log(f"{combo_id}: recorded as built but {existing} is gone -- rebuilding.")
+        return None
+
+    log(f"{combo_id}: model already built -- reusing {os.path.basename(existing)}.")
+    return names
+
+
+def build_model(
     combo_id: str,
     step_path: str,
     dimensions_txt_content: str,
     run,
-    queue: "queue_common.QueuePaths",
     analysis_settings: dict,
     aedt_version: Optional[str],
     student_version: bool = True,
     graphical: bool = False,
     log: Callable[[str], None] = logger.info,
-) -> None:
-    """Build an HFSS model from step_path, assign materials/boundaries,
-    create its (single) Eigenmode setup, and queue it for the worker to
-    analyze. No-ops if this combo is already queued (resume support)."""
-    if run.state["combos"][combo_id].get("task_id"):
-        log(f"{combo_id} already queued (task {run.state['combos'][combo_id]['task_id']}) -- skipping.")
-        return
+) -> Optional[Dict[str, str]]:
+    """Build an HFSS model from step_path, assign materials and
+    boundaries, and create its single Eigenmode setup.
+
+    Takes no queue and touches no network: this is local work, and it
+    has to be possible with the share down. Returns the body names the
+    task will need, or None if the model could not be made ready.
+
+    No-ops if this combination is already queued, or already built --
+    which is what lets a run be prepared offline and handed over later
+    without rebuilding anything.
+    """
+    reusable = reusable_model(run, combo_id, log=log)
+    if reusable is not None:
+        return reusable
 
     from ansys.aedt.core import Hfss
 
@@ -600,55 +640,125 @@ def build_and_queue(
         if not closed:
             log(f"{combo_id}'s project unlocked despite that close error -- queueing it anyway.")
 
-        task_id = queue_common.new_task_id("eigenmode_analyze")
-        relative_project_file = queue_common.copy_project_to_queue(queue, task_id, combo_dir)
-        relative_output_dir = queue_common.project_dir_for_task(task_id)
-
-        task = queue_common.build_task(
-            task_type="eigenmode_analyze",
-            project_file=relative_project_file,
-            output_dir=relative_output_dir,
-            task_id=task_id,
-            # The project was just built with this solution type above --
-            # passing it through lets the worker skip auto-detecting it
-            # from the AEDT session when it reopens the project. See
-            # queue_common.build_task()'s docstring for why that matters.
-            solution_type="Eigenmode",
-            objects=object_names,
-            post_processing=[
-                # The four numbers the run page plots. The chip's are taken
-                # on its top face only -- the surface the circuit is on --
-                # while the vacuum's cover the whole cavity volume.
-                {"op": "field_statistics", "params": {
-                    "object_key": "chip", "quantity": "Mag_E",
-                    "region": "top_surface", "key": "chip_mag_E",
-                }},
-                {"op": "field_statistics", "params": {
-                    "object_key": "vacuum", "quantity": "Mag_E",
-                    "region": "volume", "key": "vacuum_mag_E",
-                }},
-                # Best-effort picture of that same chip face.
-                {"op": "field_plot_surface", "params": {"object_key": "chip", "quantity": "Mag_E"}},
-            ],
-            metadata={
-                "combo_id": combo_id,
-                "params": run.state["combos"][combo_id]["params"],
-                "source_step_file": os.path.abspath(step_path),
-            },
-        )
-        task_path = queue_common.write_task_atomically(queue, task)
-        queue_common.write_local_marker(
-            combo_dir,
-            task_id,
-            queue.root,
-            extra={
-                "local_project_file": project_path,
-                "queued_project_file": relative_project_file,
-                "output_dir": relative_output_dir,
-            },
-        )
-        run.update_combo(combo_id, task_id=task_id, queue_status="pending")
-        log(f"Queued analysis task {task_id} for {combo_id}: {task_path}")
+        object_names = _remember_built_model(run, combo_id, project_path, object_names, log)
+        return object_names
 
     finally:
         close_project_safely(hfss, log=log)
+
+
+def build_and_queue(
+    combo_id: str,
+    step_path: str,
+    dimensions_txt_content: str,
+    run,
+    queue: "queue_common.QueuePaths",
+    analysis_settings: dict,
+    aedt_version: Optional[str],
+    student_version: bool = True,
+    graphical: bool = False,
+    log: Callable[[str], None] = logger.info,
+) -> None:
+    """Build the model and hand it straight to the worker.
+
+    The two halves are separate functions because they need different
+    things -- the build needs AEDT, the handoff needs the network -- but
+    when both are available this is the whole job in one call.
+    """
+    object_names = build_model(
+        combo_id, step_path, dimensions_txt_content, run, analysis_settings,
+        aedt_version, student_version=student_version, graphical=graphical, log=log,
+    )
+    if object_names is None:
+        return
+    queue_model(combo_id, step_path, run, queue, object_names, log=log)
+
+
+def _remember_built_model(run, combo_id, project_path, object_names, log) -> Dict[str, str]:
+    """Record that this combination's model exists and is ready to hand over.
+
+    The body names are stored with it because the task needs them and
+    they are only known while the model is being built. Without this, a
+    handoff deferred to a later session would have to reopen the project
+    just to rediscover them.
+    """
+    run.update_combo(
+        combo_id,
+        model_status="built",
+        project_path=project_path,
+        object_names=object_names,
+    )
+    log(f"{combo_id}: model built and saved to {os.path.basename(project_path)}.")
+    return object_names
+
+
+def queue_model(
+    combo_id: str,
+    step_path: str,
+    run,
+    queue: "queue_common.QueuePaths",
+    object_names: Dict[str, str],
+    log: Callable[[str], None] = logger.info,
+) -> None:
+    """Hand an already-built model to the worker.
+
+    Split out from the build so the two can happen at different times:
+    the model is built on this machine with no network at all, and only
+    this half needs the queue to be reachable.
+    """
+    if run.state["combos"][combo_id].get("task_id"):
+        log(f"{combo_id} is already queued -- skipping.")
+        return
+
+    combo_dir = run.combo_dir(combo_id)
+    project_path = project_file_for(run, combo_id)
+    task_id = queue_common.new_task_id("eigenmode_analyze")
+    relative_project_file = queue_common.copy_project_to_queue(queue, task_id, combo_dir)
+    relative_output_dir = queue_common.project_dir_for_task(task_id)
+
+    task = queue_common.build_task(
+        task_type="eigenmode_analyze",
+        project_file=relative_project_file,
+        output_dir=relative_output_dir,
+        task_id=task_id,
+        # The project was just built with this solution type above --
+        # passing it through lets the worker skip auto-detecting it
+        # from the AEDT session when it reopens the project. See
+        # queue_common.build_task()'s docstring for why that matters.
+        solution_type="Eigenmode",
+        objects=object_names,
+        post_processing=[
+            # The four numbers the run page plots. The chip's are taken
+            # on its top face only -- the surface the circuit is on --
+            # while the vacuum's cover the whole cavity volume.
+            {"op": "field_statistics", "params": {
+                "object_key": "chip", "quantity": "Mag_E",
+                "region": "top_surface", "key": "chip_mag_E",
+            }},
+            {"op": "field_statistics", "params": {
+                "object_key": "vacuum", "quantity": "Mag_E",
+                "region": "volume", "key": "vacuum_mag_E",
+            }},
+            # Best-effort picture of that same chip face.
+            {"op": "field_plot_surface", "params": {"object_key": "chip", "quantity": "Mag_E"}},
+        ],
+        metadata={
+            "combo_id": combo_id,
+            "params": run.state["combos"][combo_id]["params"],
+            "source_step_file": os.path.abspath(step_path),
+        },
+    )
+    task_path = queue_common.write_task_atomically(queue, task)
+    queue_common.write_local_marker(
+        combo_dir,
+        task_id,
+        queue.root,
+        extra={
+            "local_project_file": project_path,
+            "queued_project_file": relative_project_file,
+            "output_dir": relative_output_dir,
+        },
+    )
+    run.update_combo(combo_id, task_id=task_id, queue_status="pending")
+    log(f"Queued analysis task {task_id} for {combo_id}: {task_path}")
+
