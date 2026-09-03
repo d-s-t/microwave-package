@@ -44,28 +44,46 @@ def run_pipeline(run: Run, queue: "queue_common.QueuePaths", log=logger.info, st
     deferred: List[str] = []
 
     def queue_combo(combo_id: str) -> None:
-        """Build the AEDT model for one finished STEP and queue it."""
+        """Build the AEDT model for one finished STEP, and hand it over
+        if the queue is reachable.
+
+        The two halves are deliberately separate. Building the model is
+        local work that needs AEDT and no network, so it happens either
+        way; only the copy into the queue needs the share. That is what
+        makes a run preparable offline: everything that can be computed
+        here is computed, and all that is left for later is the handoff.
+        """
         combo = run.state["combos"][combo_id]
         if combo.get("task_id") or combo.get("step_status") != "done":
             return
+
+        dimensions_txt_content = eq.read_file(f"{run.combo_dir(combo_id)}/dimensions.txt")
+        object_names = model_builder.build_model(
+            combo_id, combo["step_path"], dimensions_txt_content, run, analysis_settings,
+            aedt_version, analysis_settings.get("student_version", True),
+            analysis_settings.get("graphical", False), log=log,
+        )
+        if object_names is None:
+            # Already queued, or the project could not be made ready --
+            # build_model has said which.
+            return
+
         if not resilient_io.path_available(queue.root):
-            # Do NOT wait here. Waiting would stall the whole sweep on
-            # the first combination and there would be nothing to show
-            # for the time. Building the geometry offline and handing it
-            # over later is a normal way to work, so the combination is
-            # recorded and the sweep carries on.
+            # Do NOT wait here. Waiting would stall the sweep on its
+            # first combination with nothing to show for the time. The
+            # model is built and saved; only the handoff is missing, and
+            # resuming later picks up exactly there.
             if combo_id not in deferred:
                 deferred.append(combo_id)
                 run.update_combo(combo_id, queue_status="deferred")
             return
+
         resilient_io.ensure_queue_ready(
             queue, on_wait=lambda p: log(f"Queue path {p} unreachable -- waiting for it to come back...")
         )
-        dimensions_txt_content = eq.read_file(f"{run.combo_dir(combo_id)}/dimensions.txt")
         resilient_io.call_with_retry(
-            model_builder.build_and_queue,
-            combo_id, combo["step_path"], dimensions_txt_content, run, queue, analysis_settings,
-            aedt_version, analysis_settings.get("student_version", True), analysis_settings.get("graphical", False),
+            model_builder.queue_model,
+            combo_id, combo["step_path"], run, queue, object_names,
             queue_root=queue.root, log=log,
         )
 
@@ -148,10 +166,10 @@ def run_pipeline(run: Run, queue: "queue_common.QueuePaths", log=logger.info, st
         monitor_thread.join(timeout=30)
         run.set_stage("geometry_ready")
         log(
-            f"Geometry is built for {len(deferred)} combination(s), but the queue at "
-            f"{queue.root} is unreachable, so nothing was handed to the worker. "
-            "Reconnect and resume this run to queue them -- the STEP files already "
-            "made are kept and will not be rebuilt."
+            f"{len(deferred)} combination(s) are fully built -- geometry and AEDT "
+            f"project both -- but the queue at {queue.root} is unreachable, so nothing "
+            "was handed to the worker. Reconnect and resume this run to hand them over; "
+            "nothing will be rebuilt, the projects are just copied across."
         )
         return
 

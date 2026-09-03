@@ -130,11 +130,11 @@
 
 {% if run.state.stage == "geometry_ready" %}
 <div class="note-box">
-  <strong>Geometry is built; the queue was offline.</strong>
-  Every STEP file for this run has been generated on this machine, but the task
-  queue could not be reached, so nothing was handed to the worker. Reconnect and
-  press <em>Resume this run</em> -- the finished geometry is kept and will not be
-  rebuilt.
+  <strong>Built and waiting for the queue.</strong>
+  The geometry and the AEDT project are both finished on this machine, but the
+  task queue could not be reached, so nothing was handed to the worker.
+  Reconnect and press <em>Resume this run</em>: nothing is rebuilt, the projects
+  are simply copied across and analysed.
 </div>
 {% endif %}
 
