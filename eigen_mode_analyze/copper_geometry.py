@@ -1,26 +1,26 @@
 """
-Copper geometry read out of Altium, and rebuilt in HFSS.
+The board geometry Altium describes, rebuilt in HFSS.
 
-Altium cannot hand us copper as CAD. Its STEP export drops copper by
-design, and the Parasolid exporter -- which does support copper, even
-per layer -- exposes its option setters to scripting but not the call
-that performs the export (see `base_parts/altium/README.md`). Reading
-the primitives, however, works perfectly.
+Altium cannot hand us solids. Its STEP export drops copper by design,
+and the Parasolid exporter -- which does support copper, even per layer
+-- exposes its option setters to scripting but not the call that
+performs the export (see `base_parts/altium/README.md`). Reading the
+primitives, however, works perfectly.
 
-So the copper crosses as data and is rebuilt directly in HFSS. That is
-not merely a workaround; it is better in three ways than the CAD round
-trip would have been:
+So the layout crosses as data and is rebuilt here: substrates, copper,
+vias and wire bonds. That is better than the CAD round trip would have
+been in three ways:
 
   * every solid gets exactly the name its rule in `model_builder`
     expects, instead of whatever a STEP translator decided to call it,
   * nothing depends on imported face ids, which change on every rebuild
     and are what makes face-based mates fragile,
-  * the copper thickness comes from the same `default.txt` as the rest
-    of the geometry.
+  * substrate and copper are built in one frame from one set of
+    parameters, so they cannot drift apart.
 
-Coordinates arrive in millimetres relative to the board centre -- the
-datum shared with SolidWorks. Only the builder knows where a board sits
-in the assembly, so Z is applied here rather than in Altium.
+The coordinate frames are the subtle part, and getting them wrong does
+not look wrong -- it produces a model that solves and reports plausible
+nonsense. See `Frame`.
 """
 from __future__ import annotations
 
@@ -151,78 +151,168 @@ def read_file(path: str) -> Dict[str, BoardCopper]:
         return parse(f.read())
 
 
-# --- rebuilding it in HFSS -------------------------------------------
+# --- placing it in the model -----------------------------------------
 #
-# One HFSS solid per record would give thousands of objects and a name
-# per object, which neither the material rules nor the mesher want.
-# Everything on a layer is therefore united into a single body carrying
-# the name that `model_builder.MATERIAL_RULES` looks for.
+# Altium and SolidWorks do not agree on which way is up, and that
+# disagreement is invisible if you get it wrong: the model still solves,
+# and reports plausible nonsense with the copper lying in the wrong
+# plane entirely.
+#
+# Altium works in (u, v, w): u along the feedline, v across it, w normal
+# to the board. The SolidWorks assembly has Y normal to the board and X
+# along the feedline. Mapping u to X and w to Y forces the third axis --
+# for a right-handed frame Z must be -v, since u x w = -v. Nothing here
+# may quietly "tidy away" that sign.
 
 
 @dataclass(frozen=True)
-class Placement:
-    """Where a board's copper sits in the assembly, in millimetres.
+class Frame:
+    """Maps Altium board coordinates into assembly coordinates.
 
-    `z_top` is the upper face of the substrate; top-layer copper is
-    grown upward from it and bottom-layer copper downward from
-    `z_bottom`. `x_offset`/`y_offset` carry the board's position in the
-    assembly, which is zero while the board is centred on the origin --
-    the case today, and the reason the datum convention matters.
+    `x_offset` and `z_offset` carry the board centre to where it sits in
+    the box. The assembly origin is a corner of the box, so these are
+    half the box size rather than zero: the board is centred in the
+    cavity, not on the origin.
     """
-    z_top: float
-    z_bottom: float
-    thickness: float
     x_offset: float = 0.0
-    y_offset: float = 0.0
+    z_offset: float = 0.0
+
+    def point(self, u: float, v: float, w: float) -> List[float]:
+        """One Altium point in assembly coordinates."""
+        return [u + self.x_offset, w, -v + self.z_offset]
+
+    def box(self, u1: float, v1: float, u2: float, v2: float,
+            w_base: float, w_height: float) -> Tuple[List[float], List[float]]:
+        """A slab in the board plane, as (origin, sizes) for a box.
+
+        Sizes come back positive with the origin at the low corner,
+        which is what the modeller wants however the inputs were ordered
+        and whichever way the axis flip turned them.
+        """
+        p1 = self.point(u1, v1, w_base)
+        p2 = self.point(u2, v2, w_base + w_height)
+        origin = [min(p1[i], p2[i]) for i in range(3)]
+        sizes = [abs(p2[i] - p1[i]) for i in range(3)]
+        return origin, sizes
+
+
+@dataclass(frozen=True)
+class Stack:
+    """Where each face of the stack sits along the up axis.
+
+    The die lies IN the board, not on it: the PCB is pocketed to the
+    depth of the die so their top faces finish flush. That is what keeps
+    the wire bonds short and roughly level, and it is why `chip_top` and
+    `pcb_top` are normally equal.
+    """
+    pcb_bottom: float
+    pcb_top: float
+    chip_bottom: float
+    chip_top: float
+    copper_thickness: float
+    chip_metal_thickness: float
+
+
+def build_substrates(
+    modeler,
+    frame: Frame,
+    stack: Stack,
+    pcb_half_length: float,
+    pcb_half_side: float,
+    chip_half_length: float,
+    chip_half_side: float,
+    log=logger.info,
+) -> List[str]:
+    """Create the PCB and die dielectrics, with the die in its pocket.
+
+    Named `pcb_substrate` and `chip_substrate` so the material rules give
+    them the board and die permittivities.
+
+    Altium would have been the natural place to build these, but its
+    solid export is precisely the call that cannot be reached from a
+    script. Building them here is the better answer anyway: the pocket
+    can be cut exactly, and substrate and copper share one frame, so
+    they cannot drift apart.
+    """
+    origin, sizes = frame.box(
+        -pcb_half_length, -pcb_half_side, pcb_half_length, pcb_half_side,
+        stack.pcb_bottom, stack.pcb_top - stack.pcb_bottom,
+    )
+    pcb = modeler.create_box(origin=origin, sizes=sizes)
+    pcb.name = "pcb_substrate"
+
+    pocket_origin, pocket_sizes = frame.box(
+        -chip_half_length, -chip_half_side, chip_half_length, chip_half_side,
+        stack.chip_bottom, stack.chip_top - stack.chip_bottom,
+    )
+    pocket = modeler.create_box(origin=pocket_origin, sizes=pocket_sizes)
+    modeler.subtract("pcb_substrate", [pocket.name], keep_originals=False)
+
+    chip_origin, chip_sizes = frame.box(
+        -chip_half_length, -chip_half_side, chip_half_length, chip_half_side,
+        stack.chip_bottom, stack.chip_top - stack.chip_bottom,
+    )
+    chip = modeler.create_box(origin=chip_origin, sizes=chip_sizes)
+    chip.name = "chip_substrate"
+
+    log(
+        "Built pcb_substrate (pocketed for the die) and chip_substrate, "
+        f"top faces flush at {stack.chip_top:g} mm."
+    )
+    return ["pcb_substrate", "chip_substrate"]
 
 
 def build(
     modeler,
     copper: BoardCopper,
-    placement: Placement,
+    frame: Frame,
+    top_face: float,
+    bottom_face: float,
+    thickness: float,
     prefix: str,
     log=logger.info,
 ) -> Dict[str, List[str]]:
-    """Create the copper of one board in HFSS.
+    """Create one board's copper.
 
-    `modeler` is a PyAEDT modeler. Returns the object names created, per
-    body, so the caller can check that the names the material rules
-    expect actually exist.
+    Top-layer copper grows outward from `top_face`, bottom-layer copper
+    outward from `bottom_face`, and vias span between them. Returns the
+    names created, so the caller can check they are the ones the material
+    rules match on.
     """
     created: Dict[str, List[str]] = {}
 
-    for layer, sign in ((TOP, +1.0), (BOTTOM, -1.0)):
+    for layer, base, height in (
+        (TOP, top_face, thickness),
+        (BOTTOM, bottom_face, -thickness),
+    ):
         tracks, pads, regions = copper.on_layer(layer)
         if not (tracks or pads or regions):
             continue
 
-        base = placement.z_top if layer == TOP else placement.z_bottom
-        height = sign * placement.thickness
         parts: List[str] = []
-
         for region in regions:
-            parts.append(_extrude_polygon(modeler, region.points, base, height, placement))
+            parts.append(_extrude_polygon(modeler, region.points, base, height, frame))
         for track in tracks:
-            parts.extend(_extrude_track(modeler, track, base, height, placement))
+            parts.extend(_extrude_track(modeler, track, base, height, frame))
         for pad in pads:
-            parts.append(
-                _extrude_rect(
-                    modeler, pad.x - pad.xsize / 2, pad.y - pad.ysize / 2,
-                    pad.x + pad.xsize / 2, pad.y + pad.ysize / 2,
-                    base, height, placement,
-                )
+            origin, sizes = frame.box(
+                pad.x - pad.xsize / 2, pad.y - pad.ysize / 2,
+                pad.x + pad.xsize / 2, pad.y + pad.ysize / 2,
+                base, height,
             )
+            parts.append(modeler.create_box(origin=origin, sizes=sizes).name)
 
         name = f"{prefix}_copper_{layer}"
         created[name] = _unite_as(modeler, parts, name)
 
     if copper.vias:
+        # Vias run along the up axis, which is Y here rather than Z.
         parts = [
             modeler.create_cylinder(
-                orientation="Z",
-                origin=[via.x + placement.x_offset, via.y + placement.y_offset, placement.z_bottom],
+                orientation="Y",
+                origin=frame.point(via.x, via.y, bottom_face),
                 radius=via.diameter / 2.0,
-                height=placement.z_top - placement.z_bottom,
+                height=top_face - bottom_face,
             ).name
             for via in copper.vias
         ]
@@ -236,62 +326,53 @@ def build(
     return created
 
 
-def _shift(placement: Placement, x: float, y: float) -> Tuple[float, float]:
-    return x + placement.x_offset, y + placement.y_offset
-
-
-def _extrude_rect(modeler, x1, y1, x2, y2, base, height, placement) -> str:
-    x1, y1 = _shift(placement, x1, y1)
-    x2, y2 = _shift(placement, x2, y2)
-    return modeler.create_box(
-        origin=[min(x1, x2), min(y1, y2), base],
-        sizes=[abs(x2 - x1), abs(y2 - y1), height],
-    ).name
-
-
-def _extrude_polygon(modeler, points, base, height, placement) -> str:
-    shifted = [list(_shift(placement, x, y)) + [base] for x, y in points]
-    poly = modeler.create_polyline(points=shifted, close_surface=True, cover_surface=True)
+def _extrude_polygon(modeler, points, base, height, frame: Frame) -> str:
+    poly = modeler.create_polyline(
+        points=[frame.point(u, v, base) for u, v in points],
+        close_surface=True,
+        cover_surface=True,
+    )
     modeler.thicken_sheet(poly, height)
     return poly.name
 
 
-def _extrude_track(modeler, track: Track, base, height, placement) -> List[str]:
+def _extrude_track(modeler, track: Track, base, height, frame: Frame) -> List[str]:
     """A track is a rectangle plus a round cap at each end.
 
-    The caps are not decoration: without them a fence of tracks meeting
-    at an angle leaves wedge-shaped gaps in the ground, and a gap in a
-    ground plane is exactly the kind of defect that moves a mode.
+    The caps are not decoration: without them a run of tracks meeting at
+    an angle leaves wedge-shaped gaps, and a gap in a ground plane is
+    exactly the kind of defect that moves a mode.
     """
-    x1, y1 = _shift(placement, track.x1, track.y1)
-    x2, y2 = _shift(placement, track.x2, track.y2)
     half = track.width / 2.0
+    du, dv = track.x2 - track.x1, track.y2 - track.y1
+    length = (du * du + dv * dv) ** 0.5
 
-    dx, dy = x2 - x1, y2 - y1
-    length = (dx * dx + dy * dy) ** 0.5
     if length == 0:
         return [
             modeler.create_cylinder(
-                orientation="Z", origin=[x1, y1, base], radius=half, height=height
+                orientation="Y",
+                origin=frame.point(track.x1, track.y1, base),
+                radius=half, height=height,
             ).name
         ]
 
-    # Unit normal, to walk out to the edges of the track.
-    nx, ny = -dy / length * half, dx / length * half
+    # Unit normal in the board plane, to reach the edges of the track.
+    nu, nv = -dv / length * half, du / length * half
     corners = [
-        [x1 + nx, y1 + ny, base],
-        [x2 + nx, y2 + ny, base],
-        [x2 - nx, y2 - ny, base],
-        [x1 - nx, y1 - ny, base],
+        frame.point(track.x1 + nu, track.y1 + nv, base),
+        frame.point(track.x2 + nu, track.y2 + nv, base),
+        frame.point(track.x2 - nu, track.y2 - nv, base),
+        frame.point(track.x1 - nu, track.y1 - nv, base),
     ]
     poly = modeler.create_polyline(points=corners, close_surface=True, cover_surface=True)
     modeler.thicken_sheet(poly, height)
 
     names = [poly.name]
-    for x, y in ((x1, y1), (x2, y2)):
+    for u, v in ((track.x1, track.y1), (track.x2, track.y2)):
         names.append(
             modeler.create_cylinder(
-                orientation="Z", origin=[x, y, base], radius=half, height=height
+                orientation="Y", origin=frame.point(u, v, base),
+                radius=half, height=height,
             ).name
         )
     return names
@@ -325,46 +406,49 @@ def _unite_as(modeler, parts: Sequence[str], name: str) -> List[str]:
 
 @dataclass(frozen=True)
 class BondSpec:
-    """One row of bonds, from a board pad across to a die pad."""
-    x_start: float
-    x_end: float
-    z_start: float
-    z_end: float
+    """One row of bonds, from a board pad across to a die pad.
+
+    `u_start`/`u_end` are along the feedline and `w_start`/`w_end` are
+    the two pad heights -- equal, when the die sits flush in its pocket.
+    """
+    u_start: float
+    u_end: float
+    w_start: float
+    w_end: float
     count: int
     pitch: float
     height: float
     diameter: float
 
 
-def bond_path(spec: BondSpec, y: float, segments: int = 12) -> List[List[float]]:
-    """Points along one bond loop.
+def bond_path(spec: BondSpec, frame: Frame, v: float, segments: int = 12) -> List[List[float]]:
+    """Points along one bond loop, in assembly coordinates.
 
-    A real bond leaves the pad steeply, arcs over, and comes down onto
-    the die -- it is not a straight line, and the height of the loop is
-    what keeps it clear of the die edge. A half sine gives that shape
-    with the apex at `height` above the higher of the two ends, which is
-    close enough to a JEDEC profile for a field solve and needs no
-    special-casing when the two ends sit at different heights.
+    A real bond leaves the pad steeply, arcs over, and comes down on the
+    die -- it is not a straight line, and the loop is what keeps it clear
+    of the die edge. A half sine gives that shape with the apex `height`
+    above the ends, and needs no special-casing when the two ends sit at
+    different heights.
     """
     import math
 
     points = []
     for i in range(segments + 1):
         t = i / segments
-        x = spec.x_start + (spec.x_end - spec.x_start) * t
-        z = spec.z_start + (spec.z_end - spec.z_start) * t
-        z += spec.height * math.sin(math.pi * t)
-        points.append([x, y, z])
+        u = spec.u_start + (spec.u_end - spec.u_start) * t
+        w = spec.w_start + (spec.w_end - spec.w_start) * t
+        w += spec.height * math.sin(math.pi * t)
+        points.append(frame.point(u, v, w))
     return points
 
 
-def build_wirebonds(modeler, spec: BondSpec, log=logger.info) -> List[str]:
+def build_wirebonds(modeler, spec: BondSpec, frame: Frame, log=logger.info) -> List[str]:
     """Create one row of bond wires as swept circular profiles."""
     names = []
     for i in range(spec.count):
-        y = (i - (spec.count - 1) / 2.0) * spec.pitch
+        v = (i - (spec.count - 1) / 2.0) * spec.pitch
         wire = modeler.create_polyline(
-            points=bond_path(spec, y),
+            points=bond_path(spec, frame, v),
             xsection_type="Circle",
             xsection_width=spec.diameter,
         )

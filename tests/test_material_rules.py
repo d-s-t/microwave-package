@@ -172,5 +172,52 @@ class TestObjectsDict(unittest.TestCase):
         self.assertEqual(objects["box"].name, "box")
 
 
+
+class TestSupersededSolids(unittest.TestCase):
+    """The substrates now come from the layout, so the imported copies
+    must go -- two solids in one region make HFSS either error or resolve
+    it silently by material priority, and the silent case still solves."""
+
+    class Modeler:
+        def __init__(self, names):
+            self._objects = [FakeObject(n) for n in names]
+            self.deleted = []
+
+        @property
+        def modeler(self):
+            return self
+
+        @property
+        def solid_objects(self):
+            return self._objects
+
+        def delete(self, names):
+            self.deleted.extend(names)
+
+    def _drop(self, names):
+        m = self.Modeler(names)
+        model_builder._drop_superseded_solids(m, lambda _msg: None)
+        return m.deleted
+
+    def test_the_imported_pcb_and_chip_are_removed(self):
+        self.assertEqual(
+            sorted(self._drop(["PCB", "chip", "box", "lid", "vacuum"])),
+            ["PCB", "chip"],
+        )
+
+    def test_the_chip_lid_survives(self):
+        """It is enclosure, not die, and shares the prefix."""
+        self.assertEqual(self._drop(["chip_lid", "lid", "box"]), [])
+
+    def test_the_enclosure_and_vacuum_survive(self):
+        self.assertEqual(self._drop(["box", "lid", "vacuum"]), [])
+
+    def test_bodies_we_build_ourselves_are_not_targets(self):
+        """They are created after this runs, but the names must not
+        collide even so."""
+        self.assertEqual(
+            self._drop(["pcb_substrate", "chip_substrate", "pcb_copper_top"]), []
+        )
+
 if __name__ == "__main__":
     unittest.main()

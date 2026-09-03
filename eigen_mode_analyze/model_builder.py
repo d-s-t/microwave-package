@@ -121,6 +121,164 @@ MATERIAL_RULES = [
 ]
 
 
+# The SolidWorks assembly still supplies the box, the lid and the
+# vacuum. It also still contains a PCB and a chip, but those are now
+# built here instead -- with the die pocketed into the board and the
+# copper in the same frame -- so the imported copies are removed rather
+# than left to overlap the ones we build.
+SUPERSEDED_BY_LAYOUT = ("pcb", "chip")
+
+
+def _drop_superseded_solids(hfss, log) -> None:
+    """Delete the imported substrates we are about to rebuild.
+
+    Two solids occupying one region is not a small inaccuracy: HFSS
+    either errors or resolves it silently by material priority, and the
+    silent case is worse because the model still solves.
+    """
+    doomed = []
+    for obj in hfss.modeler.solid_objects:
+        name = obj.name.lower()
+        # chip_lid is part of the enclosure, not the die, and the STEP
+        # names it with the same prefix.
+        if "lid" in name:
+            continue
+        if name in SUPERSEDED_BY_LAYOUT:
+            doomed.append(obj.name)
+    if doomed:
+        hfss.modeler.delete(doomed)
+        log(f"Removed the imported {', '.join(doomed)} -- rebuilt from the layout instead.")
+
+
+def build_layout(hfss, combo_dir: str, dimensions_txt_content: str, log=logger.info) -> None:
+    """Rebuild the boards from the layout: substrates, copper and bonds.
+
+    Silently does nothing when there is no copper file. A run built from
+    a SolidWorks-only assembly is still perfectly valid, and was the only
+    kind of run until the Altium stage existed.
+    """
+    from . import copper_geometry as cg, equations as eq
+
+    copper_path = os.path.join(combo_dir, "copper.txt")
+    if not os.path.isfile(copper_path):
+        log("No copper.txt for this combination -- building the model without a layout.")
+        return
+
+    v = eq.get_numeric_parameters(dimensions_txt_content)
+    boards = cg.read_file(copper_path)
+
+    pcb_length = v.get("pcb_length", 26.0)
+    pcb_side = v.get("pcb_side", 10.0)
+    pcb_width = v.get("pcb_width", 0.381)
+    chip_width = v.get("chip_width", 0.381)
+    wall = v.get("wall_width", 1.0)
+    pedestal = v.get("pedestal_depth", 0.0)
+
+    # The assembly origin is a corner of the box, so the board centre
+    # sits half a box in along both in-plane axes. box_length and
+    # box_side are the equation file's own derived values.
+    frame = cg.Frame(
+        x_offset=(pcb_length + 2 * wall) / 2.0,
+        z_offset=(pcb_side + 2 * wall) / 2.0,
+    )
+
+    # Heights follow box_height = wall_width + pedestal_depth +
+    # pcb_width: the board floats on the floor and the pedestal, and the
+    # die is let into the board so their faces finish flush.
+    pcb_bottom = wall + pedestal
+    pcb_top = pcb_bottom + pcb_width
+    stack = cg.Stack(
+        pcb_bottom=pcb_bottom,
+        pcb_top=pcb_top,
+        chip_bottom=pcb_top - chip_width,
+        chip_top=pcb_top,
+        copper_thickness=v.get("copper_thickness", 0.035),
+        chip_metal_thickness=v.get("chip_metal_thickness", 0.0002),
+    )
+
+    _drop_superseded_solids(hfss, log)
+
+    cg.build_substrates(
+        hfss.modeler, frame, stack,
+        pcb_half_length=pcb_length / 2.0,
+        pcb_half_side=pcb_side / 2.0,
+        chip_half_length=v.get("chip_length", 6.3) / 2.0,
+        chip_half_side=v.get("chip_side", 6.3) / 2.0,
+        log=log,
+    )
+
+    package = boards.get("package")
+    if package is not None and len(package):
+        cg.build(
+            hfss.modeler, package, frame,
+            top_face=stack.pcb_top, bottom_face=stack.pcb_bottom,
+            thickness=stack.copper_thickness, prefix="pcb", log=log,
+        )
+
+    chip = boards.get("chip")
+    if chip is not None and len(chip):
+        cg.build(
+            hfss.modeler, chip, frame,
+            top_face=stack.chip_top, bottom_face=stack.chip_bottom,
+            thickness=stack.chip_metal_thickness, prefix="chip", log=log,
+        )
+
+    bond_count = int(v.get("bond_count", 0))
+    if bond_count:
+        half_chip = v.get("chip_length", 6.3) / 2.0
+        span = v.get("bonding_clearence", 1.0)
+        inset = v.get("bond_pad_length", 0.3)
+        for sign in (-1.0, +1.0):
+            cg.build_wirebonds(
+                hfss.modeler,
+                cg.BondSpec(
+                    u_start=sign * (half_chip + span),
+                    u_end=sign * (half_chip - inset),
+                    w_start=stack.pcb_top,
+                    w_end=stack.chip_top,
+                    count=bond_count,
+                    pitch=v.get("bond_pad_pitch", 0.4),
+                    height=v.get("bond_height", 0.2),
+                    diameter=v.get("bond_wire_diameter", 0.025),
+                ),
+                frame, log=log,
+            )
+
+
+# How an imported solid's name decides its material and boundary.
+#
+# This used to be an if/elif chain of substring tests, which was fine
+# while every body was either the box, the lid, the PCB or the chip. It
+# stops being fine the moment copper exists: "pcb_copper" contains
+# "pcb", so the old chain would have assigned it Rogers and nobody would
+# have noticed until the eigenfrequencies came out wrong.
+#
+# So the rules are explicit and ORDERED, most specific first, and the
+# first match wins. `perfect_e` names the setting that decides whether
+# the body also gets a perfect-E boundary; None means never.
+#
+# Names come from the STEP, which gets them from the SolidWorks
+# components -- see base_parts/altium/README.md for where copper body
+# names come from.
+MATERIAL_RULES = [
+    # (substring, key in objects_dict, material setting, perfect-E setting)
+    ("vacuum",          "vacuum",          "mat_vacuum",          None),
+    ("chip_lid",        "chip_lid",        "mat_box",             "perfect_e_box"),
+    ("chip_conductor",  "chip_conductor",  "mat_conductor_chip",  "perfect_e_conductors"),
+    ("chip_substrate",  "chip",            "mat_chip",            None),
+    ("pcb_copper",      "pcb_copper",      "mat_conductor_pcb",   "perfect_e_conductors"),
+    ("pcb_via",         "pcb_vias",        "mat_conductor_pcb",   "perfect_e_conductors"),
+    ("pcb_substrate",   "pcb",             "mat_pcb",             None),
+    ("wirebond",        "wirebond",        "mat_conductor_pcb",   "perfect_e_conductors"),
+    ("connector",       "connector",       "mat_box",             "perfect_e_connector"),
+    # The bare names come last, so the specific ones above win.
+    ("lid",             "lid",             "mat_box",             "perfect_e_box"),
+    ("box",             "box",             "mat_box",             "perfect_e_box"),
+    ("chip",            "chip",            "mat_chip",            None),
+    ("pcb",             "pcb",             "mat_pcb",             None),
+]
+
+
 def build_copper(hfss, combo_dir: str, dimensions_txt_content: str, log=logger.info) -> None:
     """Rebuild the layout's copper in the model, if the layout exported any.
 
@@ -413,11 +571,12 @@ def build_and_queue(
         log(f"Importing {step_path}...")
         hfss.modeler.import_3d_cad(step_path)
 
-        # Copper is not in the STEP -- Altium's export drops it, so it is
-        # rebuilt here from the geometry read out of the layout. This must
-        # happen BEFORE materials are assigned, or the copper bodies exist
-        # without one. See copper_geometry for why it works this way.
-        build_copper(hfss, combo_dir, dimensions_txt_content, log=log)
+        # The boards are not in the STEP in any usable form -- Altium's
+        # export drops copper, and the substrates are rebuilt here so the
+        # die can be pocketed into the board and everything shares one
+        # frame. Must happen BEFORE materials are assigned, or the new
+        # bodies exist without any.
+        build_layout(hfss, combo_dir, dimensions_txt_content, log=log)
 
         objects_dict = assign_materials_and_boundaries(hfss, analysis_settings["materials"], log=log)
         carve_vacuum(hfss, objects_dict, log=log)

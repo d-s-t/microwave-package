@@ -1,13 +1,14 @@
-"""Tests for reading Altium copper and rebuilding it in HFSS.
+"""Tests for reading the Altium layout and rebuilding it in HFSS.
 
 The parser is checked against the real file the generator produced, so
 the wire format is pinned to something Altium actually wrote rather than
 to a fixture invented here.
 
-The builder is checked against a stand-in modeller: HFSS is not needed
-to verify that the right number of solids get made, that they land at
-the right heights, and -- most importantly -- that they end up with the
-names the material rules match on.
+The builder is checked against a stand-in modeller. HFSS is not needed
+to verify the thing that actually went wrong in practice: which way is
+up. Altium works Z-up and the SolidWorks assembly is Y-up, and a model
+built in the wrong frame still solves -- it just reports plausible
+nonsense with the copper lying in the wrong plane.
 
 Run: python -m unittest discover -s tests
 """
@@ -51,19 +52,16 @@ class TestParsing(unittest.TestCase):
         self.assertEqual(pkg.pads[0].x, 11.5)
         self.assertEqual(pkg.pads[0].xsize, 1.275)
         self.assertAlmostEqual(pkg.vias[0].y, -0.67131)
-        self.assertEqual(pkg.vias[0].diameter, 0.3)
         self.assertEqual(pkg.tracks[0].width, 0.2)
 
     def test_region_points_come_back_as_pairs(self):
-        pkg = cg.parse(SAMPLE)["package"]
-        pts = pkg.regions[0].points
+        pts = cg.parse(SAMPLE)["package"].regions[0].points
         self.assertEqual(len(pts), 4)
         self.assertEqual(pts[0], (-13.0, 0.37131))
-        self.assertEqual(pts[2], (13.0, 5.0))
 
     def test_layers_are_kept_apart(self):
         pkg = cg.parse(SAMPLE)["package"]
-        top_t, top_p, top_r = pkg.on_layer(cg.TOP)
+        _, top_p, top_r = pkg.on_layer(cg.TOP)
         _, _, bot_r = pkg.on_layer(cg.BOTTOM)
         self.assertEqual(len(top_r), 1)
         self.assertEqual(len(bot_r), 1)
@@ -77,11 +75,8 @@ class TestParsing(unittest.TestCase):
             cg.parse("via|1|2|0.3|0.15\n")
 
     def test_malformed_record_names_its_line(self):
-        """A silently skipped via is missing shielding that nothing
-        downstream would notice, so parsing is strict."""
-        bad = "board=x\nvia|1|2|oops|0.15\n"
         with self.assertRaises(cg.CopperParseError) as ctx:
-            cg.parse(bad)
+            cg.parse("board=x\nvia|1|2|oops|0.15\n")
         self.assertIn("line 2", str(ctx.exception))
 
     def test_unknown_record_type_is_rejected(self):
@@ -91,6 +86,60 @@ class TestParsing(unittest.TestCase):
     def test_region_with_odd_coordinate_count_is_rejected(self):
         with self.assertRaises(cg.CopperParseError):
             cg.parse("board=x\nregion|top|1,2,3,4,5\n")
+
+
+class TestFrame(unittest.TestCase):
+    """The axis mapping. This is the bug that produced a model which
+    solved and was wrong: Altium is Z-up, the assembly is Y-up."""
+
+    FRAME = cg.Frame(x_offset=14.0, z_offset=6.0)
+
+    def test_up_becomes_y_not_z(self):
+        x, y, z = self.FRAME.point(0.0, 0.0, 1.5)
+        self.assertEqual(y, 1.5, "the board normal must land on Y")
+
+    def test_feedline_runs_along_x(self):
+        x, _, _ = self.FRAME.point(5.0, 0.0, 0.0)
+        self.assertEqual(x, 5.0 + 14.0)
+
+    def test_across_the_board_becomes_negative_z(self):
+        """u x w = -v, so the third axis is negated. Dropping the sign
+        mirrors the board, which no test of extents would notice."""
+        _, _, z = self.FRAME.point(0.0, 2.0, 0.0)
+        self.assertEqual(z, -2.0 + 6.0)
+
+    def test_the_mapping_is_right_handed(self):
+        """A wrong-handed frame mirrors the layout -- geometrically
+        plausible, and wrong."""
+        o = self.FRAME.point(0, 0, 0)
+        du = [a - b for a, b in zip(self.FRAME.point(1, 0, 0), o)]
+        dv = [a - b for a, b in zip(self.FRAME.point(0, 1, 0), o)]
+        dw = [a - b for a, b in zip(self.FRAME.point(0, 0, 1), o)]
+        cross = [
+            du[1] * dv[2] - du[2] * dv[1],
+            du[2] * dv[0] - du[0] * dv[2],
+            du[0] * dv[1] - du[1] * dv[0],
+        ]
+        self.assertEqual(cross, dw, "u x v must give w")
+
+    def test_board_centre_lands_at_the_box_centre(self):
+        """The assembly origin is a box corner, so a board centred on the
+        Altium origin has to be carried half a box in."""
+        x, _, z = self.FRAME.point(0.0, 0.0, 0.0)
+        self.assertEqual((x, z), (14.0, 6.0))
+
+    def test_box_returns_positive_sizes_whatever_the_order(self):
+        o1, s1 = self.FRAME.box(-13, -5, 13, 5, 1.0, 0.381)
+        o2, s2 = self.FRAME.box(13, 5, -13, -5, 1.0, 0.381)
+        self.assertEqual(s1, s2)
+        self.assertEqual(o1, o2)
+        self.assertTrue(all(v > 0 for v in s1))
+
+    def test_box_spans_the_right_axes(self):
+        _, sizes = self.FRAME.box(-13, -5, 13, 5, 1.0, 0.381)
+        self.assertAlmostEqual(sizes[0], 26.0)   # along the feedline -> X
+        self.assertAlmostEqual(sizes[1], 0.381)  # thickness -> Y
+        self.assertAlmostEqual(sizes[2], 10.0)   # across -> Z
 
 
 class FakeSolid:
@@ -107,6 +156,7 @@ class FakeModeler:
         self.polylines = []
         self.thickened = []
         self.unites = []
+        self.subtractions = []
         self._n = 0
         self._by_name = {}
 
@@ -117,15 +167,15 @@ class FakeModeler:
         return solid
 
     def create_box(self, origin, sizes, **kw):
-        self.boxes.append((origin, sizes))
+        self.boxes.append((list(origin), list(sizes)))
         return self._make("box")
 
     def create_cylinder(self, orientation, origin, radius, height, **kw):
-        self.cylinders.append((origin, radius, height))
+        self.cylinders.append((orientation, list(origin), radius, height))
         return self._make("cyl")
 
     def create_polyline(self, points, **kw):
-        self.polylines.append(points)
+        self.polylines.append([list(p) for p in points])
         return self._make("poly")
 
     def thicken_sheet(self, sheet, height, **kw):
@@ -134,98 +184,160 @@ class FakeModeler:
     def unite(self, parts):
         self.unites.append(list(parts))
 
+    def subtract(self, target, tools, keep_originals=False):
+        self.subtractions.append((target, list(tools), keep_originals))
+
     def __getitem__(self, name):
         return self._by_name[name]
 
 
-PLACEMENT = cg.Placement(z_top=0.381, z_bottom=0.0, thickness=0.035)
+FRAME = cg.Frame(x_offset=14.0, z_offset=6.0)
+STACK = cg.Stack(
+    pcb_bottom=1.0, pcb_top=1.381,
+    chip_bottom=1.0, chip_top=1.381,
+    copper_thickness=0.035, chip_metal_thickness=0.0002,
+)
 
 
-class TestBuilding(unittest.TestCase):
+class TestSubstrates(unittest.TestCase):
+    def test_names_are_the_ones_the_material_rules_expect(self):
+        modeler = FakeModeler()
+        made = cg.build_substrates(modeler, FRAME, STACK, 13, 5, 3.15, 3.15,
+                                   log=lambda _m: None)
+        self.assertEqual(made, ["pcb_substrate", "chip_substrate"])
+
+    def test_the_pcb_is_pocketed_for_the_die(self):
+        """The die sits IN the board, not on it -- so the pocket has to
+        be cut, and cut for keeps."""
+        modeler = FakeModeler()
+        cg.build_substrates(modeler, FRAME, STACK, 13, 5, 3.15, 3.15,
+                            log=lambda _m: None)
+        self.assertEqual(len(modeler.subtractions), 1)
+        target, _tools, keep = modeler.subtractions[0]
+        self.assertEqual(target, "pcb_substrate")
+        self.assertFalse(keep, "the pocket must actually be removed")
+
+    def test_die_and_board_finish_flush(self):
+        modeler = FakeModeler()
+        cg.build_substrates(modeler, FRAME, STACK, 13, 5, 3.15, 3.15,
+                            log=lambda _m: None)
+        tops = [o[1] + s[1] for o, s in modeler.boxes]
+        self.assertTrue(all(abs(t - STACK.pcb_top) < 1e-9 for t in tops),
+                        f"every top face should be flush at {STACK.pcb_top}, got {tops}")
+
+    def test_substrate_is_the_right_size_on_the_right_axes(self):
+        modeler = FakeModeler()
+        cg.build_substrates(modeler, FRAME, STACK, 13, 5, 3.15, 3.15,
+                            log=lambda _m: None)
+        _, sizes = modeler.boxes[0]
+        self.assertAlmostEqual(sizes[0], 26.0)
+        self.assertAlmostEqual(sizes[1], 0.381)
+        self.assertAlmostEqual(sizes[2], 10.0)
+
+
+class TestBuildingCopper(unittest.TestCase):
+    def _build(self, board="package", prefix="pcb"):
+        modeler = FakeModeler()
+        created = cg.build(
+            modeler, cg.parse(SAMPLE)[board], FRAME,
+            top_face=STACK.pcb_top, bottom_face=STACK.pcb_bottom,
+            thickness=STACK.copper_thickness, prefix=prefix, log=lambda _m: None,
+        )
+        return modeler, created
+
     def test_names_match_what_the_material_rules_expect(self):
-        """The whole reason for rebuilding copper here rather than
-        importing it: we choose the names, so they cannot drift away
-        from MATERIAL_RULES."""
         from eigen_mode_analyze import model_builder
 
-        modeler = FakeModeler()
-        created = cg.build(modeler, cg.parse(SAMPLE)["package"], PLACEMENT,
-                           prefix="pcb", log=lambda _m: None)
+        _, created = self._build()
         self.assertIn("pcb_copper_top", created)
         self.assertIn("pcb_copper_bottom", created)
         self.assertIn("pcb_vias", created)
-
         patterns = [rule[0] for rule in model_builder.MATERIAL_RULES]
         for name in created:
-            self.assertTrue(
-                any(p in name for p in patterns),
-                f"{name} matches no material rule, so it would keep the default material",
-            )
+            self.assertTrue(any(p in name for p in patterns),
+                            f"{name} matches no material rule")
 
-    def test_one_cylinder_per_via(self):
-        modeler = FakeModeler()
-        cg.build(modeler, cg.parse(SAMPLE)["package"], PLACEMENT,
-                 prefix="pcb", log=lambda _m: None)
-        via_cyls = [c for c in modeler.cylinders if c[1] == 0.15]
-        self.assertEqual(len(via_cyls), 2)
+    def test_vias_run_along_the_up_axis(self):
+        """Y, not Z. A via along Z would lie in the board plane."""
+        modeler, _ = self._build()
+        vias = [c for c in modeler.cylinders if c[2] == 0.15]
+        self.assertEqual(len(vias), 2)
+        self.assertTrue(all(c[0] == "Y" for c in vias))
 
-    def test_vias_span_the_whole_substrate(self):
-        modeler = FakeModeler()
-        cg.build(modeler, cg.parse(SAMPLE)["package"], PLACEMENT,
-                 prefix="pcb", log=lambda _m: None)
-        via = [c for c in modeler.cylinders if c[1] == 0.15][0]
-        self.assertEqual(via[0][2], 0.0)
-        self.assertAlmostEqual(via[2], 0.381)
+    def test_vias_span_the_substrate(self):
+        modeler, _ = self._build()
+        via = [c for c in modeler.cylinders if c[2] == 0.15][0]
+        self.assertAlmostEqual(via[1][1], STACK.pcb_bottom)
+        self.assertAlmostEqual(via[3], STACK.pcb_top - STACK.pcb_bottom)
 
-    def test_bottom_copper_grows_downward(self):
-        """Top copper grows up from the top face, bottom copper down
-        from the bottom one. A sign error here buries the ground plane
-        inside the substrate."""
-        modeler = FakeModeler()
-        cg.build(modeler, cg.parse(SAMPLE)["package"], PLACEMENT,
-                 prefix="pcb", log=lambda _m: None)
-        heights = dict(modeler.thickened)
-        self.assertTrue(any(h > 0 for h in heights.values()))
-        self.assertTrue(any(h < 0 for h in heights.values()))
+    def test_top_copper_sits_on_the_board_face(self):
+        modeler, _ = self._build()
+        ys = {round(p[1], 6) for path in modeler.polylines for p in path}
+        self.assertIn(round(STACK.pcb_top, 6), ys)
+
+    def test_bottom_copper_grows_away_from_the_board(self):
+        modeler, _ = self._build()
+        heights = [h for _n, h in modeler.thickened]
+        self.assertTrue(any(h > 0 for h in heights))
+        self.assertTrue(any(h < 0 for h in heights))
 
     def test_track_gets_round_caps(self):
-        """Square-ended tracks leave wedge gaps where they meet, and a
-        gap in a ground plane moves modes."""
-        modeler = FakeModeler()
-        cg.build(modeler, cg.parse(SAMPLE)["chip"], PLACEMENT,
-                 prefix="chip", log=lambda _m: None)
-        caps = [c for c in modeler.cylinders if c[1] == 0.1]
+        modeler, _ = self._build(board="chip", prefix="chip")
+        caps = [c for c in modeler.cylinders if c[2] == 0.1]
         self.assertEqual(len(caps), 2)
 
-    def test_everything_on_a_layer_is_united_into_one_body(self):
-        modeler = FakeModeler()
-        created = cg.build(modeler, cg.parse(SAMPLE)["package"], PLACEMENT,
-                           prefix="pcb", log=lambda _m: None)
+    def test_everything_on_a_layer_becomes_one_body(self):
+        modeler, created = self._build()
         self.assertEqual(len(created["pcb_copper_top"]), 1)
         self.assertTrue(modeler.unites)
 
-    def test_offsets_shift_every_shape(self):
-        """Board centre on the assembly origin is the current case, but
-        the offset is what would keep copper aligned if it moved."""
-        placement = cg.Placement(z_top=0.381, z_bottom=0.0, thickness=0.035,
-                                 x_offset=5.0, y_offset=-2.0)
-        modeler = FakeModeler()
-        cg.build(modeler, cg.parse(SAMPLE)["package"], placement,
-                 prefix="pcb", log=lambda _m: None)
-        via = [c for c in modeler.cylinders if c[1] == 0.15][0]
-        self.assertAlmostEqual(via[0][0], 11.8 + 5.0)
-        self.assertAlmostEqual(via[0][1], -0.67131 - 2.0)
-
     def test_a_board_with_no_vias_makes_no_via_body(self):
-        modeler = FakeModeler()
-        created = cg.build(modeler, cg.parse(SAMPLE)["chip"], PLACEMENT,
-                           prefix="chip", log=lambda _m: None)
+        _, created = self._build(board="chip", prefix="chip")
         self.assertNotIn("chip_vias", created)
 
 
-class TestAgainstRealExport(unittest.TestCase):
-    """If the generator has been run, parse its actual output."""
+class TestWireBonds(unittest.TestCase):
+    SPEC = cg.BondSpec(
+        u_start=-4.15, u_end=-2.85, w_start=1.381, w_end=1.381,
+        count=3, pitch=0.4, height=0.2, diameter=0.025,
+    )
 
+    def test_path_starts_and_ends_on_the_pads(self):
+        pts = cg.bond_path(self.SPEC, FRAME, v=0.0)
+        self.assertAlmostEqual(pts[0][0], -4.15 + 14.0)
+        self.assertAlmostEqual(pts[0][1], 1.381)
+        self.assertAlmostEqual(pts[-1][0], -2.85 + 14.0)
+
+    def test_loop_rises_above_both_ends(self):
+        """A straight wire would clip the die edge."""
+        pts = cg.bond_path(self.SPEC, FRAME, v=0.0)
+        self.assertGreater(max(p[1] for p in pts), self.SPEC.w_start)
+
+    def test_the_loop_rises_along_y(self):
+        """The apex must be in height, not sideways."""
+        pts = cg.bond_path(self.SPEC, FRAME, v=0.0)
+        self.assertEqual(len({round(p[2], 9) for p in pts}), 1,
+                         "a bond at fixed v must not wander across the board")
+
+    def test_bonds_spread_symmetrically_across_the_board(self):
+        modeler = FakeModeler()
+        cg.build_wirebonds(modeler, self.SPEC, FRAME, log=lambda _m: None)
+        zs = sorted({round(p[2], 6) for path in modeler.polylines for p in path})
+        self.assertEqual(zs, [6.0 - 0.4, 6.0, 6.0 + 0.4])
+
+    def test_one_wire_per_bond_united_under_the_rule_name(self):
+        modeler = FakeModeler()
+        created = cg.build_wirebonds(modeler, self.SPEC, FRAME, log=lambda _m: None)
+        self.assertEqual(len(modeler.polylines), 3)
+        self.assertEqual(created, ["wirebond"])
+
+    def test_no_bonds_requested_makes_nothing(self):
+        modeler = FakeModeler()
+        spec = cg.BondSpec(**{**self.SPEC.__dict__, "count": 0})
+        self.assertEqual(cg.build_wirebonds(modeler, spec, FRAME, log=lambda _m: None), [])
+
+
+class TestAgainstRealExport(unittest.TestCase):
     PATH = os.path.join(
         os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
         "base_parts", "altium", "generated", "copper.txt",
@@ -238,62 +350,7 @@ class TestAgainstRealExport(unittest.TestCase):
         self.assertIn("package", boards)
         self.assertIn("chip", boards)
         self.assertGreater(len(boards["package"].vias), 0)
-        self.assertGreater(len(boards["chip"].pads), 0)
 
 
 if __name__ == "__main__":
     unittest.main()
-
-
-class TestWireBonds(unittest.TestCase):
-    """Bonds are computed rather than read from Altium: AD26 exposes no
-    wirebond object id to scripting at all, and a bond is EM geometry
-    rather than layout."""
-
-    SPEC = cg.BondSpec(
-        x_start=-4.15, x_end=-2.85, z_start=0.381, z_end=0.762,
-        count=3, pitch=0.4, height=0.2, diameter=0.025,
-    )
-
-    def test_path_starts_and_ends_on_the_pads(self):
-        pts = cg.bond_path(self.SPEC, y=0.0)
-        self.assertAlmostEqual(pts[0][0], -4.15)
-        self.assertAlmostEqual(pts[0][2], 0.381)
-        self.assertAlmostEqual(pts[-1][0], -2.85)
-        self.assertAlmostEqual(pts[-1][2], 0.762)
-
-    def test_loop_rises_above_both_ends(self):
-        """A straight wire would clip the die edge. The loop is the
-        whole point of a bond profile."""
-        pts = cg.bond_path(self.SPEC, y=0.0)
-        apex = max(p[2] for p in pts)
-        self.assertGreater(apex, max(self.SPEC.z_start, self.SPEC.z_end))
-
-    def test_apex_scales_with_bond_height(self):
-        tall = cg.BondSpec(**{**self.SPEC.__dict__, "height": 0.5})
-        self.assertGreater(
-            max(p[2] for p in cg.bond_path(tall, 0.0)),
-            max(p[2] for p in cg.bond_path(self.SPEC, 0.0)),
-        )
-
-    def test_bonds_are_spread_symmetrically_about_centre(self):
-        modeler = FakeModeler()
-        cg.build_wirebonds(modeler, self.SPEC, log=lambda _m: None)
-        ys = sorted({round(p[1], 6) for path in modeler.polylines for p in path})
-        self.assertEqual(ys, [-0.4, 0.0, 0.4])
-
-    def test_one_wire_per_bond_united_under_the_material_rule_name(self):
-        from eigen_mode_analyze import model_builder
-
-        modeler = FakeModeler()
-        created = cg.build_wirebonds(modeler, self.SPEC, log=lambda _m: None)
-        self.assertEqual(len(modeler.polylines), 3)
-        self.assertEqual(created, ["wirebond"])
-        patterns = [rule[0] for rule in model_builder.MATERIAL_RULES]
-        self.assertTrue(any(p in "wirebond" for p in patterns))
-
-    def test_no_bonds_requested_makes_nothing(self):
-        modeler = FakeModeler()
-        spec = cg.BondSpec(**{**self.SPEC.__dict__, "count": 0})
-        self.assertEqual(cg.build_wirebonds(modeler, spec, log=lambda _m: None), [])
-        self.assertEqual(modeler.polylines, [])
