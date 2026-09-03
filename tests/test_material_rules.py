@@ -27,6 +27,7 @@ class FakeHfss:
     def __init__(self, names):
         self._objects = [FakeObject(n) for n in names]
         self.perfect_e = []
+        self.subtractions = []
 
     @property
     def modeler(self):
@@ -38,6 +39,9 @@ class FakeHfss:
 
     def assign_perfect_e(self, assignment):
         self.perfect_e.append(assignment)
+
+    def subtract(self, target, tools, keep_originals=False):
+        self.subtractions.append((target, list(tools), keep_originals))
 
 
 SETTINGS = {
@@ -398,6 +402,110 @@ class TestCavityFrame(unittest.TestCase):
         frame = self._frame([Broken()], log=messages.append)
         self.assertAlmostEqual(frame.x_offset, 14.0)
         self.assertTrue(any("WARNING" in m for m in messages))
+
+
+class TestCarveVacuum(unittest.TestCase):
+    """Which bodies get subtracted from vacuum.
+
+    This exists because the FIRST version silently missed bodies:
+    several material rules legitimately match more than one solid --
+    pcb_copper matches both the top and bottom layer, connector matches
+    one body per port -- and objects_dict (used elsewhere to look
+    something up by a single semantic key like "vacuum" or "chip") keeps
+    only the first body per rule key. Building the vacuum-carving tool
+    list from objects_dict therefore carved only ONE of two connectors
+    and left the second one overlapping vacuum, invisibly. carve_vacuum
+    now scans the modeler's raw solid list instead, which has no such
+    collapsing.
+    """
+
+    def test_every_connector_is_carved_even_though_they_share_a_rule_key(self):
+        hfss = FakeHfss(["vacuum", "box", "connector_1", "connector_2"])
+        # Simulate what assign_materials_and_boundaries actually leaves
+        # behind: only the FIRST connector survives objects_dict's
+        # setdefault, exactly like the bug that shipped.
+        objects_dict = {
+            "vacuum": hfss.solid_objects[0],
+            "box": hfss.solid_objects[1],
+            "connector": hfss.solid_objects[2],  # connector_2 is not here
+        }
+        model_builder.carve_vacuum(hfss, objects_dict, log=lambda _m: None)
+        target, tools, keep = hfss.subtractions[0]
+        self.assertIn("connector_1", tools)
+        self.assertIn("connector_2", tools, "the second connector must not be skipped")
+
+    def test_both_copper_layers_are_carved_even_though_they_share_a_rule_key(self):
+        hfss = FakeHfss(["vacuum", "box", "pcb_copper_top", "pcb_copper_bottom"])
+        objects_dict = {
+            "vacuum": hfss.solid_objects[0],
+            "box": hfss.solid_objects[1],
+            "pcb_copper": hfss.solid_objects[2],
+        }
+        model_builder.carve_vacuum(hfss, objects_dict, log=lambda _m: None)
+        _target, tools, _keep = hfss.subtractions[0]
+        self.assertIn("pcb_copper_top", tools)
+        self.assertIn("pcb_copper_bottom", tools)
+
+    def test_substrates_are_carved(self):
+        """The substrates were never carved at all in the first version
+        -- carve_vacuum only ever looked for 'copper'/'via'/'wirebond'
+        in the key, which a plain substrate never matches."""
+        hfss = FakeHfss(["vacuum", "box", "pcb_substrate", "chip_substrate"])
+        objects_dict = {
+            "vacuum": hfss.solid_objects[0],
+            "box": hfss.solid_objects[1],
+            "pcb": hfss.solid_objects[2],
+            "chip": hfss.solid_objects[3],
+        }
+        model_builder.carve_vacuum(hfss, objects_dict, log=lambda _m: None)
+        _target, tools, _keep = hfss.subtractions[0]
+        self.assertIn("pcb_substrate", tools)
+        self.assertIn("chip_substrate", tools)
+
+    def test_the_enclosure_is_never_a_carving_tool(self):
+        """box/lid/chip_lid come straight from the STEP, where the
+        SolidWorks-built vacuum already accounts for them -- carving
+        them again would be wrong, not merely redundant."""
+        hfss = FakeHfss(["vacuum", "box", "lid", "chip_lid", "pcb_substrate"])
+        objects_dict = {"vacuum": hfss.solid_objects[0]}
+        model_builder.carve_vacuum(hfss, objects_dict, log=lambda _m: None)
+        _target, tools, _keep = hfss.subtractions[0]
+        self.assertNotIn("box", tools)
+        self.assertNotIn("lid", tools)
+        self.assertNotIn("chip_lid", tools)
+        self.assertIn("pcb_substrate", tools)
+
+    def test_the_carved_bodies_survive(self):
+        """keep_originals: these are the things being simulated, not
+        scrap left over from cutting the vacuum."""
+        hfss = FakeHfss(["vacuum", "pcb_substrate"])
+        model_builder.carve_vacuum(hfss, {"vacuum": hfss.solid_objects[0]},
+                                   log=lambda _m: None)
+        _target, _tools, keep = hfss.subtractions[0]
+        self.assertTrue(keep)
+
+    def test_no_vacuum_body_is_a_no_op(self):
+        hfss = FakeHfss(["box", "pcb_substrate"])
+        model_builder.carve_vacuum(hfss, {}, log=lambda _m: None)
+        self.assertEqual(hfss.subtractions, [])
+
+    def test_nothing_to_carve_is_a_no_op(self):
+        hfss = FakeHfss(["vacuum", "box", "lid", "chip_lid"])
+        model_builder.carve_vacuum(hfss, {"vacuum": hfss.solid_objects[0]},
+                                   log=lambda _m: None)
+        self.assertEqual(hfss.subtractions, [])
+
+    def test_a_failure_is_loud(self):
+        class Failing(FakeHfss):
+            def subtract(self, *a, **k):
+                raise RuntimeError("nope")
+
+        hfss = Failing(["vacuum", "pcb_substrate"])
+        messages = []
+        model_builder.carve_vacuum(hfss, {"vacuum": hfss.solid_objects[0]}, log=messages.append)
+        self.assertTrue(any("WARNING" in m for m in messages))
+        self.assertTrue(any("overlapping" in m for m in messages))
+
 
 if __name__ == "__main__":
     unittest.main()

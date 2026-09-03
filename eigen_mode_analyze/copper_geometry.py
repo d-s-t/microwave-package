@@ -212,6 +212,19 @@ class Stack:
     copper_thickness: float
     chip_metal_thickness: float
 
+    @property
+    def pcb_copper_top(self) -> float:
+        """The board's actual top surface: the top of the copper, not
+        the substrate it sits on. Anything that rests ON the board --
+        a connector's underside, a bond wire's foot -- has to land here,
+        or it sinks one plating thickness into the pad."""
+        return self.pcb_top + self.copper_thickness
+
+    @property
+    def chip_copper_top(self) -> float:
+        """The die's actual top surface, by the same reasoning."""
+        return self.chip_top + self.chip_metal_thickness
+
 
 def build_substrates(
     modeler,
@@ -293,7 +306,7 @@ def build(
         for region in regions:
             parts.append(_extrude_polygon(modeler, region.points, base, height, frame))
         for track in tracks:
-            parts.extend(_extrude_track(modeler, track, base, height, frame))
+            parts.extend(_extrude_track(modeler, track, base, height, frame, log=log))
         for pad in pads:
             origin, sizes = frame.box(
                 pad.x - pad.xsize / 2, pad.y - pad.ysize / 2,
@@ -327,16 +340,42 @@ def build(
 
 
 def _extrude_polygon(modeler, points, base, height, frame: Frame) -> str:
-    poly = modeler.create_polyline(
-        points=[frame.point(u, v, base) for u, v in points],
-        close_surface=True,
-        cover_surface=True,
+    """A region as a solid box.
+
+    Every region this pipeline draws is an axis-aligned rectangle --
+    AddRect in the generator never emits anything else -- so this is a
+    box rather than a thickened sheet. `thicken_sheet`'s extrusion
+    direction follows the sheet's normal, which depends on the
+    polyline's point winding order; that winding is not something this
+    code controls once points have gone through the coordinate frame's
+    own reflection (v negated), so the sign is not trustworthy. A box's
+    origin and size are unambiguous regardless of winding.
+    """
+    us = [u for u, _v in points]
+    vs = [v for _u, v in points]
+    origin, sizes = frame.box(min(us), min(vs), max(us), max(vs), base, height)
+    return modeler.create_box(origin=origin, sizes=sizes).name
+
+
+def _cylinder(modeler, frame: Frame, u: float, v: float, w_base: float,
+             height: float, radius: float, log=logger.info):
+    """A cylinder along the up axis, with the sign of `height` normalised.
+
+    `create_cylinder` extrudes from its origin by `height` along
+    `orientation`; a negative height (the bottom copper layer) is not
+    independently confirmed to extrude the right way, so this always
+    passes a positive height from the lower face upward instead of
+    trusting the sign.
+    """
+    w0 = min(w_base, w_base + height)
+    return modeler.create_cylinder(
+        orientation="Y", origin=frame.point(u, v, w0),
+        radius=radius, height=abs(height),
     )
-    modeler.thicken_sheet(poly, height)
-    return poly.name
 
 
-def _extrude_track(modeler, track: Track, base, height, frame: Frame) -> List[str]:
+def _extrude_track(modeler, track: Track, base, height, frame: Frame,
+                   log=logger.info) -> List[str]:
     """A track is a rectangle plus a round cap at each end.
 
     The caps are not decoration: without them a run of tracks meeting at
@@ -348,33 +387,36 @@ def _extrude_track(modeler, track: Track, base, height, frame: Frame) -> List[st
     length = (du * du + dv * dv) ** 0.5
 
     if length == 0:
-        return [
-            modeler.create_cylinder(
-                orientation="Y",
-                origin=frame.point(track.x1, track.y1, base),
-                radius=half, height=height,
-            ).name
-        ]
+        return [_cylinder(modeler, frame, track.x1, track.y1, base, height, half).name]
 
-    # Unit normal in the board plane, to reach the edges of the track.
-    nu, nv = -dv / length * half, du / length * half
-    corners = [
-        frame.point(track.x1 + nu, track.y1 + nv, base),
-        frame.point(track.x2 + nu, track.y2 + nv, base),
-        frame.point(track.x2 - nu, track.y2 - nv, base),
-        frame.point(track.x1 - nu, track.y1 - nv, base),
-    ]
-    poly = modeler.create_polyline(points=corners, close_surface=True, cover_surface=True)
-    modeler.thicken_sheet(poly, height)
-
-    names = [poly.name]
-    for u, v in ((track.x1, track.y1), (track.x2, track.y2)):
-        names.append(
-            modeler.create_cylinder(
-                orientation="Y", origin=frame.point(u, v, base),
-                radius=half, height=height,
-            ).name
+    if abs(dv) < 1e-9:
+        # Horizontal run -- every track this generator draws is one of
+        # these (there is exactly one AddTrack call per board, always
+        # along the feedline). A box is unambiguous regardless of
+        # extrusion direction, unlike thicken_sheet.
+        x_lo, x_hi = sorted((track.x1, track.x2))
+        origin, sizes = frame.box(x_lo, track.y1 - half, x_hi, track.y1 + half, base, height)
+        names = [modeler.create_box(origin=origin, sizes=sizes).name]
+    else:
+        log(
+            "WARNING: a non-horizontal track was extruded via thicken_sheet, whose "
+            "direction is not independently confirmed for this orientation -- "
+            "check it in the model."
         )
+        # Unit normal in the board plane, to reach the edges of the track.
+        nu, nv = -dv / length * half, du / length * half
+        corners = [
+            frame.point(track.x1 + nu, track.y1 + nv, base),
+            frame.point(track.x2 + nu, track.y2 + nv, base),
+            frame.point(track.x2 - nu, track.y2 - nv, base),
+            frame.point(track.x1 - nu, track.y1 - nv, base),
+        ]
+        poly = modeler.create_polyline(points=corners, close_surface=True, cover_surface=True)
+        modeler.thicken_sheet(poly, height)
+        names = [poly.name]
+
+    for u, v in ((track.x1, track.y1), (track.x2, track.y2)):
+        names.append(_cylinder(modeler, frame, u, v, base, height, half).name)
     return names
 
 
@@ -433,13 +475,22 @@ def build_bond_wires(modeler, bond_list, frame: Frame, pcb_top: float,
                      name: str = "wirebond", log=logger.info) -> List[str]:
     """Create every bond wire as a swept circular profile.
 
+    `pcb_top`/`chip_top` are the height of the COPPER surface a wire
+    lands on -- the caller passes substrate-top-face-plus-plating, not
+    the bare substrate. The whole path is then raised by one more wire
+    radius here, so the tube's UNDERSIDE sits tangent to the pad rather
+    than its centreline. A tube centred exactly on the pad surface has
+    half its cross-section sunk into the pad and the substrate below it,
+    which is exactly what an intersection check flags.
+
     They are united into one body: the model wants a handful of named
     solids, not one per wire, and the material rules match on the name.
     """
+    radius = diameter / 2.0
     made = []
     for bond in bond_list:
         wire = modeler.create_polyline(
-            points=wire_path(bond, frame, pcb_top, chip_top, height),
+            points=wire_path(bond, frame, pcb_top + radius, chip_top + radius, height),
             xsection_type="Circle",
             xsection_width=diameter,
         )
@@ -475,14 +526,19 @@ def clear_chip_area(
 
     The cut spans the full stack plus a copper thickness at each end, so
     it takes the top and bottom layers together however the pocket
-    turned out.
+    turned out. It is also a shade WIDER in plane than the die itself,
+    for the same reason a real cutout carries a fab keep-out: the die's
+    own copper (its trace and pads) runs exactly to the die edge, and an
+    exactly-coincident cut boundary shares a face with it -- which reads
+    as an intersection even though nothing actually overlaps.
     """
     if not targets:
         return
 
     margin = max(stack.copper_thickness, stack.chip_metal_thickness) * 2.0
     origin, sizes = frame.box(
-        -chip_half_length, -chip_half_side, chip_half_length, chip_half_side,
+        -chip_half_length - margin, -chip_half_side - margin,
+        chip_half_length + margin, chip_half_side + margin,
         stack.pcb_bottom - margin,
         (stack.pcb_top - stack.pcb_bottom) + 2 * margin,
     )

@@ -367,10 +367,12 @@ def build_layout(hfss, combo_dir: str, dimensions_txt_content: str, log=logger.i
         )
 
     # The connectors are real vendor geometry rather than a stand-in, so
-    # the launch is represented rather than left as bare copper.
+    # the launch is represented rather than left as bare copper. They
+    # rest on the board's actual top surface -- the copper, not the bare
+    # substrate underneath it (stack.pcb_top).
     place_connectors(
         hfss, frame,
-        board_top=stack.pcb_top,
+        board_top=stack.pcb_copper_top,
         half_length=pcb_length / 2.0,
         port_space=v.get("port_space", 1.5),
         count=v.get("port_count", 2),
@@ -378,7 +380,8 @@ def build_layout(hfss, combo_dir: str, dimensions_txt_content: str, log=logger.i
     )
 
     # The wires come from the same layout file Altium placed the pads
-    # from, so each one lands on its pad.
+    # from, so each one lands on its pad -- on the copper, again, not the
+    # substrate.
     from . import bonds as bond_layout
 
     bonds_path = os.path.join(combo_dir, "bonds.txt")
@@ -387,79 +390,14 @@ def build_layout(hfss, combo_dir: str, dimensions_txt_content: str, log=logger.i
             hfss.modeler,
             bond_layout.read_file(bonds_path),
             frame,
-            pcb_top=stack.pcb_top,
-            chip_top=stack.chip_top,
+            pcb_top=stack.pcb_copper_top,
+            chip_top=stack.chip_copper_top,
             height=v.get("bond_height", 0.2),
             diameter=v.get("bond_wire_diameter", 0.025),
             log=log,
         )
     else:
         log("No bonds.txt for this combination -- the die is not bonded.")
-
-
-def build_copper(hfss, combo_dir: str, dimensions_txt_content: str, log=logger.info) -> None:
-    """Rebuild the layout's copper in the model, if the layout exported any.
-
-    Silently does nothing when there is no copper file: a run built from
-    a SolidWorks-only assembly is still perfectly valid, and was the only
-    kind of run until the Altium stage existed.
-    """
-    from . import copper_geometry, equations as eq
-
-    copper_path = os.path.join(combo_dir, "copper.txt")
-    if not os.path.isfile(copper_path):
-        log("No copper.txt for this combination -- building the model without copper.")
-        return
-
-    values = eq.get_numeric_parameters(dimensions_txt_content)
-    boards = copper_geometry.read_file(copper_path)
-
-    # The substrates sit centred on the assembly origin, so a board's
-    # copper needs no XY offset -- the datum the Altium generator keeps.
-    # Z is the only thing this side has to work out.
-    plans = [
-        ("package", "pcb", copper_geometry.Placement(
-            z_top=values.get("pcb_width", 0.381),
-            z_bottom=0.0,
-            thickness=values.get("copper_thickness", 0.035),
-        )),
-        ("chip", "chip", copper_geometry.Placement(
-            z_top=values.get("pcb_width", 0.381) + values.get("chip_width", 0.381),
-            z_bottom=values.get("pcb_width", 0.381),
-            thickness=values.get("chip_metal_thickness", 0.0002),
-        )),
-    ]
-    for board_name, prefix, placement in plans:
-        board = boards.get(board_name)
-        if board is None or not len(board):
-            continue
-        copper_geometry.build(hfss.modeler, board, placement, prefix=prefix, log=log)
-
-    # The bonds are computed rather than read: Altium has no scriptable
-    # wirebond object, and the loop profile matters more to the field
-    # solve than to the layout anyway.
-    bond_count = int(values.get("bond_count", 0))
-    if bond_count:
-        pcb_top = values.get("pcb_width", 0.381)
-        chip_top = pcb_top + values.get("chip_width", 0.381)
-        half_chip = values.get("chip_length", 6.3) / 2.0
-        span = values.get("bonding_clearence", 1.0)
-        inset = values.get("bond_pad_length", 0.3)
-        for sign in (-1.0, +1.0):
-            copper_geometry.build_wirebonds(
-                hfss.modeler,
-                copper_geometry.BondSpec(
-                    x_start=sign * (half_chip + span),
-                    x_end=sign * (half_chip - inset),
-                    z_start=pcb_top,
-                    z_end=chip_top,
-                    count=bond_count,
-                    pitch=values.get("bond_pad_pitch", 0.4),
-                    height=values.get("bond_height", 0.2),
-                    diameter=values.get("bond_wire_diameter", 0.025),
-                ),
-                log=log,
-            )
 
 
 # Tried in turn when the preferred material will not stick. The last
@@ -588,35 +526,48 @@ def assign_materials_and_boundaries(hfss, mat_settings: dict, log=logger.info) -
 
 
 def carve_vacuum(hfss, objects_dict, log=logger.info) -> None:
-    """Cut the conductors out of the vacuum body.
+    """Cut everything this pipeline adds out of the vacuum body.
 
-    The vacuum arrives from the STEP as the cavity fill, sized back when
-    the only things in the cavity were the substrates. The copper, vias
-    and bonds built here now occupy part of that same volume, and two
-    solids claiming one region is not a small inaccuracy -- HFSS either
-    errors or silently resolves it by material priority, which is worse
-    because the model still solves.
+    The vacuum arrives from the STEP as the cavity fill, sized in
+    SolidWorks around box/lid/chip_lid only -- it was never cut for the
+    substrates, copper, vias, bonds or connectors this pipeline builds
+    on top of that STEP. All of it now occupies volume vacuum also
+    claims, and two solids claiming one region is not a small
+    inaccuracy: HFSS either errors or silently resolves it by material
+    priority, which is worse because the model still solves.
+
+    The tool list is read straight from `hfss.modeler.solid_objects`,
+    not from `objects_dict`. Several material rules legitimately match
+    MORE than one body -- pcb_copper matches both the top and bottom
+    layer, connector matches one body per port -- and objects_dict keeps
+    only the first body per rule key, so building the tool list from it
+    silently carved just one of them and left the rest overlapping
+    vacuum. That is exactly how a second connector went uncarved.
     """
     vacuum = objects_dict.get("vacuum")
     if vacuum is None:
         return
 
+    # Bodies that come straight from the STEP, where the SolidWorks-built
+    # vacuum already accounts for them. Everything else in the model is
+    # new content this pipeline added.
+    ENCLOSURE = {"vacuum", "box", "lid", "chip_lid"}
     tools = [
         obj.name
-        for key, obj in objects_dict.items()
-        if key != "vacuum" and ("copper" in key or "via" in key or "wirebond" in key)
+        for obj in hfss.modeler.solid_objects
+        if obj.name.lower() not in ENCLOSURE
     ]
     if not tools:
         return
 
     try:
-        # keep_originals: the conductors must survive being cut out of the
-        # vacuum -- they are the thing being simulated.
+        # keep_originals: every one of these bodies must survive being
+        # cut out of the vacuum -- they are the things being simulated.
         hfss.modeler.subtract(vacuum.name, tools, keep_originals=True)
-        log(f"Carved {len(tools)} conductor bodies out of the vacuum.")
+        log(f"Carved {len(tools)} bodies out of the vacuum: {', '.join(sorted(tools))}.")
     except Exception as exc:
         log(
-            f"WARNING: could not subtract the conductors from the vacuum ({exc}). "
+            f"WARNING: could not subtract {len(tools)} bodies from the vacuum ({exc}). "
             "The model has overlapping solids and its results should not be trusted."
         )
 

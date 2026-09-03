@@ -199,6 +199,26 @@ STACK = cg.Stack(
 )
 
 
+class TestStackCopperTop(unittest.TestCase):
+    """The board's actual top surface is the copper, not the substrate
+    it sits on. A connector or a bond wire that lands on pcb_top/
+    chip_top instead sinks one plating thickness into the pad -- this is
+    what an interference check calls an intersection."""
+
+    def test_pcb_copper_top_is_above_the_substrate(self):
+        self.assertAlmostEqual(STACK.pcb_copper_top, 1.381 + 0.035)
+        self.assertGreater(STACK.pcb_copper_top, STACK.pcb_top)
+
+    def test_chip_copper_top_is_above_the_substrate(self):
+        self.assertAlmostEqual(STACK.chip_copper_top, 1.381 + 0.0002)
+        self.assertGreater(STACK.chip_copper_top, STACK.chip_top)
+
+    def test_zero_thickness_copper_leaves_the_surface_unchanged(self):
+        bare = cg.Stack(pcb_bottom=1.0, pcb_top=1.381, chip_bottom=1.0,
+                        chip_top=1.381, copper_thickness=0.0, chip_metal_thickness=0.0)
+        self.assertEqual(bare.pcb_copper_top, bare.pcb_top)
+
+
 class TestSubstrates(unittest.TestCase):
     def test_names_are_the_ones_the_material_rules_expect(self):
         modeler = FakeModeler()
@@ -271,15 +291,22 @@ class TestBuildingCopper(unittest.TestCase):
         self.assertAlmostEqual(via[3], STACK.pcb_top - STACK.pcb_bottom)
 
     def test_top_copper_sits_on_the_board_face(self):
+        """Regions and rectangular pads are now boxes (create_box), not
+        thickened sheets -- thicken_sheet's extrusion direction follows
+        the sheet's winding, which this code does not control, so
+        anything axis-aligned is built as an unambiguous box instead."""
         modeler, _ = self._build()
-        ys = {round(p[1], 6) for path in modeler.polylines for p in path}
-        self.assertIn(round(STACK.pcb_top, 6), ys)
+        origins_y = {round(o[1], 6) for o, _s in modeler.boxes}
+        self.assertIn(round(STACK.pcb_top, 6), origins_y)
 
     def test_bottom_copper_grows_away_from_the_board(self):
         modeler, _ = self._build()
-        heights = [h for _n, h in modeler.thickened]
-        self.assertTrue(any(h > 0 for h in heights))
-        self.assertTrue(any(h < 0 for h in heights))
+        tops = {round(o[1] + s[1], 6) for o, s in modeler.boxes}
+        origins_y = {round(o[1], 6) for o, s in modeler.boxes}
+        # Top layer starts exactly at the board face and grows up from
+        # there; bottom layer ends exactly at it, having grown down.
+        self.assertIn(round(STACK.pcb_top, 6), origins_y)
+        self.assertIn(round(STACK.pcb_bottom, 6), tops)
 
     def test_track_gets_round_caps(self):
         modeler, _ = self._build(board="chip", prefix="chip")
@@ -333,6 +360,24 @@ class TestBondWires(unittest.TestCase):
         path = cg.wire_path(bond, FRAME, 1.381, 1.381, 0.2)
         self.assertEqual(path[0], FRAME.point(bond.pcb_x, bond.pcb_y, 1.381))
         self.assertEqual(path[-1], FRAME.point(bond.chip_x, bond.chip_y, 1.381))
+
+    def test_build_bond_wires_raises_the_path_by_one_radius(self):
+        """The caller passes the copper's own top surface as pcb_top/
+        chip_top. A tube CENTRED there has half its cross-section sunk
+        into the pad and the substrate below it -- which an interference
+        check flags as an intersection even though the wire is only
+        doing what a real bond does, resting on the pad. Raising the
+        centreline by one radius puts the tube's underside, not its
+        centre, at the surface."""
+        modeler = FakeModeler()
+        pcb_top = 1.381
+        diameter = 0.025
+        cg.build_bond_wires(modeler, self._bonds(), FRAME, pcb_top=pcb_top,
+                            chip_top=pcb_top, height=0.2, diameter=diameter,
+                            log=lambda _m: None)
+        lowest = min(p[1] for path in modeler.polylines for p in path)
+        self.assertAlmostEqual(lowest, pcb_top + diameter / 2.0, places=9)
+        self.assertGreater(lowest, pcb_top, "the tube must not dip to the bare pad surface")
 
     def test_the_loop_rises_above_both_ends(self):
         from eigen_mode_analyze.bonds import Bond
@@ -393,11 +438,17 @@ class TestClearChipArea(unittest.TestCase):
                            log=lambda _m: None)
         return modeler
 
-    def test_the_cut_covers_the_die_footprint(self):
+    def test_the_cut_is_wider_than_the_die_footprint(self):
+        """A shade wider on purpose, the way a real cutout carries a fab
+        keep-out: the die's own copper runs exactly to the die edge, and
+        an exactly-coincident cut boundary shares a face with it, which
+        an interference check flags even though nothing overlaps."""
         modeler = self._clear()
         _origin, sizes = modeler.boxes[0]
-        self.assertAlmostEqual(sizes[0], 6.3)
-        self.assertAlmostEqual(sizes[2], 6.3)
+        margin = max(STACK.copper_thickness, STACK.chip_metal_thickness) * 2.0
+        self.assertAlmostEqual(sizes[0], 6.3 + 2 * margin)
+        self.assertAlmostEqual(sizes[2], 6.3 + 2 * margin)
+        self.assertGreater(sizes[0], 6.3)
 
     def test_the_cut_spans_past_both_copper_layers(self):
         """It has to reach above the top copper and below the bottom
