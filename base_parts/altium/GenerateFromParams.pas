@@ -55,6 +55,29 @@ Const
     ParamPath = 'C:\Users\david\Documents\uni\lab\microwave-package\base_parts\altium\params.txt';
     OutPath   = 'C:\Users\david\Documents\uni\lab\microwave-package\base_parts\altium\generate_report.txt';
 
+    { How far the die's own copper (trace + coplanar grounds) is pulled
+      in from the die's physical edge. The SUBSTRATE outline stays the
+      die's real size -- only the copper on it shrinks.
+
+      Without this, the die's copper ran exactly to the die edge, and
+      the PCB's copper was cut back to the same edge (plus a small
+      keep-out) to make room for the pocket. Two independently-drawn
+      edges meeting at the same line is exactly what an interference
+      check flags, coincident-face or not. Pulling the die's own copper
+      in gives the two a real gap regardless of exactly how the PCB
+      side's keep-out margin was computed.
+
+      A fixed constant, not a parameter: it is a drafting margin, not a
+      value that would ever have a reason to be tuned per board. Small
+      enough that it stays inside where the bond pad already lands
+      (chip_length/2 - bond_pad_length), so the wire still lands on
+      copper rather than bare substrate -- and that relationship is
+      exactly what CHIP_COPPER_INSET in eigen_mode_analyze/constraints.py
+      checks up front. MUST MATCH that value; there is no shared import
+      between Pascal and Python, so both copies carry this same
+      cross-reference as the reminder. }
+    ChipCopperInset = 0.15;
+
 Var
     Rpt : TStringList;
 
@@ -221,14 +244,28 @@ End;
 
   The wires themselves are NOT drawn here. AD26 has wirebond rules,
   violation types and JEDEC profiles but no wirebond entry in its
-  scriptable object-id enum, so PCBObjectFactory cannot make one. }
+  scriptable object-id enum, so PCBObjectFactory cannot make one.
+
+  Signal pads are capped to fit inside the trace they sit on, rather
+  than using the same width as a ground pad. bonds.py puts two signal
+  wires side by side (SIGNAL_WIRES = 2, to roughly halve the series
+  inductance a single wire would add), each centred a quarter-trace-
+  width off axis -- at the general ground pad size those two pads
+  together span 0.25 mm across a 0.20 mm trace, sticking out 0.025 mm on
+  each side. A pad wider than the line it lands on locally widens the
+  conductor, which is a real, if small, characteristic-impedance
+  discontinuity right at the bond -- not just a drafting nicety. Sizing
+  each signal pad to Trace / 2 makes the two exactly tile the trace
+  width and touch at the centre line, neither exceeding it. }
 Function AddBondPads(Board : IPCB_Board; BondPath : String;
-                     PadW, PadH : Double; OnChip : Boolean) : Integer;
+                     PadW, PadH, Trace : Double; OnChip : Boolean) : Integer;
 Var
     Lines : TStringList;
     n     : Integer;
     Line  : String;
+    Kind  : String;
     X, Y  : Double;
+    UseH  : Double;
     Ok    : Boolean;
 Begin
     Result := 0;
@@ -248,6 +285,7 @@ Begin
             Line := Trim(Lines[n]);
             If (Line <> '') And (Copy(Line, 1, 1) <> '#') Then
             Begin
+                Kind := Field(Line, 1);
                 If OnChip Then
                 Begin
                     X := StrToFloat(Field(Line, 4));
@@ -258,7 +296,11 @@ Begin
                     X := StrToFloat(Field(Line, 2));
                     Y := StrToFloat(Field(Line, 3));
                 End;
-                AddPad(Board, X, Y, PadW, PadH, eTopLayer);
+                If Kind = 'signal' Then
+                    UseH := Trace / 2.0
+                Else
+                    UseH := PadH;
+                AddPad(Board, X, Y, PadW, UseH, eTopLayer);
                 Result := Result + 1;
             End;
         End;
@@ -330,9 +372,16 @@ End;
 
 { Outline, centre conductor, coplanar grounds either side of the gap, a
   ground plane on the far side of the substrate, and -- where the board
-  has two layers to stitch -- a via fence down both sides of the line. }
-Procedure BuildBoard(Board : IPCB_Board; HalfL, HalfS, Trace, Gap,
-                     ViaDia, ViaPitch, ViaClear, TraceHalfL,
+  has two layers to stitch -- a via fence down both sides of the line.
+
+  CopperHalfL/CopperHalfS are the extent of the GROUND copper, separate
+  from HalfL/HalfS, which stay the substrate's true physical outline.
+  On the package they are the same (the ground plane runs to the real
+  board edge, which is correct); on the die they are pulled in by
+  ChipCopperInset, so the die's own copper does not reach the edge --
+  see ChipCopperInset's comment for why. }
+Procedure BuildBoard(Board : IPCB_Board; HalfL, HalfS, CopperHalfL, CopperHalfS,
+                     Trace, Gap, ViaDia, ViaPitch, ViaClear, TraceHalfL,
                      FenceHalfL, FenceInnerL : Double;
                      WantVias : Boolean; WantBackPlane : Boolean;
                      Var nVias : Integer);
@@ -341,31 +390,33 @@ Var
 Begin
     SetOutline(Board, HalfL, HalfS);
 
-    { The centre conductor stops at the launch rather than running to
-      the board edge. Running it out to the edge is what let the
-      connector land bridge the signal into both coplanar grounds. }
+    { The centre conductor stops at the launch (or, on the die, at the
+      copper inset) rather than running to the physical edge. Running it
+      to the edge is what let the connector land bridge the signal into
+      both coplanar grounds, and separately let the die's trace meet the
+      PCB's copper with no gap between them. }
     AddTrack(Board, -TraceHalfL, 0.0, TraceHalfL, 0.0, Trace, eTopLayer);
 
     GndInner := Trace / 2.0 + Gap;
-    AddRect(Board, -HalfL,  GndInner, HalfL,  HalfS,    eTopLayer);
-    AddRect(Board, -HalfL, -HalfS,    HalfL, -GndInner, eTopLayer);
+    AddRect(Board, -CopperHalfL,  GndInner, CopperHalfL,  CopperHalfS,    eTopLayer);
+    AddRect(Board, -CopperHalfL, -CopperHalfS,    CopperHalfL, -GndInner, eTopLayer);
 
     { Ground behind each launch. Without it the CPW corridor runs bare
       all the way to the board edge, leaving a slot in the ground behind
       the connector where there should be metal. The connector's own
       strap already ties the two sides together here, so filling it
       shorts nothing that was not already shorted. }
-    If FenceHalfL < HalfL Then
+    If FenceHalfL < CopperHalfL Then
     Begin
-        AddRect(Board, -HalfL, -GndInner, -FenceHalfL, GndInner, eTopLayer);
-        AddRect(Board,  FenceHalfL, -GndInner, HalfL,  GndInner, eTopLayer);
+        AddRect(Board, -CopperHalfL, -GndInner, -FenceHalfL, GndInner, eTopLayer);
+        AddRect(Board,  FenceHalfL, -GndInner, CopperHalfL,  GndInner, eTopLayer);
     End;
 
     { The die carries metal on ONE face. Giving it a back plane would
       put a conductor between the die and the board that the real part
       does not have, right where the fields are strongest. }
     If WantBackPlane Then
-        AddRect(Board, -HalfL, -HalfS, HalfL, HalfS, eBottomLayer);
+        AddRect(Board, -CopperHalfL, -CopperHalfS, CopperHalfL, CopperHalfS, eBottomLayer);
 
     nVias := 0;
     If WantVias Then
@@ -508,8 +559,11 @@ Begin
     PCBServer.PreProcess;
     Try
         { The fence and the ground fill both stop where the launch
-          begins -- its innermost land. }
-        BuildBoard(Board, HalfL, HalfS, Trace, Gap, ViaDia, ViaPitch, ViaClear,
+          begins -- its innermost land. The board's own copper runs to
+          the real board edge (CopperHalfL/S = HalfL/S), unlike the
+          die's. }
+        BuildBoard(Board, HalfL, HalfS, HalfL, HalfS, Trace, Gap,
+                   ViaDia, ViaPitch, ViaClear,
                    SmpOrigin - ParamOf(P, 'smp_sig_v', 2.9),
                    SmpOrigin - ParamOf(P, 'smp_inner_v', 3.6),
                    { clear of the bond fingers at the die }
@@ -552,7 +606,7 @@ Begin
 
     PCBServer.PreProcess;
     Try
-        nBonds := AddBondPads(Board, BondPath, PadW, PadH, False);
+        nBonds := AddBondPads(Board, BondPath, PadW, PadH, Trace, False);
         Say('package_bond_pads=' + IntToStr(nBonds));
     Except
         Say('package_bond_pads=FAIL');
@@ -592,9 +646,14 @@ Begin
         PCBServer.PreProcess;
         Try
             { No via fence and no back plane on the die: it carries a
-              single metal layer. }
-            BuildBoard(Board, ChipHalfL, ChipHalfS, Trace, ChipGap,
-                       ViaDia, ViaPitch, ViaClear, ChipHalfL, ChipHalfL, 0.0,
+              single metal layer. Its copper (trace and grounds) is
+              pulled in from the die edge by ChipCopperInset -- see that
+              constant's comment -- while the SUBSTRATE outline stays
+              the die's real size (ChipHalfL, ChipHalfS, unchanged). }
+            BuildBoard(Board, ChipHalfL, ChipHalfS,
+                       ChipHalfL - ChipCopperInset, ChipHalfS - ChipCopperInset,
+                       Trace, ChipGap, ViaDia, ViaPitch, ViaClear,
+                       ChipHalfL - ChipCopperInset, ChipHalfL, 0.0,
                        False, False, nVias);
             Say('chip_body=ok');
         Except
@@ -604,7 +663,7 @@ Begin
 
         PCBServer.PreProcess;
         Try
-            nBonds := AddBondPads(Board, BondPath, PadW, PadH, True);
+            nBonds := AddBondPads(Board, BondPath, PadW, PadH, Trace, True);
             Say('chip_bond_pads=' + IntToStr(nBonds));
         Except
             Say('chip_bond_pads=FAIL');

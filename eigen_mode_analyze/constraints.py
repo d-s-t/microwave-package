@@ -215,6 +215,15 @@ def check_combination(values: Dict[str, float]) -> Optional[str]:
 # -- it drives the max-value hints in the form -- and these are plain
 # geometric facts with no free offset to bound.
 
+# How far the die's own copper is pulled back from the die's physical
+# edge -- MUST MATCH ChipCopperInset in base_parts/altium/
+# GenerateFromParams.pas. It lives as a duplicated constant rather than
+# a shared import because the Pascal side cannot read a Python module;
+# both copies carry this same cross-reference so a change to one is a
+# reminder to change the other.
+CHIP_COPPER_INSET = 0.15
+
+
 def check_layout(values: Dict[str, float]) -> Optional[str]:
     """Why this combination's layout cannot be built, or None if it can.
 
@@ -302,13 +311,17 @@ def check_layout(values: Dict[str, float]) -> Optional[str]:
             f"connector out with port_space"
         )
 
-    # A row of bonds has to fit across the die.
-    bond_span = (get("bond_count") - 1) * get("bond_pad_pitch") + get("bond_pad_width")
-    if get("bond_count") > 0 and bond_span >= get("chip_side"):
+    # The die-side bond lands at chip_length/2 - bond_pad_length (see
+    # bonds.layout). The die's own copper stops CHIP_COPPER_INSET short
+    # of the edge -- see GenerateFromParams.pas's ChipCopperInset, which
+    # this must match -- so a bond_pad_length smaller than that inset
+    # would land the wire on bare substrate rather than on copper.
+    if get("bond_pad_length") <= CHIP_COPPER_INSET:
         return (
-            f"{_fmt(get('bond_count'))} bonds at {_fmt(get('bond_pad_pitch'))} mm pitch span "
-            f"{_fmt(bond_span)} mm, wider than the {_fmt(get('chip_side'))} mm die -- "
-            f"reduce bond_count or bond_pad_pitch"
+            f"bond_pad_length ({_fmt(get('bond_pad_length'))} mm) is not larger than the "
+            f"{_fmt(CHIP_COPPER_INSET)} mm the die's own copper is pulled back from its edge "
+            f"-- the bond would land on bare substrate instead of on copper. Increase "
+            f"bond_pad_length"
         )
 
     return None

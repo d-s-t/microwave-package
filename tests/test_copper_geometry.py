@@ -543,7 +543,9 @@ class TestExportedLayoutIsSane(unittest.TestCase):
 
         self.smp = smp
         self.v = eq.get_numeric_parameters(eq.read_file(str(paths.DEFAULT_EQUATIONS_FILE)))
-        self.pkg = cg.read_file(self.PATH)["package"]
+        boards = cg.read_file(self.PATH)
+        self.pkg = boards["package"]
+        self.chip = boards.get("chip")
         self.trace = self.v["cpw_trace_width"]
         self.gap_edge = self.trace / 2 + ag.build_params(self.v)["pcb_cpw_gap"]
         self.half_l = self.v["pcb_length"] / 2
@@ -671,3 +673,58 @@ class TestExportedLayoutIsSane(unittest.TestCase):
         for r in fills:
             xs = [p[0] for p in r.points]
             self.assertAlmostEqual(max(abs(x) for x in xs), half_l, places=6)
+
+    def test_the_dies_own_copper_stops_short_of_the_edge(self):
+        """The die's trace and ground planes used to run exactly to the
+        die's physical edge, at the same line the PCB's copper was cut
+        back to (plus a small keep-out) -- two independently-drawn edges
+        meeting at that line is exactly what an interference check
+        flags. Both are now pulled in by CHIP_COPPER_INSET, so there is
+        a real, non-zero gap between them."""
+        from eigen_mode_analyze import constraints
+
+        die_half = self.v["chip_length"] / 2
+        inset = constraints.CHIP_COPPER_INSET
+        expected_edge = die_half - inset
+
+        track = self.chip.tracks[0]
+        self.assertAlmostEqual(abs(track.x2), expected_edge, places=6)
+
+        ground_outer = max(
+            max(abs(p[0]) for p in r.points) for r in self.chip.regions
+        )
+        self.assertAlmostEqual(ground_outer, expected_edge, places=6)
+        self.assertLess(ground_outer, die_half, "the die's copper must not reach its edge")
+
+    def test_only_copper_layers_are_exported_as_regions(self):
+        """Altium's own board-outline shape shows up through the same
+        iterator as a region object, on a non-copper layer -- harmless
+        to the model (copper_geometry only ever reads top/bottom), but
+        it was silently inflating the record count and, worse, made a
+        quick sanity read of the export look like it had an extra,
+        unexplained ground plane."""
+        self.assertTrue(all(r.layer in ("top", "bottom") for r in self.pkg.regions))
+        self.assertTrue(all(r.layer in ("top", "bottom") for r in self.chip.regions))
+
+    def test_signal_bond_pads_tile_the_trace_without_exceeding_it(self):
+        """Two signal wires land side by side at each end. At the
+        general bond pad size, the pair together spanned 0.25 mm across
+        a 0.20 mm trace -- 0.025 mm of copper on each side wider than
+        the line, a real (if small) impedance discontinuity right at the
+        bond. Each pad is now sized to Trace / 2, so the pair exactly
+        tiles the trace width and touches at the centre line."""
+        half_trace = self.trace / 2.0
+        signal_pads = [p for p in self.pkg.pads if abs(p.ysize - half_trace) < 1e-9]
+        self.assertTrue(signal_pads, "no half-trace-width pads found")
+
+        by_x = {}
+        for p in signal_pads:
+            by_x.setdefault(round(p.x, 3), []).append(p)
+        checked = 0
+        for x, pads in by_x.items():
+            lo = min(p.y - p.ysize / 2 for p in pads)
+            hi = max(p.y + p.ysize / 2 for p in pads)
+            self.assertAlmostEqual(lo, -half_trace, places=6, msg=f"at x={x}")
+            self.assertAlmostEqual(hi, half_trace, places=6, msg=f"at x={x}")
+            checked += 1
+        self.assertGreater(checked, 0)

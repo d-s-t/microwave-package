@@ -128,15 +128,26 @@ Begin
                 End;
             eRegionObject :
                 Begin
+                    { Only copper. Altium's own board-outline shape shows
+                      up through this same iterator as a region object
+                      too, on a mechanical/outline layer -- harmless to
+                      the model (copper_geometry only ever reads "top"
+                      and "bottom"), but noise in this file and in
+                      anything that reads it back for a sanity check, as
+                      one already has. LayerTag returns 'other' for
+                      anything that is not eTopLayer/eBottomLayer. }
                     Rgn := Prim;
-                    Contour := Rgn.GetMainContour;
-                    If Contour <> Nil Then
+                    If (Rgn.Layer = eTopLayer) Or (Rgn.Layer = eBottomLayer) Then
                     Begin
-                        Line := 'region|' + LayerTag(Rgn.Layer) + '|';
-                        For i := 0 To Contour.Count - 1 Do
+                        Contour := Rgn.GetMainContour;
+                        If Contour <> Nil Then
                         Begin
-                            If i > 0 Then Line := Line + ',';
-                            Line := Line + MM(Contour.x(i)) + ',' + MM(Contour.y(i));
+                            Line := 'region|' + LayerTag(Rgn.Layer) + '|';
+                            For i := 0 To Contour.Count - 1 Do
+                            Begin
+                                If i > 0 Then Line := Line + ',';
+                                Line := Line + MM(Contour.x(i)) + ',' + MM(Contour.y(i));
+                            End;
                         End;
                     End;
                 End;
