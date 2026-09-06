@@ -382,11 +382,11 @@ End;
   see ChipCopperInset's comment for why. }
 Procedure BuildBoard(Board : IPCB_Board; HalfL, HalfS, CopperHalfL, CopperHalfS,
                      Trace, Gap, ViaDia, ViaPitch, ViaClear, TraceHalfL,
-                     FenceHalfL, FenceInnerL : Double;
+                     FenceHalfL, FenceInnerL, FillHalfL : Double;
                      WantVias : Boolean; WantBackPlane : Boolean;
                      Var nVias : Integer);
 Var
-    GndInner, FenceY, X, FillHalfL : Double;
+    GndInner, FenceY, X : Double;
 Begin
     SetOutline(Board, HalfL, HalfS);
 
@@ -401,21 +401,27 @@ Begin
     AddRect(Board, -CopperHalfL,  GndInner, CopperHalfL,  CopperHalfS,    eTopLayer);
     AddRect(Board, -CopperHalfL, -CopperHalfS,    CopperHalfL, -GndInner, eTopLayer);
 
-    { Ground behind each launch. Without it the CPW corridor runs bare
-      all the way to the board edge, leaving a slot in the ground behind
-      the connector where there should be metal. Out there the trace has
-      already ended and the connector's own strap ties the two sides
-      together anyway, so filling it shorts nothing that was not already
-      shorted.
+    { Ground BEHIND each launch -- between the connector's outermost
+      ground land and the board edge, and nowhere else.
 
-      It has to start beyond where the TRACE ends, which is not the same
-      place the via fence ends. Using the fence's outer bound here put
-      the fill 0.7 mm inside the live trace: everything on this layer is
-      united into one body, so an overlap there is a dead short from
-      signal to ground, invisible in the tree because the union leaves
-      no seam. Clear the trace's end, its rounded cap (the model adds
-      one of radius Trace/2), and then a clearance on top of that. }
-    FillHalfL := TraceHalfL + Trace / 2.0 + ViaClear;
+      The connector's footprint is a U of ground lands open toward the
+      die, with the signal land sitting inside the opening. That inside
+      is deliberately clear: it is the launch, and its shape is the
+      vendor's, not ours to fill in. The two arms already sit within the
+      coplanar ground planes and the strap already bridges them across
+      the corridor, so the footprint is connected to ground all round
+      without any help. What was genuinely missing was metal in the
+      corridor BEHIND the strap, where the ground otherwise just stops
+      short of the board edge.
+
+      FillHalfL therefore comes from the strap, not from the trace and
+      not from the via fence. Both earlier attempts reached inboard of
+      it and into live signal: from the fence's outer bound the fill
+      landed 0.7 mm inside the trace, and from the trace's end it still
+      overlapped the connector's own signal land by 0.45 mm. Everything
+      on this layer is united into one body, so either is a dead short
+      from signal to ground -- and the union leaves no seam, so nothing
+      in the tree shows it. }
     If FillHalfL < CopperHalfL Then
     Begin
         AddRect(Board, -CopperHalfL, -GndInner, -FillHalfL, GndInner, eTopLayer);
@@ -578,6 +584,11 @@ Begin
                    SmpOrigin - ParamOf(P, 'smp_inner_v', 3.6),
                    { clear of the bond fingers at the die }
                    ChipHalfL + BondSpan + PadW / 2.0 + ViaDia,
+                   { ground fill starts at the strap's inner edge, so it
+                     merges with the strap -- both are ground -- and
+                     leaves the whole footprint interior alone }
+                   SmpOrigin - ParamOf(P, 'smp_strap_v', -2.45)
+                             - ParamOf(P, 'smp_strap_sv', 0.3) / 2.0,
                    True, True, nVias);
         Say('package_vias=' + IntToStr(nVias));
         Say('package_body=ok');
@@ -660,10 +671,13 @@ Begin
               pulled in from the die edge by ChipCopperInset -- see that
               constant's comment -- while the SUBSTRATE outline stays
               the die's real size (ChipHalfL, ChipHalfS, unchanged). }
+            { The last argument suppresses the ground fill: the die has
+              no connector to put metal behind, and any value not less
+              than its copper extent leaves the fill unbuilt. }
             BuildBoard(Board, ChipHalfL, ChipHalfS,
                        ChipHalfL - ChipCopperInset, ChipHalfS - ChipCopperInset,
                        Trace, ChipGap, ViaDia, ViaPitch, ViaClear,
-                       ChipHalfL - ChipCopperInset, ChipHalfL, 0.0,
+                       ChipHalfL - ChipCopperInset, ChipHalfL, 0.0, ChipHalfL,
                        False, False, nVias);
             Say('chip_body=ok');
         Except

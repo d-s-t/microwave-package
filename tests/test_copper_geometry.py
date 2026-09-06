@@ -674,55 +674,81 @@ class TestExportedLayoutIsSane(unittest.TestCase):
             xs = [p[0] for p in r.points]
             self.assertAlmostEqual(max(abs(x) for x in xs), half_l, places=6)
 
-    def test_the_ground_fill_does_not_touch_the_live_trace(self):
-        """Everything on the top layer is united into ONE body, so a
-        ground region overlapping the trace is a dead short from signal
-        to ground -- and the union leaves no seam, so nothing in the
-        tree shows it. This is exactly what happened: the fill was
-        placed from the via fence's outer bound rather than from where
-        the trace actually ends, putting it 0.7 mm inside the live line.
+    def _fills(self):
+        """The ground fills behind the launches: top-layer regions that
+        live inside the CPW corridor."""
+        return [r for r in self.pkg.regions
+                if r.layer == "top"
+                and max(abs(p[1]) for p in r.points) <= self.gap_edge + 1e-6]
 
-        The trace's real extent includes the rounded cap the model adds
-        at each end, so that is what the fill has to clear.
-        """
+    def _signal_reach(self):
+        """How far out signal copper extends -- the trace plus the
+        rounded cap the model adds, and the connector's own signal land,
+        which reaches further still."""
+        from eigen_mode_analyze import smp
+
         track = self.pkg.tracks[0]
         trace_end = abs(track.x2) + self.trace / 2.0
+        origin = smp.launch_origin(self.half_l, self.v["port_space"])
+        land_end = origin - smp.SIGNAL_PAD[1] + smp.SIGNAL_PAD[3] / 2.0
+        return max(trace_end, land_end)
 
-        fills = [r for r in self.pkg.regions
-                 if r.layer == "top"
-                 and max(abs(p[1]) for p in r.points) <= self.gap_edge + 1e-6]
+    def test_the_ground_fill_touches_no_signal_copper(self):
+        """Everything on the top layer is united into ONE body, so a
+        ground region overlapping anything carrying signal is a dead
+        short -- and the union leaves no seam, so nothing in the tree
+        shows it.
+
+        Both earlier attempts got this wrong in the same way, each
+        clearing one piece of signal copper and not the next: from the
+        via fence's outer bound the fill sat 0.7 mm inside the live
+        trace; moved out to clear the trace, it still overlapped the
+        connector's own SIGNAL LAND by 0.45 mm. So this checks the
+        furthest reach of any signal copper, not just the trace.
+        """
+        reach = self._signal_reach()
+        fills = self._fills()
         self.assertEqual(len(fills), 2, "expected one ground fill behind each launch")
         for r in fills:
             inner = min(abs(p[0]) for p in r.points)
             self.assertGreater(
-                inner, trace_end,
-                f"ground fill starts at {inner:.4f} but the trace reaches "
-                f"{trace_end:.4f} -- they would be united into one shorted body",
+                inner, reach,
+                f"ground fill starts at {inner:.4f} but signal copper reaches "
+                f"{reach:.4f} -- they would be united into one shorted body",
             )
 
-    def test_the_ground_fill_still_reaches_the_connector(self):
-        """The fill exists to put metal behind the launch. Pushing its
-        inner edge out to clear the trace must not push it past the
-        connector's own ground lands, or it stops doing its job."""
-        half_l = self.v["pcb_length"] / 2
-        fills = [r for r in self.pkg.regions
-                 if r.layer == "top"
-                 and max(abs(p[1]) for p in r.points) <= self.gap_edge + 1e-6]
-        # The connector's GROUND lands: the two arms, off the centre
-        # line, and the strap, which sits on it but spans right across.
-        # The signal land also lives out here and must not be counted --
-        # it is the thing the trace connects TO, not ground.
-        lands = [p for p in self.pkg.pads
-                 if abs(p.x) >= self.launch_inner
-                 and (abs(p.y) > self.gap_edge or p.ysize > 1.0)]
-        self.assertTrue(lands, "no connector ground lands found")
-        innermost_land = min(abs(p.x) for p in lands)
-        for r in fills:
+    def test_the_ground_fill_leaves_the_footprint_interior_alone(self):
+        """The connector's footprint is a U of ground lands open toward
+        the die, with the signal land inside the opening. That interior
+        is the launch itself and is the vendor's shape, not ours to fill
+        in -- the fill belongs BEHIND the outermost ground land."""
+        from eigen_mode_analyze import smp
+
+        origin = smp.launch_origin(self.half_l, self.v["port_space"])
+        strap_inner = origin - smp.GROUND_STRAP[1] - smp.GROUND_STRAP[3] / 2.0
+        for r in self._fills():
+            inner = min(abs(p[0]) for p in r.points)
+            self.assertGreaterEqual(
+                inner, strap_inner - 1e-6,
+                f"fill starts at {inner:.4f}, inboard of the strap at "
+                f"{strap_inner:.4f} -- it is filling the footprint interior",
+            )
+
+    def test_the_ground_fill_still_does_its_job(self):
+        """It exists to put metal in the corridor behind the connector,
+        where the ground otherwise stops short of the board edge. Moving
+        it out to clear the signal must not move it out of existence: it
+        still has to meet the strap and still reach the edge."""
+        from eigen_mode_analyze import smp
+
+        origin = smp.launch_origin(self.half_l, self.v["port_space"])
+        strap_outer = origin - smp.GROUND_STRAP[1] + smp.GROUND_STRAP[3] / 2.0
+        for r in self._fills():
             inner = min(abs(p[0]) for p in r.points)
             outer = max(abs(p[0]) for p in r.points)
-            self.assertLess(inner, innermost_land,
-                            "the fill no longer reaches the connector's grounds")
-            self.assertAlmostEqual(outer, half_l, places=6)
+            self.assertLessEqual(inner, strap_outer + 1e-6,
+                                 "the fill no longer meets the connector's ground strap")
+            self.assertAlmostEqual(outer, self.half_l, places=6)
 
     def test_the_dies_own_copper_stops_short_of_the_edge(self):
         """The die's trace and ground planes used to run exactly to the
