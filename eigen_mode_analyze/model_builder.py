@@ -87,37 +87,489 @@ def calculate_min_freq(dimensions_txt_content: str, safety_factor: float = 0.4, 
     return max(naive_min_freq_ghz * safety_factor, floor_ghz)
 
 
-def assign_materials_and_boundaries(hfss, mat_settings: dict) -> Dict[str, object]:
-    objects_dict = {}
+# What a material setting falls back to when the run does not carry one.
+# Runs created before a key existed post an empty string for it, and an
+# empty material is not "leave it alone" -- it leaves the body on HFSS's
+# default of vacuum, which is indistinguishable from a real choice.
+MATERIAL_FALLBACKS = {
+    "mat_box": "aluminum",
+    "mat_pcb": "Rogers TMM 10i (tm)",
+    "mat_chip": "silicon",
+    "mat_vacuum": "vacuum",
+    "mat_conductor_pcb": "copper",
+    "mat_conductor_chip": "niobium",
+}
+
+
+# How an imported solid's name decides its material and boundary.
+#
+# This used to be an if/elif chain of substring tests, which was fine
+# while every body was either the box, the lid, the PCB or the chip. It
+# stops being fine the moment copper exists: "pcb_copper" contains
+# "pcb", so the old chain would have assigned it Rogers and nobody would
+# have noticed until the eigenfrequencies came out wrong.
+#
+# So the rules are explicit and ORDERED, most specific first, and the
+# first match wins. `perfect_e` names the setting that decides whether
+# the body also gets a perfect-E boundary; None means never.
+#
+# Names come from the STEP, which gets them from the SolidWorks
+# components -- see base_parts/altium/README.md for where copper body
+# names come from.
+#
+# Note that the chip's copper needs its own rules ahead of the bare
+# "chip" one. Without them "chip_copper_top" matched "chip" and was
+# given SILICON -- a conductor modelled as a dielectric, which solves
+# perfectly happily and is completely wrong.
+MATERIAL_RULES = [
+    # (substring, key in objects_dict, material setting, perfect-E setting)
+    ("vacuum",          "vacuum",          "mat_vacuum",          None),
+    ("chip_lid",        "chip_lid",        "mat_box",             "perfect_e_box"),
+    ("chip_conductor",  "chip_conductor",  "mat_conductor_chip",  "perfect_e_conductors"),
+    ("chip_copper",     "chip_copper",     "mat_conductor_chip",  "perfect_e_conductors"),
+    ("chip_via",        "chip_vias",       "mat_conductor_chip",  "perfect_e_conductors"),
+    ("chip_substrate",  "chip",            "mat_chip",            None),
+    ("pcb_copper",      "pcb_copper",      "mat_conductor_pcb",   "perfect_e_conductors"),
+    ("pcb_via",         "pcb_vias",        "mat_conductor_pcb",   "perfect_e_conductors"),
+    ("pcb_substrate",   "pcb",             "mat_pcb",             None),
+    ("wirebond",        "wirebond",        "mat_conductor_pcb",   "perfect_e_conductors"),
+    ("connector",       "connector",       "mat_box",             "perfect_e_connector"),
+    # The bare names come last, so the specific ones above win.
+    ("lid",             "lid",             "mat_box",             "perfect_e_box"),
+    ("box",             "box",             "mat_box",             "perfect_e_box"),
+    ("chip",            "chip",            "mat_chip",            None),
+    ("pcb",             "pcb",             "mat_pcb",             None),
+]
+
+
+# The SolidWorks assembly still supplies the box, the lid and the
+# vacuum. It also still contains a PCB and a chip, but those are now
+# built here instead -- with the die pocketed into the board and the
+# copper in the same frame -- so the imported copies are removed rather
+# than left to overlap the ones we build.
+SUPERSEDED_BY_LAYOUT = ("pcb", "chip")
+
+
+def _drop_superseded_solids(hfss, log) -> None:
+    """Delete the imported substrates we are about to rebuild.
+
+    Two solids occupying one region is not a small inaccuracy: HFSS
+    either errors or resolves it silently by material priority, and the
+    silent case is worse because the model still solves.
+    """
+    doomed = []
     for obj in hfss.modeler.solid_objects:
         name = obj.name.lower()
+        # chip_lid is part of the enclosure, not the die, and the STEP
+        # names it with the same prefix.
+        if "lid" in name:
+            continue
+        if name in SUPERSEDED_BY_LAYOUT:
+            doomed.append(obj.name)
+    if doomed:
+        hfss.modeler.delete(doomed)
+        log(f"Removed the imported {', '.join(doomed)} -- rebuilt from the layout instead.")
 
-        if "vacuum" in name:
-            obj.material_name = mat_settings["mat_vacuum"]
-            objects_dict["vacuum"] = obj
-        elif "pcb" in name:
-            obj.material_name = mat_settings["mat_pcb"]
-            objects_dict["pcb"] = obj
-        elif "chip" in name and "lid" not in name:
-            obj.material_name = mat_settings["mat_chip"]
-            objects_dict["chip"] = obj
-        elif "chip_lid" in name:
-            obj.material_name = mat_settings["mat_box"]
-            objects_dict["chip_lid"] = obj
-            if mat_settings["perfect_e_box"]:
-                hfss.assign_perfect_e(assignment=obj.name)
-        elif "lid" in name:
-            obj.material_name = mat_settings["mat_box"]
-            objects_dict["lid"] = obj
-            if mat_settings["perfect_e_box"]:
-                hfss.assign_perfect_e(assignment=obj.name)
-        elif "box" in name:
-            obj.material_name = mat_settings["mat_box"]
-            objects_dict["box"] = obj
-            if mat_settings["perfect_e_box"]:
-                hfss.assign_perfect_e(assignment=obj.name)
 
+def place_connectors(hfss, frame, board_top: float, half_length: float,
+                     port_space: float, count: int, log=logger.info) -> List[str]:
+    """Import the SMP connector model once per port and set it on its launch.
+
+    The vendor ships a single solid -- no separated pin, dielectric and
+    shell exists in any format they provide -- so each connector is one
+    body, named so the material rules give it a perfect-E boundary.
+
+    Placement is by BOUNDING BOX, not by the model's own origin. A
+    vendor model's origin can sit anywhere, and this one's does not
+    coincide with the footprint origin, which is what left the
+    connectors offset from their launches. Aligning measured faces
+    instead is self-correcting: the outer face lands port_space from the
+    board edge, the underside sits on the board, and the body is centred
+    across it, whatever the file happens to use as its datum.
+    """
+    from . import paths, smp
+
+    model = paths.SMP_MODEL_FILE
+    if not model.is_file():
+        log(f"No SMP model at {model} -- building the board without connectors.")
+        return []
+
+    placed = []
+    for index in range(int(count)):
+        sign = -1.0 if index == 0 else 1.0
+        before = set(hfss.modeler.object_names)
+        try:
+            hfss.modeler.import_3d_cad(str(model))
+        except Exception as exc:
+            log(f"WARNING: could not import the SMP model ({exc}); no connector placed.")
+            return placed
+
+        new_objects = [n for n in hfss.modeler.object_names if n not in before]
+        if not new_objects:
+            log("WARNING: importing the SMP model added no object; no connector placed.")
+            return placed
+
+        name = f"connector_{index + 1}"
+        hfss.modeler[new_objects[0]].name = name
+
+        try:
+            # Stand it up: the model has Z up, the assembly has Y up.
+            hfss.modeler.rotate(name, "X", smp.model_rotation_degrees())
+            # Turn it to face the board. The near connector is the far
+            # one through half a revolution about the up axis.
+            if sign < 0:
+                hfss.modeler.rotate(name, "Y", 180.0)
+
+            box = hfss.modeler[name].bounding_box
+            move = smp.model_alignment(box, frame, board_top, half_length, port_space, sign)
+            hfss.modeler.move(name, move)
+            log(f"Placed {name}: bounding box now {hfss.modeler[name].bounding_box}")
+        except Exception as exc:
+            log(
+                f"WARNING: {name} was imported but could not be positioned ({exc}). "
+                "It is in the model at the wrong place."
+            )
+
+        placed.append(name)
+
+    return placed
+
+
+def cavity_frame(hfss, fallback_x: float, fallback_z: float, log=logger.info):
+    """Where the board sits, measured from the imported cavity.
+
+    The board is centred in the box's cavity, so the cavity's own centre
+    is the datum -- and measuring it beats computing it. The equations
+    give box_length as pcb_length + 2*wall_width, but the assembly also
+    carries mounting wings that extend it, so anything derived from
+    those two numbers alone lands half a wing out. Reading the imported
+    vacuum's bounding box gets it right without this code having to know
+    what else the mechanical design grew.
+
+    Falls back to the computed values, loudly, if the cavity is not
+    there to measure.
+    """
+    from . import copper_geometry as cg
+
+    for wanted in ("vacuum", "box"):
+        for obj in hfss.modeler.solid_objects:
+            if wanted not in obj.name.lower():
+                continue
+            try:
+                x_min, _y_min, z_min, x_max, _y_max, z_max = obj.bounding_box
+            except Exception:
+                continue
+            frame = cg.Frame(
+                x_offset=(x_min + x_max) / 2.0,
+                z_offset=(z_min + z_max) / 2.0,
+            )
+            log(
+                f"Board datum taken from {obj.name}: centre "
+                f"({frame.x_offset:.3f}, {frame.z_offset:.3f}) mm."
+            )
+            return frame
+
+    log(
+        "WARNING: no vacuum or box body to measure, so the board is placed from "
+        f"the equations instead ({fallback_x:.3f}, {fallback_z:.3f}). If the "
+        "assembly has mounting wings this will be off by half of one."
+    )
+    return cg.Frame(x_offset=fallback_x, z_offset=fallback_z)
+
+
+def build_layout(hfss, combo_dir: str, dimensions_txt_content: str, log=logger.info) -> None:
+    """Rebuild the boards from the layout: substrates, copper and bonds.
+
+    Silently does nothing when there is no copper file. A run built from
+    a SolidWorks-only assembly is still perfectly valid, and was the only
+    kind of run until the Altium stage existed.
+    """
+    from . import copper_geometry as cg, equations as eq
+
+    copper_path = os.path.join(combo_dir, "copper.txt")
+    if not os.path.isfile(copper_path):
+        log("No copper.txt for this combination -- building the model without a layout.")
+        return
+
+    v = eq.get_numeric_parameters(dimensions_txt_content)
+    boards = cg.read_file(copper_path)
+
+    pcb_length = v.get("pcb_length", 26.0)
+    pcb_side = v.get("pcb_side", 10.0)
+    pcb_width = v.get("pcb_width", 0.381)
+    chip_width = v.get("chip_width", 0.381)
+    wall = v.get("wall_width", 1.0)
+    pedestal = v.get("pedestal_depth", 0.0)
+
+    # The assembly origin is a corner, so the board centre sits inside
+    # the box -- but not simply half of (pcb_length + 2*wall_width),
+    # because the assembly also carries mounting wings that extend it.
+    # Measured from the cavity rather than computed, so the mechanical
+    # design can grow features this code has never heard of.
+    frame = cavity_frame(
+        hfss,
+        fallback_x=(pcb_length + 2 * wall) / 2.0,
+        fallback_z=(pcb_side + 2 * wall) / 2.0,
+        log=log,
+    )
+
+    # Heights follow box_height = wall_width + pedestal_depth +
+    # pcb_width: the board floats on the floor and the pedestal, and the
+    # die is let into the board so their faces finish flush.
+    pcb_bottom = wall + pedestal
+    pcb_top = pcb_bottom + pcb_width
+    stack = cg.Stack(
+        pcb_bottom=pcb_bottom,
+        pcb_top=pcb_top,
+        chip_bottom=pcb_top - chip_width,
+        chip_top=pcb_top,
+        copper_thickness=v.get("copper_thickness", 0.035),
+        chip_metal_thickness=v.get("chip_metal_thickness", 0.0002),
+    )
+
+    _drop_superseded_solids(hfss, log)
+
+    cg.build_substrates(
+        hfss.modeler, frame, stack,
+        pcb_half_length=pcb_length / 2.0,
+        pcb_half_side=pcb_side / 2.0,
+        chip_half_length=v.get("chip_length", 6.3) / 2.0,
+        chip_half_side=v.get("chip_side", 6.3) / 2.0,
+        log=log,
+    )
+
+    package = boards.get("package")
+    if package is not None and len(package):
+        made = cg.build(
+            hfss.modeler, package, frame,
+            top_face=stack.pcb_top, bottom_face=stack.pcb_bottom,
+            thickness=stack.copper_thickness, prefix="pcb", log=log,
+        )
+        # The board is pocketed for the die, so any copper crossing that
+        # footprint is copper the real board does not have.
+        cg.clear_chip_area(
+            hfss.modeler, frame, stack,
+            chip_half_length=v.get("chip_length", 6.3) / 2.0,
+            chip_half_side=v.get("chip_side", 6.3) / 2.0,
+            targets=[name for names in made.values() for name in names],
+            log=log,
+        )
+        # A via barrel and the board cannot share a volume: drill them.
+        if "pcb_vias" in made:
+            cg.drill_vias(hfss.modeler, "pcb_substrate", "pcb_vias", log=log)
+
+    chip = boards.get("chip")
+    if chip is not None and len(chip):
+        cg.build(
+            hfss.modeler, chip, frame,
+            top_face=stack.chip_top, bottom_face=stack.chip_bottom,
+            thickness=stack.chip_metal_thickness, prefix="chip", log=log,
+        )
+
+    # The connectors are real vendor geometry rather than a stand-in, so
+    # the launch is represented rather than left as bare copper. They
+    # rest on the board's actual top surface -- the copper, not the bare
+    # substrate underneath it (stack.pcb_top).
+    place_connectors(
+        hfss, frame,
+        board_top=stack.pcb_copper_top,
+        half_length=pcb_length / 2.0,
+        port_space=v.get("port_space", 1.5),
+        count=v.get("port_count", 2),
+        log=log,
+    )
+
+    # The wires come from the same layout file Altium placed the pads
+    # from, so each one lands on its pad -- on the copper, again, not the
+    # substrate.
+    from . import bonds as bond_layout
+
+    bonds_path = os.path.join(combo_dir, "bonds.txt")
+    if os.path.isfile(bonds_path):
+        cg.build_bond_wires(
+            hfss.modeler,
+            bond_layout.read_file(bonds_path),
+            frame,
+            pcb_top=stack.pcb_copper_top,
+            chip_top=stack.chip_copper_top,
+            height=v.get("bond_height", 0.2),
+            diameter=v.get("bond_wire_diameter", 0.025),
+            log=log,
+        )
+    else:
+        log("No bonds.txt for this combination -- the die is not bonded.")
+
+
+# Tried in turn when the preferred material will not stick. The last
+# one is deliberately dull: a conductor modelled as the wrong metal is a
+# small error, while one left as vacuum is a completely different model.
+LAST_RESORT_CONDUCTOR = "copper"
+LAST_RESORT_DIELECTRIC = "Rogers TMM 10i (tm)"
+
+
+def _try_material(hfss, obj, material: str) -> bool:
+    """Set a body's material and check it actually took.
+
+    Assigning a name the library does not have does NOT raise -- the body
+    simply stays on the modeller default, which is vacuum, and in the
+    tree that is indistinguishable from a deliberate choice.
+    """
+    try:
+        obj.material_name = material
+    except Exception:
+        return False
+    try:
+        return (obj.material_name or "").strip().lower() == material.strip().lower()
+    except Exception:
+        return True  # cannot read it back; assume the write worked
+
+
+def _assign_material(hfss, obj, material: str, is_conductor: bool, log) -> bool:
+    """Give a body a material, falling back until one sticks.
+
+    Niobium is the case this exists for: it is the right material for a
+    superconducting die but many libraries do not carry it, and the
+    failure is silent. Rather than leave the body as vacuum -- which is
+    not a conductor at all, and changes the physics rather than
+    approximating it -- try to add the material, then settle for a plain
+    metal and say so.
+    """
+    if _try_material(hfss, obj, material):
+        return True
+
+    # Some libraries will take it once it exists.
+    try:
+        hfss.materials.add_material(material)
+        if _try_material(hfss, obj, material):
+            log(f"Added {material!r} to the project material library for {obj.name}.")
+            return True
+    except Exception:
+        pass
+
+    stand_in = LAST_RESORT_CONDUCTOR if is_conductor else LAST_RESORT_DIELECTRIC
+    if stand_in != material and _try_material(hfss, obj, stand_in):
+        log(
+            f"WARNING: the material library would not take {material!r} for "
+            f"{obj.name}, so it is {stand_in!r} instead. Add {material!r} to the "
+            "library if its properties matter -- with a perfect-E boundary they "
+            "do not."
+        )
+        return True
+
+    return False
+
+
+def assign_materials_and_boundaries(hfss, mat_settings: dict, log=logger.info) -> Dict[str, object]:
+    """Give every solid in the imported model its material and boundary.
+
+    A body whose name matches no rule is left alone and WARNED ABOUT
+    rather than silently defaulting. A mis-exported or renamed body is
+    the kind of thing that otherwise shows up as a puzzling frequency
+    shift days later.
+    """
+    objects_dict = {}
+    unmatched = []
+    unnamed = []
+    fell_back = set()
+    rejected = []
+
+    for obj in hfss.modeler.solid_objects:
+        name = obj.name.lower()
+        for pattern, key, material_key, perfect_e_key in MATERIAL_RULES:
+            if pattern not in name:
+                continue
+            material = mat_settings.get(material_key) or MATERIAL_FALLBACKS.get(material_key)
+            if material:
+                if not mat_settings.get(material_key):
+                    fell_back.add(material_key)
+                is_conductor = "conductor" in material_key
+                if not _assign_material(hfss, obj, material, is_conductor, log):
+                    rejected.append(f"{obj.name} ({material})")
+            else:
+                unnamed.append(obj.name)
+            objects_dict.setdefault(key, obj)
+            if perfect_e_key and mat_settings.get(perfect_e_key):
+                hfss.assign_perfect_e(assignment=obj.name)
+            break
+        else:
+            unmatched.append(obj.name)
+
+    if rejected:
+        log(
+            "WARNING: the modeller would not accept these materials, so those "
+            "bodies keep its default of vacuum: " + ", ".join(sorted(rejected))
+            + ". A name the material library does not have is the usual cause; "
+            "add it to the library or set a different one in the run settings."
+        )
+    if fell_back:
+        # Worth saying out loud. A run whose settings predate a material
+        # key posts an empty string for it, and an unset material leaves
+        # the body on HFSS's default -- which is vacuum, and looks in the
+        # tree exactly like a deliberate choice.
+        log(
+            "NOTE: no value was configured for " + ", ".join(sorted(fell_back))
+            + "; used the built-in defaults instead."
+        )
+    if unnamed:
+        log(
+            "WARNING: these solids matched a rule but no material could be "
+            "resolved for them, so they keep the modeller default (vacuum): "
+            + ", ".join(sorted(unnamed))
+        )
+    if unmatched:
+        log(
+            "WARNING: no material rule matched these solids, so they keep "
+            "the modeller default: " + ", ".join(sorted(unmatched))
+            + ". Check the body names against MATERIAL_RULES."
+        )
     return objects_dict
+
+
+def carve_vacuum(hfss, objects_dict, log=logger.info) -> None:
+    """Cut everything this pipeline adds out of the vacuum body.
+
+    The vacuum arrives from the STEP as the cavity fill, sized in
+    SolidWorks around box/lid/chip_lid only -- it was never cut for the
+    substrates, copper, vias, bonds or connectors this pipeline builds
+    on top of that STEP. All of it now occupies volume vacuum also
+    claims, and two solids claiming one region is not a small
+    inaccuracy: HFSS either errors or silently resolves it by material
+    priority, which is worse because the model still solves.
+
+    The tool list is read straight from `hfss.modeler.solid_objects`,
+    not from `objects_dict`. Several material rules legitimately match
+    MORE than one body -- pcb_copper matches both the top and bottom
+    layer, connector matches one body per port -- and objects_dict keeps
+    only the first body per rule key, so building the tool list from it
+    silently carved just one of them and left the rest overlapping
+    vacuum. That is exactly how a second connector went uncarved.
+    """
+    vacuum = objects_dict.get("vacuum")
+    if vacuum is None:
+        return
+
+    # Bodies that come straight from the STEP, where the SolidWorks-built
+    # vacuum already accounts for them. Everything else in the model is
+    # new content this pipeline added.
+    ENCLOSURE = {"vacuum", "box", "lid", "chip_lid"}
+    tools = [
+        obj.name
+        for obj in hfss.modeler.solid_objects
+        if obj.name.lower() not in ENCLOSURE
+    ]
+    if not tools:
+        return
+
+    try:
+        # keep_originals: every one of these bodies must survive being
+        # cut out of the vacuum -- they are the things being simulated.
+        hfss.modeler.subtract(vacuum.name, tools, keep_originals=True)
+        log(f"Carved {len(tools)} bodies out of the vacuum: {', '.join(sorted(tools))}.")
+    except Exception as exc:
+        log(
+            f"WARNING: could not subtract {len(tools)} bodies from the vacuum ({exc}). "
+            "The model has overlapping solids and its results should not be trusted."
+        )
 
 
 SETUP_NAME = "Setup_1"
@@ -318,7 +770,15 @@ def build_model(
         log(f"Importing {step_path}...")
         hfss.modeler.import_3d_cad(step_path)
 
-        objects_dict = assign_materials_and_boundaries(hfss, analysis_settings["materials"])
+        # The boards are not in the STEP in any usable form -- Altium's
+        # export drops copper, and the substrates are rebuilt here so the
+        # die can be pocketed into the board and everything shares one
+        # frame. Must happen BEFORE materials are assigned, or the new
+        # bodies exist without any.
+        build_layout(hfss, combo_dir, dimensions_txt_content, log=log)
+
+        objects_dict = assign_materials_and_boundaries(hfss, analysis_settings["materials"], log=log)
+        carve_vacuum(hfss, objects_dict, log=log)
         object_names = {key: obj.name for key, obj in objects_dict.items()}
 
         create_eigenmode_setup(hfss, dimensions_txt_content, analysis_settings)

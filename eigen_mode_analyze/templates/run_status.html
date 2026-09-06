@@ -584,6 +584,9 @@ setInterval(poll, 4000);
     if (data.skip_reason) {
       html += '<div class="note-box">Skipped: ' + esc(data.skip_reason) + "</div>";
     }
+    if (data.altium_error) {
+      html += '<div class="error-box">Altium: ' + esc(data.altium_error) + "</div>";
+    }
     if (data.error) {
       html += '<div class="error-box"><pre>' + esc(data.error) + "</pre></div>";
     }

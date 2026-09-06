@@ -43,6 +43,20 @@ LABELS: Dict[str, str] = {
     "wall_width": "Box wall thickness",
     "wing_length": "Mounting wing length",
     "wing_width": "Mounting wing width",
+    # transmission line, shielding and bonds
+    "cpw_trace_width": "CPW trace width",
+    "via_diameter": "Via diameter",
+    "via_pitch": "Via fence pitch",
+    "via_gnd_clearance": "Via fence setback from gap",
+    "shield_ring_inset": "Shield ring inset",
+    "bond_pad_length": "Bond pad length",
+    "bond_pad_width": "Bond pad width",
+    "bond_pad_pitch": "Bond pad pitch",
+    "bond_height": "Bond loop height",
+    "bond_wire_diameter": "Bond wire diameter",
+    # metallisation
+    "copper_thickness": "PCB copper thickness",
+    "chip_metal_thickness": "Chip metal thickness",
     "no_distortion": "Distortion",
     # distortion geometry
     "distortion_radius": "Distortion radius",
@@ -52,7 +66,11 @@ LABELS: Dict[str, str] = {
 
 # Shown, typed, and reported in micrometres instead of millimetres.
 # These are the sub-millimetre dimensions, where "381" beats "0.381".
-MICRON_PARAMETERS = {"pcb_width", "chip_width", "route_clearence", "chip_leg"}
+MICRON_PARAMETERS = {
+    "pcb_width", "chip_width", "route_clearence", "chip_leg",
+    "copper_thickness", "chip_metal_thickness",
+    "via_gnd_clearance", "bond_wire_diameter",
+}
 
 # Counts rather than lengths: no unit at all.
 INTEGER_PARAMETERS = {"port_count"}
@@ -121,6 +139,28 @@ GROUPS: List[dict] = [
             "chip_leg", "bonding_clearence",
             "route_width", "route_clearence", "route_chip_clearence",
         ],
+    },
+    {
+        "title": "Transmission line and shielding",
+        "hint": "The CPW itself, the via fence that shields it, and the bonds across to the "
+                "chip. The CPW gap is absent on purpose: it is solved for 50 ohm from the "
+                "trace width, substrate and copper thickness rather than typed.",
+        "collapsed": False,
+        "names": [
+            "cpw_trace_width",
+            "via_diameter", "via_pitch", "via_gnd_clearance", "shield_ring_inset",
+            "bond_pad_length", "bond_pad_width", "bond_pad_pitch",
+            "bond_height", "bond_wire_diameter",
+        ],
+    },
+    {
+        "title": "Metallisation",
+        "hint": "Conductor thicknesses. These matter more than they look: 35 um of copper "
+                "across a ~100 um gap pulls the CPW impedance down by more than 10 ohm, "
+                "which is why the 50 ohm gap is solved with the thickness rather than "
+                "without it.",
+        "collapsed": False,
+        "names": ["copper_thickness", "chip_metal_thickness"],
     },
     {
         "title": "Additional parameters",

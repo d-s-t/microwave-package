@@ -34,17 +34,41 @@
 
 "wing_width"= 1	' mounting wing width
 
-"bonding_clearence"= 1
+"bonding_clearence"= 0.4	' gap from the die edge to the bond fingers
 
-"no_distortion" = 0 ' (boolean) when set to 1, no distortions are present. when set to 0, distortions are added to the box and holes to the PCB.
+"no_distortion" = 1 ' (boolean) when set to 1, no distortions are present. when set to 0, distortions are added to the box and holes to the PCB.
 
-"distortion_radius" = 1
+"distortion_radius" = 0.6
 
-"distortion_x" = 1
+"distortion_x" = 0.0
 
-"distortion_y" = 1
+"distortion_y" = 0.8
 
-"box_height"= "wall_width" + "pedestal_depth" + "pcb_width"
+"cpw_trace_width"= 0.2	' width of the CPW signal trace (the gap is solved for 50 ohm, not typed)
+
+"via_diameter"= 0.3	' finished diameter of the ground-stitching vias
+
+"via_pitch"= 0.8	' centre-to-centre spacing of vias along the fence
+
+"via_gnd_clearance"= 0.15	' setback of the via fence from the edge of the CPW gap
+
+"shield_ring_inset"= 0.9	' shield ring setback from the die: must clear the bond fingers
+
+"bond_pad_length"= 0.3	' bonding pad size along the feedline
+
+"bond_pad_width"= 0.15	' bonding pad size across the feedline
+
+"bond_pad_pitch"= 0.4	' centre-to-centre spacing of the bonding pads
+
+"bond_height"= 0.2	' height of the bond loop apex above the pad
+
+"bond_wire_diameter"= 0.025	' bond wire diameter (25 um)
+
+"copper_thickness"= 0.035	' thickness of the PCB copper (35 um, 1 oz)
+
+"chip_metal_thickness"= 0.0002	' thickness of the chip conductor (200 nm)
+
+"box_height"= "wall_width" + "pedestal_depth" + "pcb_width" + 2 * "copper_thickness"
 
 "box_length"= "pcb_length" + 2 * "wall_width"
 

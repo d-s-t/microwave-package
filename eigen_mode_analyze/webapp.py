@@ -328,12 +328,17 @@ def new_run():
         "student_version": "student_version" in request.form,
         "graphical": "graphical" in request.form,
         "poll_seconds": float(request.form.get("poll_seconds", 10.0)),
+        "use_altium": "use_altium" in request.form,
         "materials": {
-            "mat_box": request.form.get("mat_box", "aluminum"),
-            "mat_pcb": request.form.get("mat_pcb", "Rogers TMM 10i (tm)"),
-            "mat_chip": request.form.get("mat_chip", "silicon"),
-            "mat_vacuum": request.form.get("mat_vacuum", "vacuum"),
+            "mat_box": request.form.get("mat_box") or "aluminum",
+            "mat_pcb": request.form.get("mat_pcb") or "Rogers TMM 10i (tm)",
+            "mat_chip": request.form.get("mat_chip") or "silicon",
+            "mat_vacuum": request.form.get("mat_vacuum") or "vacuum",
             "perfect_e_box": "perfect_e_box" in request.form,
+            "mat_conductor_pcb": request.form.get("mat_conductor_pcb") or "copper",
+            "mat_conductor_chip": request.form.get("mat_conductor_chip") or "niobium",
+            "perfect_e_conductors": "perfect_e_conductors" in request.form,
+            "perfect_e_connector": "perfect_e_connector" in request.form,
         },
     }
     run = Run.create(sweep_params, settings, parameter_defaults)

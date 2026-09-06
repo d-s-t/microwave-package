@@ -108,7 +108,8 @@ def run_pipeline(run: Run, queue: "queue_common.QueuePaths", log=logger.info, st
             "and resume this run."
         )
 
-    log("Stage 1/4: generating STEP files, building AEDT models, and queuing analysis tasks...")
+    log("Stage 1/4: generating layouts in Altium, STEP files in SolidWorks, "
+        "building AEDT models, and queuing analysis tasks...")
     run.set_stage("generating_and_queuing")
 
     queuing_finished = threading.Event()
@@ -136,6 +137,8 @@ def run_pipeline(run: Run, queue: "queue_common.QueuePaths", log=logger.info, st
             step_generation.generate_step_files, combos, equations_path, assembly_path, run,
             log=log, parameter_defaults=parameter_defaults, on_step_done=queue_combo,
             stop_event=stop_event,
+            use_altium=analysis_settings.get("use_altium", True),
+            materials=analysis_settings.get("materials"),
         )
         if stop_event is None or not stop_event.is_set():
             # Anything whose STEP was already on disk from an earlier
@@ -250,12 +253,30 @@ DEFAULT_ANALYSIS_SETTINGS = {
     "student_version": True,
     "graphical": False,
     "poll_seconds": 10.0,
+    # Regenerate the PCB and chip layouts in Altium for every
+    # combination. Turning this off falls back to the SolidWorks-only
+    # geometry the pipeline built before Altium existed -- no copper, no
+    # vias, and a much lighter mesh.
+    "use_altium": True,
     "materials": {
         "mat_box": "aluminum",
         "mat_pcb": "Rogers TMM 10i (tm)",
         "mat_chip": "silicon",
         "mat_vacuum": "vacuum",
         "perfect_e_box": True,
+        # Conductors default to perfect E rather than to a named metal.
+        # This is not a shortcut: HFSS's stock copper and niobium carry
+        # ROOM-TEMPERATURE normal-state conductivity, which at
+        # millikelvin is less realistic than PEC, not more. Genuine cryo
+        # realism needs a Mattis-Bardeen surface impedance, which is its
+        # own project and buys nothing for mode frequencies. PEC also
+        # keeps the mesh affordable now that copper exists.
+        "mat_conductor_pcb": "copper",
+        "mat_conductor_chip": "niobium",
+        "perfect_e_conductors": True,
+        # The SMP connector arrives as one fused body, so it cannot be
+        # split into pin, dielectric and shell. It is a PEC lump.
+        "perfect_e_connector": True,
     },
 }
 
@@ -272,12 +293,17 @@ def build_analysis_settings(args: argparse.Namespace) -> dict:
         "student_version": args.student_version,
         "graphical": args.graphical,
         "poll_seconds": args.poll_seconds,
+        "use_altium": args.use_altium,
         "materials": {
             "mat_box": args.mat_box,
             "mat_pcb": args.mat_pcb,
             "mat_chip": args.mat_chip,
             "mat_vacuum": args.mat_vacuum,
             "perfect_e_box": args.perfect_e_box,
+            "mat_conductor_pcb": args.mat_conductor_pcb,
+            "mat_conductor_chip": args.mat_conductor_chip,
+            "perfect_e_conductors": args.perfect_e_conductors,
+            "perfect_e_connector": args.perfect_e_connector,
         },
     }
 
@@ -305,6 +331,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--mat-chip", type=str, default="silicon")
     parser.add_argument("--mat-vacuum", type=str, default="vacuum")
     parser.add_argument("--no-perfect-e-box", dest="perfect_e_box", action="store_false", default=True)
+    parser.add_argument("--no-altium", dest="use_altium", action="store_false", default=True,
+                        help="Skip layout generation and build the SolidWorks-only geometry")
+    parser.add_argument("--mat-conductor-pcb", type=str, default="copper")
+    parser.add_argument("--mat-conductor-chip", type=str, default="niobium")
+    parser.add_argument("--no-perfect-e-conductors", dest="perfect_e_conductors",
+                        action="store_false", default=True,
+                        help="Use the named conductor materials instead of perfect E. "
+                             "Only meaningful with a proper cryogenic surface impedance.")
+    parser.add_argument("--no-perfect-e-connector", dest="perfect_e_connector",
+                        action="store_false", default=True)
     return parser.parse_args()
 
 

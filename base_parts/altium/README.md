@@ -1,0 +1,191 @@
+# Driving Altium from the sweep
+
+Everything here exists to let `base_parts/default.txt` generate the package PCB
+and the chip, so a parameter sweep can rebuild real copper geometry per
+combination instead of a featureless slab.
+
+This file is the record of how Altium actually behaves when scripted. Almost
+none of it is in Altium's documentation, and every item cost at least one failed
+run to establish.
+
+## Layout
+
+| Path | What it is |
+|---|---|
+| `GenerateFromParams.pas` | The generator. Creates both boards from `params.txt`. |
+| `VerifyGenerated.pas` | Reads the saved files back and counts what is in them. |
+| `params.txt` | Written by `eigen_mode_analyze.altium_generation`. Not source — regenerated each run. |
+| `generated/` | Output boards. Not tracked; recreated from `default.txt` every run. |
+| `spikes/` | The feasibility probes, kept for their findings. |
+
+## Running it
+
+```bash
+"C:\Program Files\Altium\AD26\X2.EXE" '-RScriptingSystem:RunScriptFile(FileName="<abs path>.pas"|ProcName="<ProcName>")'
+```
+
+From Python, use `eigen_mode_analyze.altium_generation.run_script`, which handles
+the timeout and sentinel polling described below.
+
+## The five things that will bite you
+
+**1. The launcher is not the script.** Altium is single-instance. `X2.EXE`
+forwards the request to the session already running and the stub exits
+immediately, so its exit code says nothing about whether your script ran, or
+even started. The only trustworthy completion signal is a sentinel file the
+script writes itself. Poll for it; never wait on the process.
+
+**2. There is no headless mode, and errors are silent-but-blocking.** A *parse*
+error raises a modal dialog that waits for a human indefinitely. A *runtime*
+error parks the script in the debugger. Neither produces a stack trace, an exit
+code, or anything on stdout. Consequences:
+
+- Every call must be bounded by a timeout, not a wait.
+- Write progress to the sentinel **before** each risky call and flush it. When a
+  script dies, the last line it managed to write is the entire diagnostic.
+- Wrong *arity* on a method raises a catchable exception rather than a dialog,
+  so many candidate spellings can be swept safely in one run. Unknown
+  *identifiers* cannot — they take the whole script down.
+
+**3. Pascal block comments do not nest.** An inner `}` closes the comment early
+and the prose after it is parsed as code. This produced
+`Error in declaration block at Line:9` from a header comment containing
+`{ a property, no args }`.
+
+**4. Order matters on a cold start.** With no PCB document open, the PCB server
+is not loaded and `PCBServer` is not even a declared identifier — the script dies
+on `Undeclared identifier: GetCurrentPCBBoard` before any `Try` can catch it.
+Open a document through `Client` *first*. A warm session hides this completely,
+because a document is already open.
+
+**5. Stale open documents lie to you.** This one cost two separate debugging
+rounds, and it is the failure mode most likely to waste your afternoon.
+
+`Client.OpenDocument` on a path Altium already has open returns the in-memory
+copy rather than reading the file, and `GetCurrentPCBBoard` may return a
+*different*, previously focused board. A correctly generated 62-via board once
+read back as the previous run's single track.
+
+Worse, closing *one* document is not enough. Documents accumulate across runs all
+claiming the same path, so the copper export later reported a board exactly as it
+stood one run earlier — before its bond fingers existed — while the file on disk
+was perfectly correct. Drain them:
+
+```pascal
+For i := 1 To 10 Do
+Begin
+    Doc := Client.GetDocumentByPath(Path);
+    If Doc = Nil Then Break;
+    Client.CloseDocument(Doc);
+End;
+```
+
+Better still, close each document as soon as it is saved, so stale copies never
+accumulate in the first place. The generator does this.
+
+The general lesson: **measure the file, not the session.** `GenerateFromParams`
+counts its own primitives in memory before saving and `VerifyGenerated` counts
+them again from disk, because "the objects were never added" and "they were added
+but something else was read back" look identical from the outside.
+
+## API spellings that work
+
+Established by probing; the plausible-looking alternatives all fail.
+
+```pascal
+{ Documents -- FOUR arguments. The three-argument form returns nil. }
+Doc := Client.OpenNewDocument('PCB', 'package', 'package', False);
+
+{ Saving -- both DoFileSaveAs spellings fail. }
+Doc.SetFileName(Path);
+Doc.DoFileSave('');
+
+{ Primitives }
+T := PCBServer.PCBObjectFactory(eTrackObject, eNoDimension, eCreate_Default);
+Board.AddPCBObject(T);
+PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,
+                              PCBM_BoardRegisteration, T.I_ObjectAddress);
+
+{ Region outlines }
+C := PCBServer.PCBContourFactory;
+C.AddPoint(MMsToCoord(x), MMsToCoord(y));
+R.SetOutlineContour(C);
+```
+
+Wrap batches of edits in `PCBServer.PreProcess` / `PostProcess`.
+
+### The board outline, and a trap worth remembering
+
+`BoardOutline.Segments[i]` returns the record **by value**. Writing
+`Segments[i].vx := ...` edits a temporary that is then discarded — and it reports
+success while leaving the board at its default 6 × 4 inches. Read the record out,
+edit it, assign it back:
+
+```pascal
+Seg := Board.BoardOutline.Segments[i];
+Seg.Kind := ePolySegmentLine;
+Seg.vx := MMsToCoord(x);
+Seg.vy := MMsToCoord(y);
+Board.BoardOutline.Segments[i] := Seg;
+```
+
+Use **four** corner points for a rectangle, not five. Altium closes the outline
+itself.
+
+## Conventions the generator keeps
+
+**Both boards are centred on the origin.** This is the only datum shared with
+SolidWorks. Copper is positioned in HFSS by arithmetic rather than by mates, so a
+drifting centre would put copper in the wrong place with nothing to catch it.
+
+A side effect: the boards sit at negative coordinates, so a freshly opened
+document **looks empty** until the view is fitted. Press `Ctrl+PgDn`
+(*View » Fit Board*). The document is not broken.
+
+**The generated `.PcbDoc` files are output, never source.** They are recreated
+from `default.txt` on every run and are not tracked in git. Do not hand-edit
+them — change `default.txt` or the generator.
+
+**The CPW gap is never a drawn input.** It is solved for 50 Ω in
+`eigen_mode_analyze/cpw.py`, per substrate, and arrives as `pcb_cpw_gap` and
+`chip_cpw_gap`. Copper thickness matters here more than it looks: 35 µm across a
+~112 µm gap moves the 50 Ω gap to 271 µm, so ignoring it lands you at 35 Ω.
+
+## What the spikes settled
+
+`spikes/s1_launch.pas` — Altium can be driven from the command line at all.
+Roughly 3 s on a warm session against a minute cold, because a warm session is
+reused rather than replaced.
+
+`spikes/s2_probe.pas` — the PCB API is fully readable from an externally launched
+script. Also: `Board.LayerStack` raises where `LayerStack_V7` succeeds.
+
+`spikes/s2_export*.pas` — the 3D export. **Altium's STEP export silently drops
+all copper**, so STEP cannot carry the traces and vias into simulation.
+Parasolid can, and `PCBServer.Board3DModelExporter` returns a live exporter whose
+option setters all work — including
+`eBoard3DModelExportCopperOptions_CopperLayer`, which would split copper per
+layer. But `ExportBoard3DModel` itself could not be reached across eight arities,
+and neither could `GetCopperBodyList`. Setters taking an enum bind; anything
+returning an interface or performing the export does not, which reads as a
+partially exposed interface rather than eight unlucky guesses.
+
+Hence the current plan: read the primitives out of Altium (which works — the
+probe enumerated 262 vias on the reference board) and rebuild copper directly in
+HFSS with PyAEDT. SolidWorks keeps building the box, lid, vacuum and substrates,
+and keeps its mates; only copper moves.
+
+### Wire bonds are modelled but not scriptable
+
+AD26 clearly models bond wires: it has wirebond rules, violation types
+(`eViolation_WirebondLength`, `eViolation_BondFingerToWireAlignment`), JEDEC
+profile constants, and export support. But there is **no wirebond entry in the
+scriptable object-id enum at all** — of its 52 object ids, none is a wirebond, so
+`PCBObjectFactory` cannot create one. The same partial exposure that blocked the
+3D exporter.
+
+This turned out not to matter. A bond is EM geometry rather than layout, so
+`copper_geometry.build_wirebonds` builds the loops directly in HFSS from
+`bond_count`, `bond_height` and `bond_wire_diameter`, where the arc profile can
+be exactly what the field solve needs. What the layout owes the bonds is the pads
+at each end, and those the generator does place.

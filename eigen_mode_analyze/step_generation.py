@@ -11,7 +11,7 @@ import os
 import time
 from typing import Callable, Dict, Optional, Tuple
 
-from . import equations as eq
+from . import altium_generation, equations as eq
 
 logger = logging.getLogger("eigen_mode_analyze")
 
@@ -175,6 +175,8 @@ def generate_step_files(
     parameter_defaults: Optional[Dict[str, float]] = None,
     on_step_done: Optional[Callable[[str], None]] = None,
     stop_event=None,
+    use_altium: bool = True,
+    materials: Optional[Dict[str, str]] = None,
 ) -> None:
     """
     Build a STEP file for every combo, skipping ones already generated
@@ -236,10 +238,35 @@ def generate_step_files(
             for name, value in params.items():
                 content = eq.set_parameter(content, name, value)
             eq.write_file(equations_path, content)
-            rebuild_model(swModel)
 
             combo_dir = run.combo_dir(combo_id)
             os.makedirs(combo_dir, exist_ok=True)
+
+            # Altium regenerates the boards for this combination and
+            # leaves their copper alongside the STEP. It runs BEFORE the
+            # SolidWorks rebuild because the substrates are sized from
+            # the same equations file, and after it because Altium is
+            # single-instance and this loop is already sequential -- one
+            # more sequential step costs nothing here.
+            if use_altium:
+                ok, reason = altium_generation.generate_for_combo(
+                    combo_dir, eq.get_numeric_parameters(content),
+                    materials=materials, log=log,
+                )
+                run.update_combo(
+                    combo_id,
+                    altium_status="done" if ok else "failed",
+                    altium_error=None if ok else reason,
+                )
+                if not ok:
+                    # One unbuildable layout is recorded and skipped, the
+                    # same way a failed STEP is. It must not take the
+                    # rest of the sweep with it.
+                    log(f"Altium failed for {combo_id}: {reason}")
+                    run.update_combo(combo_id, step_status="failed", step_error=reason)
+                    continue
+
+            rebuild_model(swModel)
             # Snapshot of the exact equations used for this combo, so
             # later steps (min-frequency estimate) can read it back
             # without depending on the shared file's current state.
