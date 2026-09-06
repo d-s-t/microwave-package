@@ -674,6 +674,56 @@ class TestExportedLayoutIsSane(unittest.TestCase):
             xs = [p[0] for p in r.points]
             self.assertAlmostEqual(max(abs(x) for x in xs), half_l, places=6)
 
+    def test_the_ground_fill_does_not_touch_the_live_trace(self):
+        """Everything on the top layer is united into ONE body, so a
+        ground region overlapping the trace is a dead short from signal
+        to ground -- and the union leaves no seam, so nothing in the
+        tree shows it. This is exactly what happened: the fill was
+        placed from the via fence's outer bound rather than from where
+        the trace actually ends, putting it 0.7 mm inside the live line.
+
+        The trace's real extent includes the rounded cap the model adds
+        at each end, so that is what the fill has to clear.
+        """
+        track = self.pkg.tracks[0]
+        trace_end = abs(track.x2) + self.trace / 2.0
+
+        fills = [r for r in self.pkg.regions
+                 if r.layer == "top"
+                 and max(abs(p[1]) for p in r.points) <= self.gap_edge + 1e-6]
+        self.assertEqual(len(fills), 2, "expected one ground fill behind each launch")
+        for r in fills:
+            inner = min(abs(p[0]) for p in r.points)
+            self.assertGreater(
+                inner, trace_end,
+                f"ground fill starts at {inner:.4f} but the trace reaches "
+                f"{trace_end:.4f} -- they would be united into one shorted body",
+            )
+
+    def test_the_ground_fill_still_reaches_the_connector(self):
+        """The fill exists to put metal behind the launch. Pushing its
+        inner edge out to clear the trace must not push it past the
+        connector's own ground lands, or it stops doing its job."""
+        half_l = self.v["pcb_length"] / 2
+        fills = [r for r in self.pkg.regions
+                 if r.layer == "top"
+                 and max(abs(p[1]) for p in r.points) <= self.gap_edge + 1e-6]
+        # The connector's GROUND lands: the two arms, off the centre
+        # line, and the strap, which sits on it but spans right across.
+        # The signal land also lives out here and must not be counted --
+        # it is the thing the trace connects TO, not ground.
+        lands = [p for p in self.pkg.pads
+                 if abs(p.x) >= self.launch_inner
+                 and (abs(p.y) > self.gap_edge or p.ysize > 1.0)]
+        self.assertTrue(lands, "no connector ground lands found")
+        innermost_land = min(abs(p.x) for p in lands)
+        for r in fills:
+            inner = min(abs(p[0]) for p in r.points)
+            outer = max(abs(p[0]) for p in r.points)
+            self.assertLess(inner, innermost_land,
+                            "the fill no longer reaches the connector's grounds")
+            self.assertAlmostEqual(outer, half_l, places=6)
+
     def test_the_dies_own_copper_stops_short_of_the_edge(self):
         """The die's trace and ground planes used to run exactly to the
         die's physical edge, at the same line the PCB's copper was cut

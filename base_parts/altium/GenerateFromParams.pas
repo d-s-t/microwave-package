@@ -386,7 +386,7 @@ Procedure BuildBoard(Board : IPCB_Board; HalfL, HalfS, CopperHalfL, CopperHalfS,
                      WantVias : Boolean; WantBackPlane : Boolean;
                      Var nVias : Integer);
 Var
-    GndInner, FenceY, X : Double;
+    GndInner, FenceY, X, FillHalfL : Double;
 Begin
     SetOutline(Board, HalfL, HalfS);
 
@@ -403,13 +403,23 @@ Begin
 
     { Ground behind each launch. Without it the CPW corridor runs bare
       all the way to the board edge, leaving a slot in the ground behind
-      the connector where there should be metal. The connector's own
-      strap already ties the two sides together here, so filling it
-      shorts nothing that was not already shorted. }
-    If FenceHalfL < CopperHalfL Then
+      the connector where there should be metal. Out there the trace has
+      already ended and the connector's own strap ties the two sides
+      together anyway, so filling it shorts nothing that was not already
+      shorted.
+
+      It has to start beyond where the TRACE ends, which is not the same
+      place the via fence ends. Using the fence's outer bound here put
+      the fill 0.7 mm inside the live trace: everything on this layer is
+      united into one body, so an overlap there is a dead short from
+      signal to ground, invisible in the tree because the union leaves
+      no seam. Clear the trace's end, its rounded cap (the model adds
+      one of radius Trace/2), and then a clearance on top of that. }
+    FillHalfL := TraceHalfL + Trace / 2.0 + ViaClear;
+    If FillHalfL < CopperHalfL Then
     Begin
-        AddRect(Board, -CopperHalfL, -GndInner, -FenceHalfL, GndInner, eTopLayer);
-        AddRect(Board,  FenceHalfL, -GndInner, CopperHalfL,  GndInner, eTopLayer);
+        AddRect(Board, -CopperHalfL, -GndInner, -FillHalfL, GndInner, eTopLayer);
+        AddRect(Board,  FillHalfL, -GndInner, CopperHalfL,  GndInner, eTopLayer);
     End;
 
     { The die carries metal on ONE face. Giving it a back plane would
