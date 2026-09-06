@@ -106,5 +106,89 @@ class TestFileRoundTrip(unittest.TestCase):
         self.assertEqual(got[0].chip_y, 4.0)
 
 
+class TestPadsStayOnTheDiesCopper(unittest.TestCase):
+    """The die's copper has to come out a clean rectangle.
+
+    Rows used to be grown from one end and stopped at the die edge,
+    which put the last pad of each row over the edge of the die's
+    METAL -- the copper stops CHIP_COPPER_INSET short of the substrate,
+    so "inside the die" is not the same test. The pads nearest each
+    corner overhung by 0.07-0.20 mm and one reached past the die
+    outline itself. United with the ground plane that is four ragged,
+    notched corners; and a wire on an overhanging pad lands on bare
+    silicon rather than metal.
+    """
+
+    def setUp(self):
+        from eigen_mode_analyze import constraints
+
+        self.v = defaults()
+        self.gap = ag.build_params(self.v)["pcb_cpw_gap"]
+        self.bonds = bonds.layout(self.v, self.gap)
+        self.edge = self.v["chip_side"] / 2.0 - constraints.CHIP_COPPER_INSET
+
+    def _pads(self):
+        """Each die-side pad as (x0, x1, y0, y1, kind), the way Altium
+        draws it: bond_pad_length along x by bond_pad_width along y,
+        except signal pads, which are capped to half the trace."""
+        half_x = self.v["bond_pad_length"] / 2.0
+        for b in self.bonds:
+            half_y = (self.v["cpw_trace_width"] / 2.0 if b.kind == bonds.SIGNAL
+                      else self.v["bond_pad_width"]) / 2.0
+            yield (b.chip_x - half_x, b.chip_x + half_x,
+                   b.chip_y - half_y, b.chip_y + half_y, b.kind)
+
+    def test_no_pad_hangs_over_the_edge_of_the_dies_copper(self):
+        for x0, x1, y0, y1, kind in self._pads():
+            for name, value in (("x", max(abs(x0), abs(x1))),
+                                ("y", max(abs(y0), abs(y1)))):
+                self.assertLessEqual(
+                    value, self.edge + 1e-9,
+                    f"a {kind} pad reaches {name}={value:.4f}, past the die's "
+                    f"copper at {self.edge:.4f}",
+                )
+
+    def test_no_pad_reaches_past_the_die_itself(self):
+        die = self.v["chip_side"] / 2.0
+        for x0, x1, y0, y1, _kind in self._pads():
+            self.assertLess(max(abs(x0), abs(x1), abs(y0), abs(y1)), die)
+
+    def test_pads_from_different_edges_do_not_collide_at_the_corners(self):
+        """Bounding each row only by the copper edge is not enough: the
+        rows on the two axes then both reach the corner and their pads
+        overlap. The only pads that may touch are the two signal wires
+        at each end, which meet on the centre line by design."""
+        pads = list(self._pads())
+        for i in range(len(pads)):
+            for j in range(i + 1, len(pads)):
+                a, b = pads[i], pads[j]
+                overlap = (a[0] < b[1] - 1e-9 and b[0] < a[1] - 1e-9
+                           and a[2] < b[3] - 1e-9 and b[2] < a[3] - 1e-9)
+                if overlap:
+                    self.assertEqual(
+                        (a[4], b[4]), (bonds.SIGNAL, bonds.SIGNAL),
+                        f"ground pads overlap: {a} and {b}",
+                    )
+
+    def test_the_rows_along_the_die_sides_are_centred(self):
+        half = self.v["chip_side"] / 2.0
+        side = [b for b in self.bonds if abs(b.pcb_y) > half]
+        self.assertTrue(side)
+        xs = sorted({round(b.chip_x, 9) for b in side})
+        self.assertAlmostEqual(xs[0], -xs[-1], places=9,
+                               msg="the row is off centre, so one end runs long")
+
+    def test_the_die_is_still_bonded_all_the_way_round(self):
+        """Bounding the rows must not bound them out of existence."""
+        half = self.v["chip_side"] / 2.0
+        for name, picked in (
+            ("-x", [b for b in self.bonds if b.pcb_x < -half]),
+            ("+x", [b for b in self.bonds if b.pcb_x > half]),
+            ("-y", [b for b in self.bonds if b.pcb_y < -half]),
+            ("+y", [b for b in self.bonds if b.pcb_y > half]),
+        ):
+            self.assertGreater(len(picked), 4, f"the {name} side lost its bonds")
+
+
 if __name__ == "__main__":
     unittest.main()
