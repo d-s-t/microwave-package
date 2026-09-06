@@ -23,14 +23,20 @@ The arrangement:
     same setback the via fence uses. Landing them at the gap edge puts
     metal where the field between line and ground is strongest.
 
+  * Every pad lands WHOLLY on the die's copper, and no two pads touch.
+    See `_row` for why that needs saying.
+
 There is deliberately no "number of bonds" parameter. The count follows
 from the die size and the pad pitch, which is how it works on the bench:
 you fit as many as the perimeter takes.
 """
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Dict, List
+
+from .constraints import CHIP_COPPER_INSET
 
 SIGNAL = "signal"
 GROUND = "ground"
@@ -49,14 +55,29 @@ class Bond:
     chip_y: float
 
 
-def _frange(start: float, stop: float, step: float) -> List[float]:
-    """Positions from `start` up to `stop`, inclusive of neither end."""
+def _frange(start: float, limit: float, step: float) -> List[float]:
+    """Positions from `start`, none of them past `limit`."""
     out = []
     x = start
-    while x < stop:
+    while x <= limit + 1e-9:
         out.append(x)
         x += step
     return out
+
+
+def _row(limit: float, pitch: float) -> List[float]:
+    """A row of positions on `pitch`, centred, none of them past `limit`.
+
+    Centred rather than started from one end: the die side is rarely a
+    whole number of pitches, and a row grown from one end puts the
+    leftover at the other, so the pads sit off-centre and the last one
+    hangs over the edge.
+    """
+    if limit < 0 or pitch <= 0:
+        return []
+    count = int(math.floor(2.0 * limit / pitch + 1e-9)) + 1
+    first = -pitch * (count - 1) / 2.0
+    return [first + i * pitch for i in range(count)]
 
 
 def layout(values: Dict[str, float], gap: float) -> List[Bond]:
@@ -76,6 +97,29 @@ def layout(values: Dict[str, float], gap: float) -> List[Bond]:
 
     bonds: List[Bond] = []
 
+    # Where the die's copper actually stops. The substrate is the die's
+    # real size, but its metal is pulled in by CHIP_COPPER_INSET, so
+    # this -- not the die edge -- is what a pad has to stay inside.
+    copper_half_l = chip_half_l - CHIP_COPPER_INSET
+    copper_half_s = chip_half_s - CHIP_COPPER_INSET
+
+    # A pad is drawn `inset` along x by `pad_w` along y whichever edge it
+    # sits on, so a row's own bound depends on which way it runs.
+    #
+    # Rows used to run to the die edge in both directions, which put the
+    # last pad of every row over the edge of the die's copper: the pads
+    # nearest each corner hung 0.07-0.20 mm out into bare silicon, and
+    # one corner pad reached past the die outline itself. United with the
+    # ground plane that reads as four ragged, notched corners, and the
+    # wire on the overhanging pad lands on substrate, not metal.
+    end_limit = copper_half_s - pad_w / 2.0
+
+    # The side rows stop a full pitch short of the end rows' line. Bound
+    # only by the copper edge they would still reach x = 2.85 while the
+    # end pads span 2.70..3.00 -- overlapping pads at all four corners,
+    # which is the same ragged outline by another route.
+    side_limit = min(chip_half_l - inset - pitch, copper_half_l - inset / 2.0)
+
     # --- the two feedline ends -----------------------------------------
     for sign in (-1.0, 1.0):
         pcb_x = sign * (chip_half_l + span)
@@ -86,9 +130,9 @@ def layout(values: Dict[str, float], gap: float) -> List[Bond]:
         for wire in (-1.0, 1.0):
             bonds.append(Bond(SIGNAL, pcb_x, wire * offset, chip_x, wire * offset))
 
-        # Ground: out beyond the gap, then every pitch to the die corner.
+        # Ground: out beyond the gap, then every pitch toward the corner.
         first = trace / 2.0 + gap + clearance + pad_w / 2.0
-        for y in _frange(first, chip_half_s, pitch):
+        for y in _frange(first, end_limit, pitch):
             for side in (-1.0, 1.0):
                 bonds.append(Bond(GROUND, pcb_x, side * y, chip_x, side * y))
 
@@ -97,7 +141,7 @@ def layout(values: Dict[str, float], gap: float) -> List[Bond]:
     for sign in (-1.0, 1.0):
         pcb_y = sign * (chip_half_s + span)
         chip_y = sign * (chip_half_s - inset)
-        for x in _frange(-chip_half_l + pitch / 2.0, chip_half_l, pitch):
+        for x in _row(side_limit, pitch):
             bonds.append(Bond(GROUND, x, pcb_y, x, chip_y))
 
     return bonds
