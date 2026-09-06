@@ -35,6 +35,34 @@ GROUND_STRAP = (0.00, -2.45, 4.00, 0.30)
 
 PADS = (SIGNAL_PAD, GROUND_ARM_LEFT, GROUND_ARM_RIGHT, GROUND_STRAP)
 
+# --- the ground land, and the hole in the middle of it ----------------
+#
+# The four pads above are not the whole footprint. The vendor library
+# carries a FIFTH copper shape, and it is not a pad: it is a filled
+# polygon on the copper layer -- a square land with a circular void at
+# its centre and a slot for the signal pad to escape through. Reading
+# only the footprint's pads, which is how this file started, misses it
+# completely.
+#
+# The circle is the anti-pad. It holds ground away from the centre pin
+# and the dielectric around it, and it is what sets the impedance of the
+# coax-to-coplanar transition. It is not decoration and not solder-mask:
+# the vendor cut it out of copper deliberately.
+#
+# Leaving it out does not leave a gap -- it leaves METAL, because a
+# ground plane drawn without knowing about it simply runs straight
+# through. On this board that put ground 0.371 mm from the pin where the
+# vendor asked for 2.25 mm.
+#
+# Numbers read from `fp_poly` on F.Cu in the vendor's own
+# J_Wurth_WR-SMP_60124102122403.kicad_mod (kept in
+# base_parts/altium/vendor/). The polygon is a 100-point circle of
+# r = 2.25 inside a +-2.65 square, with the slot cut at |u| <= 0.95 on
+# the +v side, where the signal pad leaves.
+GROUND_LAND_HALF = 2.65
+VOID_RADIUS = 2.25
+SLOT_HALF_U = 0.95
+
 # The outermost and innermost copper along the signal axis. The outer
 # edge is what gets placed `port_space` from the board edge; the inner
 # edge is how far the launch reaches back onto the board, which is what
@@ -68,6 +96,9 @@ def as_parameters() -> Dict[str, float]:
         values[f"{name}_sv"] = size_v
     values["smp_outer_v"] = OUTER_V
     values["smp_inner_v"] = INNER_V
+    values["smp_land_half"] = GROUND_LAND_HALF
+    values["smp_void_r"] = VOID_RADIUS
+    values["smp_slot_half"] = SLOT_HALF_U
     return values
 
 

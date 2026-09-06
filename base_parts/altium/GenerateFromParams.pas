@@ -78,6 +78,15 @@ Const
       cross-reference as the reminder. }
     ChipCopperInset = 0.15;
 
+    { Facets per launch anti-pad arc. At r = 2.25 mm and roughly 145
+      degrees of arc, 32 puts the chord 0.002 mm off the true circle --
+      far below anything the mesh resolves. }
+    VoidSteps = 32;
+
+    { ArcTan is relied on below; Pi is spelled out rather than assumed to
+      exist, in keeping with the rest of this file's API caution. }
+    PiVal = 3.14159265358979;
+
 Var
     Rpt : TStringList;
 
@@ -158,6 +167,103 @@ Begin
     R.Layer := Lay;
     Board.AddPCBObject(R);
     Announce(Board, R);
+End;
+
+{ One coplanar ground plane, with the connector's anti-pad bitten out of
+  its inner edge.
+
+  The plane is a rectangle from GndInner out to the board edge, except
+  where a launch sits. There the vendor's land pattern calls for a
+  circular void of VoidR about the connector axis -- the anti-pad that
+  holds ground away from the centre pin and the dielectric around it,
+  and which sets the impedance of the coax-to-coplanar transition.
+
+  It has to be cut out HERE, as part of the plane's own outline, rather
+  than drawn as a separate shape. Copper on a layer is united into one
+  body, so a void is not something that can be added; it only exists if
+  the metal around it was never drawn in the first place. Leaving it out
+  does not leave a gap, it leaves metal -- the plane simply runs
+  straight through where the vendor asked for 2.25 mm of clearance.
+
+  The void is not an isolated hole, which is what makes a single contour
+  enough: the CPW corridor already runs through its centre, so the two
+  merge into one connected clearance and the plane stays simply
+  connected. That matters beyond neatness -- ExportCopper reads
+  GetMainContour, so a genuine hole in a region would be dropped from
+  the export without a word.
+
+  The vendor also cuts a slot of SlotHalf either side of the axis where
+  the signal pad leaves the land, from the void out to the land's edge
+  at LandHalf. That is wider than the CPW gap, so the plane steps out to
+  it and back.
+
+  Side is +1 for the plane above the line and -1 for the one below.
+  LaunchX <= 0 means this board has no connector -- the die -- and the
+  plane is then a plain rectangle. }
+Procedure AddGroundPlane(Board : IPCB_Board;
+                         Side, CopperHalfL, CopperHalfS, GndInner,
+                         LaunchX, VoidR, SlotHalf, LandHalf : Double);
+Var
+    Rgn        : IPCB_Region;
+    C          : IPCB_Contour;
+    XOut, XSlot : Double;
+    A1, A2, Ang : Double;
+    i          : Integer;
+Begin
+    Rgn := PCBServer.PCBObjectFactory(eRegionObject, eNoDimension, eCreate_Default);
+    C := PCBServer.PCBContourFactory;
+
+    If (LaunchX <= 0.0) Or (VoidR <= GndInner) Or (VoidR >= CopperHalfS)
+       Or (VoidR <= SlotHalf) Or (LandHalf >= LaunchX) Then
+    Begin
+        C.AddPoint(MMsToCoord(-CopperHalfL), MMsToCoord(Side * GndInner));
+        C.AddPoint(MMsToCoord( CopperHalfL), MMsToCoord(Side * GndInner));
+        C.AddPoint(MMsToCoord( CopperHalfL), MMsToCoord(Side * CopperHalfS));
+        C.AddPoint(MMsToCoord(-CopperHalfL), MMsToCoord(Side * CopperHalfS));
+    End
+    Else
+    Begin
+        { Where the void meets the gap edge, and where it meets the
+          slot. Both ends of the arc have y > 0, so the angles need only
+          ArcTan; ArcTan2 is not relied on. }
+        XOut  := Sqrt(VoidR * VoidR - GndInner * GndInner);
+        XSlot := Sqrt(VoidR * VoidR - SlotHalf * SlotHalf);
+        A1 := PiVal / 2.0 - ArcTan(-XOut / GndInner);
+        A2 := PiVal / 2.0 - ArcTan(XSlot / SlotHalf);
+
+        C.AddPoint(MMsToCoord(-CopperHalfL), MMsToCoord(Side * GndInner));
+
+        { the launch nearer -x: along the gap, over the void, out
+          through the slot. The arc runs from A1 down to A2, which
+          carries it over the top of the void. }
+        For i := 0 To VoidSteps Do
+        Begin
+            Ang := A1 + (A2 - A1) * i / VoidSteps;
+            C.AddPoint(MMsToCoord(-LaunchX + VoidR * Cos(Ang)),
+                       MMsToCoord(Side * VoidR * Sin(Ang)));
+        End;
+        C.AddPoint(MMsToCoord(-LaunchX + LandHalf), MMsToCoord(Side * SlotHalf));
+        C.AddPoint(MMsToCoord(-LaunchX + LandHalf), MMsToCoord(Side * GndInner));
+
+        { and the launch nearer +x, the same shape mirrored }
+        C.AddPoint(MMsToCoord(LaunchX - LandHalf), MMsToCoord(Side * GndInner));
+        C.AddPoint(MMsToCoord(LaunchX - LandHalf), MMsToCoord(Side * SlotHalf));
+        For i := 0 To VoidSteps Do
+        Begin
+            Ang := (PiVal - A2) + (A2 - A1) * i / VoidSteps;
+            C.AddPoint(MMsToCoord(LaunchX + VoidR * Cos(Ang)),
+                       MMsToCoord(Side * VoidR * Sin(Ang)));
+        End;
+
+        C.AddPoint(MMsToCoord(CopperHalfL),  MMsToCoord(Side * GndInner));
+        C.AddPoint(MMsToCoord(CopperHalfL),  MMsToCoord(Side * CopperHalfS));
+        C.AddPoint(MMsToCoord(-CopperHalfL), MMsToCoord(Side * CopperHalfS));
+    End;
+
+    Rgn.SetOutlineContour(C);
+    Rgn.Layer := eTopLayer;
+    Board.AddPCBObject(Rgn);
+    Announce(Board, Rgn);
 End;
 
 Procedure AddVia(Board : IPCB_Board; X, Y, Dia, Hole : Double);
@@ -382,7 +488,8 @@ End;
   see ChipCopperInset's comment for why. }
 Procedure BuildBoard(Board : IPCB_Board; HalfL, HalfS, CopperHalfL, CopperHalfS,
                      Trace, Gap, ViaDia, ViaPitch, ViaClear, TraceHalfL,
-                     FenceHalfL, FenceInnerL, FillHalfL : Double;
+                     FenceHalfL, FenceInnerL, FillHalfL,
+                     LaunchX, VoidR, SlotHalf, LandHalf : Double;
                      WantVias : Boolean; WantBackPlane : Boolean;
                      Var nVias : Integer);
 Var
@@ -397,9 +504,14 @@ Begin
       PCB's copper with no gap between them. }
     AddTrack(Board, -TraceHalfL, 0.0, TraceHalfL, 0.0, Trace, eTopLayer);
 
+    { The coplanar grounds. Not plain rectangles on the package: each
+      carries the connector's circular anti-pad cut out of its inner
+      edge. See AddGroundPlane. }
     GndInner := Trace / 2.0 + Gap;
-    AddRect(Board, -CopperHalfL,  GndInner, CopperHalfL,  CopperHalfS,    eTopLayer);
-    AddRect(Board, -CopperHalfL, -CopperHalfS,    CopperHalfL, -GndInner, eTopLayer);
+    AddGroundPlane(Board,  1.0, CopperHalfL, CopperHalfS, GndInner,
+                   LaunchX, VoidR, SlotHalf, LandHalf);
+    AddGroundPlane(Board, -1.0, CopperHalfL, CopperHalfS, GndInner,
+                   LaunchX, VoidR, SlotHalf, LandHalf);
 
     { Ground BEHIND each launch -- between the connector's outermost
       ground land and the board edge, and nowhere else.
@@ -589,6 +701,11 @@ Begin
                      leaves the whole footprint interior alone }
                    SmpOrigin - ParamOf(P, 'smp_strap_v', -2.45)
                              - ParamOf(P, 'smp_strap_sv', 0.3) / 2.0,
+                   { the launch axis, and the vendor's anti-pad around it }
+                   SmpOrigin,
+                   ParamOf(P, 'smp_void_r', 2.25),
+                   ParamOf(P, 'smp_slot_half', 0.95),
+                   ParamOf(P, 'smp_land_half', 2.65),
                    True, True, nVias);
         Say('package_vias=' + IntToStr(nVias));
         Say('package_body=ok');
@@ -678,6 +795,9 @@ Begin
                        ChipHalfL - ChipCopperInset, ChipHalfS - ChipCopperInset,
                        Trace, ChipGap, ViaDia, ViaPitch, ViaClear,
                        ChipHalfL - ChipCopperInset, ChipHalfL, 0.0, ChipHalfL,
+                       { no connector on the die, so no anti-pad either --
+                         its ground planes stay plain rectangles }
+                       0.0, 0.0, 0.0, 0.0,
                        False, False, nVias);
             Say('chip_body=ok');
         Except

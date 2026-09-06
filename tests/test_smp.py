@@ -133,3 +133,109 @@ class TestTheConnectorModel(unittest.TestCase):
 
         patterns = [rule[0] for rule in model_builder.MATERIAL_RULES]
         self.assertTrue(any(p in "connector_1" for p in patterns))
+
+
+class TestOurNumbersStillMatchTheVendorFile(unittest.TestCase):
+    """Read the vendor footprint and check nothing has been left out.
+
+    The tests above assert our constants equal the values written in
+    this file, which is worth having but could never catch the bug it
+    was written after: the land pattern has FIVE copper shapes and only
+    four of them are pads. The fifth -- the ground land with the
+    circular anti-pad in it -- was missed for exactly that reason, and
+    reading pads alone will miss it again.
+
+    So this reads the shipped footprint and accounts for every copper
+    shape in it, rather than a chosen subset.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        import re
+        from pathlib import Path
+
+        path = (Path(__file__).resolve().parents[1] / "base_parts" / "altium" /
+                "vendor" / "J_Wurth_WR-SMP_60124102122403.kicad_mod")
+        cls.path = path
+        text = path.read_text(encoding="utf-8")
+
+        cls.pads = []
+        for m in re.finditer(
+            r'\(pad "(\d)" smd rect \(at ([-0-9.]+) ([-0-9.]+)(?: ([-0-9.]+))?\)'
+            r' \(size ([-0-9.]+) ([-0-9.]+)\)', text
+        ):
+            u, v = float(m.group(2)), float(m.group(3))
+            rot = float(m.group(4) or 0.0)
+            su, sv = float(m.group(5)), float(m.group(6))
+            if abs(rot) % 180 == 90:          # a quarter turn swaps the sizes
+                su, sv = sv, su
+            cls.pads.append((m.group(1), u, v, su, sv))
+
+        cls.polys = []
+        for m in re.finditer(r"\(fp_poly", text):
+            i, depth = m.start(), 0
+            for j in range(i, len(text)):
+                if text[j] == "(":
+                    depth += 1
+                elif text[j] == ")":
+                    depth -= 1
+                    if depth == 0:
+                        break
+            block = text[i:j + 1]
+            layer = re.search(r'\(layer "([^"]+)"', block).group(1)
+            pts = [(float(a), float(b)) for a, b in
+                   re.findall(r"\(xy ([-0-9.]+) ([-0-9.]+)\)", block)]
+            cls.polys.append((layer, pts))
+
+    def test_the_footprint_is_where_we_say_it_is(self):
+        self.assertTrue(self.path.is_file(), f"vendor footprint missing: {self.path}")
+
+    def test_every_pad_is_one_we_model(self):
+        ours = {tuple(round(x, 6) for x in p) for p in smp.PADS}
+        theirs = {tuple(round(x, 6) for x in p[1:]) for p in self.pads}
+        self.assertEqual(theirs, ours)
+
+    def test_the_copper_layer_has_exactly_one_shape_that_is_not_a_pad(self):
+        """If the vendor ever adds another, this fails rather than the
+        shape quietly not existing on our board."""
+        copper = [pts for layer, pts in self.polys if layer == "F.Cu"]
+        self.assertEqual(len(copper), 1, "unmodelled copper in the vendor footprint")
+
+    def test_the_ground_land_is_the_square_we_model(self):
+        pts = [pts for layer, pts in self.polys if layer == "F.Cu"][0]
+        half = smp.GROUND_LAND_HALF
+        self.assertAlmostEqual(max(u for u, _v in pts), half, places=6)
+        self.assertAlmostEqual(max(v for _u, v in pts), half, places=6)
+        self.assertAlmostEqual(min(u for u, _v in pts), -half, places=6)
+        self.assertAlmostEqual(min(v for _u, v in pts), -half, places=6)
+
+    def test_the_void_in_it_is_the_radius_we_model(self):
+        """The anti-pad. It is drawn as a many-sided polygon, so this
+        checks the points that lie on it, not a stated radius."""
+        import math
+
+        pts = [pts for layer, pts in self.polys if layer == "F.Cu"][0]
+        on_arc = [math.hypot(u, v) for u, v in pts
+                  if abs(math.hypot(u, v) - smp.VOID_RADIUS) < 0.05]
+        self.assertGreater(len(on_arc), 50, "no circular void found in the ground land")
+        for r in on_arc:
+            self.assertAlmostEqual(r, smp.VOID_RADIUS, places=2)
+
+    def test_the_signal_pads_escape_slot_is_the_width_we_model(self):
+        pts = [pts for layer, pts in self.polys if layer == "F.Cu"][0]
+        # Where the slot opens through the land's edge: the only points
+        # on that edge that are not its corners.
+        half = smp.GROUND_LAND_HALF
+        mouth = sorted({round(u, 6) for u, v in pts
+                        if abs(abs(round(v, 6)) - half) < 1e-9
+                        and abs(u) < half - 1e-9})
+        self.assertEqual(mouth, [-smp.SLOT_HALF_U, smp.SLOT_HALF_U])
+
+    def test_the_land_reaches_the_arms_so_the_void_does_not_swallow_them(self):
+        """The vendor leaves 0.05 mm between the void and the nearest
+        ground arm. Our board cuts the void out of a plane the arms sit
+        in, so if that margin ever went negative the arms would be
+        floating in the clearance instead of connected to ground."""
+        nearest = min(abs(u) - su / 2.0 for _n, u, _v, su, _sv in self.pads
+                      if abs(u) > 1.0)
+        self.assertGreater(nearest, smp.VOID_RADIUS)

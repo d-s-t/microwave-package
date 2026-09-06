@@ -339,22 +339,55 @@ def build(
     return created
 
 
-def _extrude_polygon(modeler, points, base, height, frame: Frame) -> str:
-    """A region as a solid box.
+def _is_rectangle(points) -> bool:
+    """Whether a region is an axis-aligned rectangle."""
+    if len(points) != 4:
+        return False
+    us = {round(u, 9) for u, _v in points}
+    vs = {round(v, 9) for _u, v in points}
+    return len(us) == 2 and len(vs) == 2
 
-    Every region this pipeline draws is an axis-aligned rectangle --
-    AddRect in the generator never emits anything else -- so this is a
-    box rather than a thickened sheet. `thicken_sheet`'s extrusion
-    direction follows the sheet's normal, which depends on the
-    polyline's point winding order; that winding is not something this
-    code controls once points have gone through the coordinate frame's
-    own reflection (v negated), so the sign is not trustworthy. A box's
+
+def _extrude_polygon(modeler, points, base, height, frame: Frame) -> str:
+    """A region as a solid.
+
+    Rectangles -- which is most of what the generator draws -- become
+    boxes. `thicken_sheet`'s extrusion direction follows the sheet's
+    normal, which depends on the polyline's winding order, and that
+    winding is not something this code controls once points have gone
+    through the coordinate frame's own reflection (v negated). A box's
     origin and size are unambiguous regardless of winding.
+
+    Anything else is swept instead, along an EXPLICIT vector, which
+    keeps the same property: the direction is stated here rather than
+    inferred from the outline.
+
+    The shaped case is not hypothetical and must not fall back to a
+    bounding box. The coplanar ground planes carry the connector's
+    circular anti-pad cut out of their inner edge, and a bounding box
+    would fill that void back in with solid copper -- silently, since
+    the layer is united into one body afterwards and the result looks
+    exactly like a correctly-built plane.
     """
-    us = [u for u, _v in points]
-    vs = [v for _u, v in points]
-    origin, sizes = frame.box(min(us), min(vs), max(us), max(vs), base, height)
-    return modeler.create_box(origin=origin, sizes=sizes).name
+    if _is_rectangle(points):
+        us = [u for u, _v in points]
+        vs = [v for _u, v in points]
+        origin, sizes = frame.box(min(us), min(vs), max(us), max(vs), base, height)
+        return modeler.create_box(origin=origin, sizes=sizes).name
+
+    sheet = modeler.create_polyline(
+        points=[frame.point(u, v, base) for u, v in points],
+        close_surface=True,
+        cover_surface=True,
+    )
+    # `height` is along the up axis, which is Y in assembly axes, and is
+    # negative for the bottom layer -- the vector carries that sign.
+    if not modeler.sweep_along_vector(sheet.name, [0.0, height, 0.0]):
+        raise RuntimeError(
+            f"could not sweep region {sheet.name} into a solid; it would "
+            f"remain a sheet and carry no copper"
+        )
+    return sheet.name
 
 
 def _cylinder(modeler, frame: Frame, u: float, v: float, w_base: float,
