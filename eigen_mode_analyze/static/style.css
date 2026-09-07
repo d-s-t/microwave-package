@@ -52,6 +52,8 @@ details.collapsible table{margin-top:.5rem}
 
 /* --- run list --------------------------------------------------- */
 table.runs td{vertical-align:middle}
+table.runs [hidden]{display:none}
+table.runs tfoot td{text-align:center;border:1px solid var(--line)}
 tr.run-row{cursor:pointer}
 tr.run-row:hover{background:var(--surface-hover)}
 tr.run-row:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}

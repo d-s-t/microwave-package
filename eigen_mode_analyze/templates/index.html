@@ -34,11 +34,9 @@
   h4 + p.muted{margin-top:0}
   details.collapsible fieldset{margin-top:.6rem}
   .setting-note{margin:.15rem 0 .5rem 1.6rem;max-width:46rem}
-  /* A run with no distorted combination never uses these, so they are
-     dimmed rather than hidden -- what you typed stays visible. */
-  #distortion-geometry.unused{opacity:.5}
-  #distortion-geometry .unused-note{display:none;font-style:italic}
-  #distortion-geometry.unused .unused-note{display:inline}
+  /* A run with no distorted combination never uses these boxes, so the
+     whole section is hidden (JS toggles [hidden]) rather than left on
+     screen to be filled in for nothing. */
   /* How much room is left for each distortion parameter. Recomputed as
      the form changes, and turned red once a box is past its own limit --
      that combination would be skipped rather than built. */
@@ -100,8 +98,9 @@
 </span>
 {%- endmacro %}
 
-{% macro run_row(r) -%}
-<tr class="run-row" tabindex="0" data-href="{{ url_for('run_status', run_id=r.run_id) }}">
+{% macro run_row(r, extra=false) -%}
+<tr class="run-row{% if extra %} run-extra{% endif %}" tabindex="0"
+    data-href="{{ url_for('run_status', run_id=r.run_id) }}"{% if extra %} hidden{% endif %}>
   <td>
     <a class="run-name" href="{{ url_for('run_status', run_id=r.run_id) }}">{{ r.name }}</a>
     <span class="run-id">{% if r.label and r.date_text %}{{ r.date_text }} · {% endif %}{{ r.started_ago }}</span>
@@ -119,19 +118,21 @@
 
 <h2>Runs</h2>
 {% if runs %}
-{% set recent = 12 %}
+{% set recent = 3 %}
 <table class="runs">
-<tr><th>Run</th><th>Swept</th><th>Progress</th><th>Stage</th></tr>
+<thead><tr><th>Run</th><th>Swept</th><th>Progress</th><th>Stage</th></tr></thead>
+<tbody>
 {% for r in runs[:recent] %}{{ run_row(r) }}{% endfor %}
-</table>
+{% for r in runs[recent:] %}{{ run_row(r, extra=true) }}{% endfor %}
+</tbody>
 {% if runs|length > recent %}
-<details class="collapsible">
-  <summary>{{ runs|length - recent }} older run{{ "" if runs|length - recent == 1 else "s" }}</summary>
-  <table class="runs">
-  {% for r in runs[recent:] %}{{ run_row(r) }}{% endfor %}
-  </table>
-</details>
+<tfoot id="runs-more-row">
+  <tr><td colspan="4">
+    <button type="button" class="mini" id="runs-more">Show {{ runs|length - recent }} more</button>
+  </td></tr>
+</tfoot>
 {% endif %}
+</table>
 {% else %}
 <p class="muted">No runs yet.</p>
 {% endif %}
@@ -228,9 +229,8 @@
   </fieldset>
 
   {% if distortion_group %}
-  <div id="distortion-geometry">
-    <h4>{{ distortion_group.title }}
-      <span class="muted unused-note">-- not used by this run</span></h4>
+  <div id="distortion-geometry"{% if distortion_mode == 'none' %} hidden{% endif %}>
+    <h4>{{ distortion_group.title }}</h4>
     <p class="muted">{{ distortion_group.hint }}</p>
     <p class="muted">A combination whose distortion cannot fit on the PCB is skipped rather than
       built -- the run page says which one and why. The radius has to fit with the chip, its wire
@@ -347,9 +347,10 @@
   });
 })();
 
-// The distortion geometry only applies to combinations built distorted.
-// Picking "Without distortions" dims it, so it is obvious those boxes
-// will not be used before the run is started rather than afterwards.
+// The distortion geometry only applies to combinations built distorted,
+// so "Without distortions" hides the section entirely -- there is nothing
+// useful to type there for such a run. The inputs stay in the form
+// (hidden inputs still submit) but the server ignores them for this mode.
 (function () {
   var section = document.getElementById('distortion-geometry');
   if (!section) { return; }
@@ -357,11 +358,23 @@
 
   function sync() {
     var chosen = document.querySelector('input[name="distortion_mode"]:checked');
-    section.classList.toggle('unused', !!chosen && chosen.value === 'none');
+    section.hidden = !!chosen && chosen.value === 'none';
   }
 
   radios.forEach(function (radio) { radio.addEventListener('change', sync); });
   sync();
+})();
+
+// "Show N more" reveals the rest of the run rows in place, continuing the
+// same table, and then removes itself.
+(function () {
+  var button = document.getElementById('runs-more');
+  if (!button) { return; }
+  button.addEventListener('click', function () {
+    document.querySelectorAll('tr.run-extra').forEach(function (row) { row.hidden = false; });
+    var foot = document.getElementById('runs-more-row');
+    if (foot) { foot.hidden = true; }
+  });
 })();
 
 // How much room is left for each distortion parameter, kept in step with
@@ -497,16 +510,22 @@
   }
 
   function update() {
+    var mode = document.querySelector('input[name="distortion_mode"]:checked');
+    // With no distorted combination, the distortion geometry is dropped
+    // by the server, so it must not count towards the total here either.
+    var ignoreGeom = mode && mode.value === 'none';
+
     var total = 1, dims = 0, approx = false;
     document.querySelectorAll('input.range').forEach(function (b) {
+      var name = b.name.replace(/^range_/, '');
+      if (ignoreGeom && distortionGeom.indexOf(name) !== -1) { return; }
       var n = count(b.value);
       if (n > 1) {
         dims++;
         total *= n;
-        if (distortionGeom.indexOf(b.name.replace(/^range_/, '')) !== -1) { approx = true; }
+        if (distortionGeom.indexOf(name) !== -1) { approx = true; }
       }
     });
-    var mode = document.querySelector('input[name="distortion_mode"]:checked');
     if (mode && mode.value === 'both') { total *= 2; }
 
     if (dims === 0 && !(mode && mode.value === 'both')) {
