@@ -3,13 +3,14 @@
 <head>
 <meta charset="utf-8">
 <title>Eigenmode Analysis</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><path d='M1 9c2.5 0 2.5-6 4.5-6S8 13 10 13s2.2-8 4-8 1 3 2 3' fill='none' stroke='%232E86AB' stroke-width='1.6' stroke-linecap='round'/></svg>">
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 <style>
-  /* Colour tokens and the theme switch live in _theme.html. */
+  /* Base rules and colour tokens live in static/style.css + _theme.html;
+     only the new-run form's own styling is here. */
   /* the bottom padding keeps the floating Start run button from ever
      covering the last row of the page */
-  body{font-family:system-ui,sans-serif;max-width:900px;margin:2rem auto;padding:0 1rem 5.5rem;
-    color:var(--fg);background:var(--bg)}
-  h1,h2,h3{margin-top:2rem}
+  body{padding-bottom:5.5rem}
   table{border-collapse:collapse;width:100%;margin-top:.5rem}
   td,th{border:1px solid var(--line);padding:.4rem .6rem;text-align:left}
   input[type=text],input[type=number]{width:9rem;padding:.2rem}
@@ -31,17 +32,11 @@
   .unit-micron{color:var(--accent);font-weight:600}
   h4{margin:1.6rem 0 .2rem}
   h4 + p.muted{margin-top:0}
-  details.collapsible{margin-top:1.4rem;border:1px solid var(--line-soft);border-radius:6px;
-    padding:.5rem .8rem}
-  details.collapsible summary{cursor:pointer;font-weight:600}
-  details.collapsible[open] summary{margin-bottom:.3rem}
   details.collapsible fieldset{margin-top:.6rem}
   .setting-note{margin:.15rem 0 .5rem 1.6rem;max-width:46rem}
-  /* A run with no distorted combination never uses these, so they are
-     dimmed rather than hidden -- what you typed stays visible. */
-  #distortion-geometry.unused{opacity:.5}
-  #distortion-geometry .unused-note{display:none;font-style:italic}
-  #distortion-geometry.unused .unused-note{display:inline}
+  /* A run with no distorted combination never uses these boxes, so the
+     whole section is hidden (JS toggles [hidden]) rather than left on
+     screen to be filled in for nothing. */
   /* How much room is left for each distortion parameter. Recomputed as
      the form changes, and turned red once a box is past its own limit --
      that combination would be skipped rather than built. */
@@ -65,9 +60,6 @@
   fieldset{margin-bottom:1rem;border:1px solid var(--line-soft);border-radius:6px}
   label{display:inline-block;margin:.2rem 0}
   .muted{color:var(--muted);font-size:.9em}
-  a.button,button{display:inline-block;padding:.5rem 1rem;background:var(--accent);color:#fff;border:none;
-    border-radius:4px;text-decoration:none;cursor:pointer;font-size:1em}
-  a.button:hover,button:hover{background:var(--accent-hover)}
 
   /* Parameter drawings: a thumbnail per row that opens full size on click.
      The SVGs are inlined and stroked in `currentColor`, so they inherit the
@@ -94,7 +86,57 @@
 </head>
 <body>
 {% include "_theme.html" %}
-<h1>Eigenmode Analysis</h1>
+<header class="topbar">
+  <a href="{{ url_for('index') }}" class="brand">Eigenmode Analysis</a>
+</header>
+
+{% macro progress_bar(p) -%}
+<span class="progress" title="{{ p.done }} done · {{ p.failed }} failed · {{ p.pending }} to go{% if p.skipped %} ({{ p.skipped }} skipped, not counted){% endif %}">
+{%- if p.total -%}
+<i class="d" style="width:{{ (100.0 * p.done / p.total)|round(1) }}%"></i><i class="f" style="width:{{ (100.0 * p.failed / p.total)|round(1) }}%"></i>
+{%- endif -%}
+</span>
+{%- endmacro %}
+
+{% macro run_row(r, extra=false) -%}
+<tr class="run-row{% if extra %} run-extra{% endif %}" tabindex="0"
+    data-run-id="{{ r.run_id }}"
+    data-href="{{ url_for('run_status', run_id=r.run_id) }}"{% if extra %} hidden{% endif %}>
+  <td>
+    <a class="run-name" href="{{ url_for('run_status', run_id=r.run_id) }}">{{ r.name }}</a>
+    <span class="run-id">{% if r.label and r.date_text %}{{ r.date_text }} · {% endif %}{{ r.started_ago }}</span>
+  </td>
+  <td class="run-swept">{{ r.swept_text or "—" }}</td>
+  <td>
+    <span class="bar-cell">
+      {{ progress_bar(r) }}
+      <span class="progress-num">{% if r.total %}{{ r.done }}/{{ r.total }}{% else %}&mdash;{% endif %}{% if r.failed %} · {{ r.failed }} failed{% endif %}{% if r.skipped %} · {{ r.skipped }} skipped{% endif %}</span>
+    </span>
+  </td>
+  <td><span class="pill {{ r.stage_display.kind }}">{{ r.stage_display.label }}</span></td>
+</tr>
+{%- endmacro %}
+
+<h2>Runs</h2>
+{% if runs %}
+{% set recent = 3 %}
+<table class="runs">
+<thead><tr><th>Run</th><th>Swept</th><th>Progress</th><th>Stage</th></tr></thead>
+<tbody>
+{% for r in runs[:recent] %}{{ run_row(r) }}{% endfor %}
+{% for r in runs[recent:] %}{{ run_row(r, extra=true) }}{% endfor %}
+</tbody>
+{% if runs|length > recent %}
+<tfoot id="runs-more-row">
+  <tr><td colspan="4">
+    <button type="button" class="mini" id="runs-more">Show {{ runs|length - recent }} more</button>
+  </td></tr>
+</tfoot>
+{% endif %}
+</table>
+{% else %}
+<p class="muted">No runs yet.</p>
+{% endif %}
 
 <h2>Start a new run</h2>
 
@@ -102,7 +144,7 @@
   <label for="from_run">Start from an earlier run:</label>
   <select id="from_run" name="from_run">
     {% for r in runs %}
-    <option value="{{ r.run_id }}" {% if r.run_id == loaded_from %}selected{% endif %}>{{ r.run_id }}</option>
+    <option value="{{ r.run_id }}" {% if r.run_id == loaded_from %}selected{% endif %}>{{ r.name }}{% if r.swept_text %} · {{ r.swept_text }}{% endif %}</option>
     {% endfor %}
   </select>
   <button type="submit">Load its settings</button>
@@ -115,6 +157,9 @@
 </form>
 
 <form method="post" action="{{ url_for('new_run') }}">
+  <p><label>Name <span class="muted">(optional)</span>
+    <input type="text" name="label" maxlength="80" placeholder="e.g. pedestal depth sweep" style="width:20rem"></label></p>
+
   <h3>Parameters</h3>
   <p class="muted">A box with one value pins that parameter for the run; a box with several values
     sweeps it. Leave a box empty to keep the parameter at the equation file's own value, which is
@@ -185,9 +230,8 @@
   </fieldset>
 
   {% if distortion_group %}
-  <div id="distortion-geometry">
-    <h4>{{ distortion_group.title }}
-      <span class="muted unused-note">-- not used by this run</span></h4>
+  <div id="distortion-geometry"{% if distortion_mode == 'none' %} hidden{% endif %}>
+    <h4>{{ distortion_group.title }}</h4>
     <p class="muted">{{ distortion_group.hint }}</p>
     <p class="muted">A combination whose distortion cannot fit on the PCB is skipped rather than
       built -- the run page says which one and why. The radius has to fit with the chip, its wire
@@ -251,23 +295,9 @@
   </fieldset>
   </details>
 
+  <div class="combo-count" id="combo-count" aria-live="polite"></div>
   <button type="submit" class="start-run">Start run</button>
 </form>
-
-<h2>Existing runs</h2>
-{% if runs %}
-<table>
-<tr><th>Run</th><th>Stage</th><th>Done</th><th>Failed</th><th>Total</th><th></th></tr>
-{% for r in runs %}
-<tr>
-  <td>{{ r.run_id }}</td><td>{{ r.stage }}</td><td>{{ r.done }}</td><td>{{ r.failed }}</td><td>{{ r.total }}</td>
-  <td><a class="button" href="{{ url_for('run_status', run_id=r.run_id) }}">Open</a></td>
-</tr>
-{% endfor %}
-</table>
-{% else %}
-<p class="muted">No runs yet.</p>
-{% endif %}
 
 <div id="lightbox" hidden>
   <div class="panel" role="dialog" aria-modal="true" aria-labelledby="lightbox-title">
@@ -318,9 +348,10 @@
   });
 })();
 
-// The distortion geometry only applies to combinations built distorted.
-// Picking "Without distortions" dims it, so it is obvious those boxes
-// will not be used before the run is started rather than afterwards.
+// The distortion geometry only applies to combinations built distorted,
+// so "Without distortions" hides the section entirely -- there is nothing
+// useful to type there for such a run. The inputs stay in the form
+// (hidden inputs still submit) but the server ignores them for this mode.
 (function () {
   var section = document.getElementById('distortion-geometry');
   if (!section) { return; }
@@ -328,11 +359,23 @@
 
   function sync() {
     var chosen = document.querySelector('input[name="distortion_mode"]:checked');
-    section.classList.toggle('unused', !!chosen && chosen.value === 'none');
+    section.hidden = !!chosen && chosen.value === 'none';
   }
 
   radios.forEach(function (radio) { radio.addEventListener('change', sync); });
   sync();
+})();
+
+// "Show N more" reveals the rest of the run rows in place, continuing the
+// same table, and then removes itself.
+(function () {
+  var button = document.getElementById('runs-more');
+  if (!button) { return; }
+  button.addEventListener('click', function () {
+    document.querySelectorAll('tr.run-extra').forEach(function (row) { row.hidden = false; });
+    var foot = document.getElementById('runs-more-row');
+    if (foot) { foot.hidden = true; }
+  });
 })();
 
 // How much room is left for each distortion parameter, kept in step with
@@ -442,6 +485,124 @@
   render();
 })();
 {% endif %}
+
+// A live count of how many models this form would build, so a sweep that
+// expands to thousands is obvious before it is started rather than after.
+// The distortion geometry only multiplies the distorted combinations, so
+// once one of those boxes is in play the number is shown as approximate.
+(function () {
+  var out = document.getElementById('combo-count');
+  if (!out) { return; }
+  var distortionGeom = {{ distortion_geometry_params | tojson }};
+
+  function count(text) {
+    text = (text || '').trim();
+    if (!text) { return 1; }
+    if (text.indexOf(':') !== -1) {
+      var p = text.split(':').map(Number);
+      if (p.length < 2 || p.length > 3 || p.some(isNaN)) { return 1; }
+      var step = p.length === 3 ? p[2] : 1;
+      if (!step) { return 1; }
+      var n = Math.round((p[1] - p[0]) / step);
+      return n < 0 ? 1 : n + 1;
+    }
+    var vals = text.split(',').map(function (s) { return s.trim(); }).filter(Boolean);
+    return vals.length || 1;
+  }
+
+  function update() {
+    var mode = document.querySelector('input[name="distortion_mode"]:checked');
+    // With no distorted combination, the distortion geometry is dropped
+    // by the server, so it must not count towards the total here either.
+    var ignoreGeom = mode && mode.value === 'none';
+
+    var total = 1, dims = 0, approx = false;
+    document.querySelectorAll('input.range').forEach(function (b) {
+      var name = b.name.replace(/^range_/, '');
+      if (ignoreGeom && distortionGeom.indexOf(name) !== -1) { return; }
+      var n = count(b.value);
+      if (n > 1) {
+        dims++;
+        total *= n;
+        if (distortionGeom.indexOf(name) !== -1) { approx = true; }
+      }
+    });
+    if (mode && mode.value === 'both') { total *= 2; }
+
+    if (dims === 0 && !(mode && mode.value === 'both')) {
+      out.textContent = '1 model build';
+    } else {
+      out.textContent = (approx ? '≈ ' : '= ') + total.toLocaleString() + ' model builds';
+    }
+    out.classList.toggle('warn', total > 200);
+  }
+
+  document.addEventListener('input', function (e) {
+    if (e.target.matches('input.range')) { update(); }
+  });
+  document.addEventListener('change', function (e) {
+    if (e.target.matches('input[name="distortion_mode"]')) { update(); }
+  });
+  update();
+})();
+
+// The whole run row is a link to that run's page; the explicit name link
+// keeps it reachable by keyboard and screen reader.
+(function () {
+  document.querySelectorAll('tr.run-row').forEach(function (tr) {
+    tr.addEventListener('click', function (e) {
+      if (e.target.closest('a, button')) { return; }
+      window.location.href = tr.dataset.href;
+    });
+    tr.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter') { window.location.href = tr.dataset.href; }
+    });
+  });
+})();
+
+// Keep the run list's progress bars and stage pills current while a run
+// is going, without reloading -- the page holds the new-run form, so it
+// only ever patches rows that are already there and never reloads.
+(function () {
+  var table = document.querySelector('table.runs');
+  if (!table) { return; }
+  var KINDS = ['ok', 'bad', 'busy', 'muted'];
+
+  function patch(runs) {
+    var byId = {};
+    runs.forEach(function (r) { byId[r.run_id] = r; });
+    table.querySelectorAll('tr[data-run-id]').forEach(function (row) {
+      var r = byId[row.dataset.runId];
+      if (!r) { return; }
+      var d = row.querySelector('.progress i.d');
+      var f = row.querySelector('.progress i.f');
+      if (d && r.total) {
+        d.style.width = (100 * r.done / r.total).toFixed(1) + '%';
+        f.style.width = (100 * r.failed / r.total).toFixed(1) + '%';
+      }
+      var num = row.querySelector('.progress-num');
+      if (num) {
+        var t = r.total ? (r.done + '/' + r.total) : '—';
+        if (r.failed) { t += ' · ' + r.failed + ' failed'; }
+        if (r.skipped) { t += ' · ' + r.skipped + ' skipped'; }
+        num.textContent = t;
+      }
+      var pill = row.querySelector('.pill');
+      if (pill && r.stage_display) {
+        pill.textContent = r.stage_display.label;
+        KINDS.forEach(function (k) { pill.classList.toggle(k, k === r.stage_display.kind); });
+      }
+    });
+  }
+
+  async function poll() {
+    try {
+      var res = await fetch("{{ url_for('runs_json') }}");
+      if (res.ok) { patch(await res.json()); }
+    } catch (e) { /* transient -- try again next tick */ }
+  }
+  setInterval(poll, 5000);
+})();
 </script>
 </body>
 </html>

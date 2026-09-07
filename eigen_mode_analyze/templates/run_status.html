@@ -2,30 +2,23 @@
 <html>
 <head>
 <meta charset="utf-8">
-<title>Run {{ run.run_id }}</title>
+<title>{{ run_name }}</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><path d='M1 9c2.5 0 2.5-6 4.5-6S8 13 10 13s2.2-8 4-8 1 3 2 3' fill='none' stroke='%232E86AB' stroke-width='1.6' stroke-linecap='round'/></svg>">
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 <style>
-  /* Colour tokens and the theme switch live in _theme.html. */
-  body{font-family:system-ui,sans-serif;max-width:900px;margin:2rem auto;padding:0 1rem;
-    color:var(--fg);background:var(--bg)}
-  a{color:var(--accent)}
+  /* Base rules and colour tokens live in static/style.css + _theme.html;
+     only this page's own components are here. */
   table{border-collapse:collapse;width:100%}
   td,th{border:1px solid var(--line);padding:.4rem .6rem;text-align:left;font-size:.9em}
   .muted{color:var(--muted)}
-  .status-done{color:var(--ok);font-weight:600}
-  .status-failed{color:var(--bad);font-weight:600}
-  .status-in_progress,.status-running{color:var(--busy);font-weight:600}
-  .status-pending,.status-None,.status-null,.status-undefined{color:var(--muted)}
-  a.button,button{display:inline-block;padding:.5rem 1rem;background:var(--accent);color:#fff;border:none;
-    border-radius:4px;text-decoration:none;cursor:pointer;font-size:1em}
-  a.button:hover,button:hover{background:var(--accent-hover)}
   td.row-actions a{margin-right:.5rem}
-  button.mini{padding:.25rem .6rem;font-size:.8em;margin-right:.4rem}
-  button.mini:disabled{opacity:.55;cursor:progress}
   .row-msg{font-size:.85em}
   /* transparent so the figure sits on the page's own background in
-     either theme -- the plot is rendered with a see-through canvas */
-  iframe{width:100%;height:600px;border:1px solid var(--line);margin-top:1rem;background:transparent}
-  iframe.heatmap{height:680px}
+     either theme -- the plot is rendered with a see-through canvas.
+     Height follows the window so a big screen gets a big plot. */
+  iframe{width:100%;height:clamp(460px,72vh,900px);border:1px solid var(--line);
+    margin-top:1rem;background:transparent}
+  iframe.heatmap{height:clamp(500px,76vh,960px)}
   .axis-picker{display:flex;align-items:center;gap:.5rem;flex-wrap:wrap;margin:.75rem 0;
     padding:.6rem .8rem;border:1px solid var(--line-soft);border-radius:6px}
   .axis-picker label{font-weight:600;font-size:.9em}
@@ -46,12 +39,7 @@
   /* A combination that was never built because its geometry does not
      fit: dimmed, with the reason spelled out under its name. */
   tr.skipped td{opacity:.75}
-  .status-skipped{color:var(--busy);font-weight:600}
   .skip-reason{font-size:.85em;color:var(--muted);font-style:italic}
-  details.collapsible{margin-top:1.5rem;border:1px solid var(--line-soft);border-radius:6px;
-    padding:.5rem .8rem}
-  details.collapsible summary{cursor:pointer;font-weight:600}
-  details.collapsible table{margin-top:.5rem}
 
   /* Results filter: one toggle per distinct value of each swept
      parameter, so a point can be hidden without re-running anything. */
@@ -123,10 +111,46 @@
 </head>
 <body>
 {% include "_theme.html" %}
-<p><a href="{{ url_for('index') }}">&larr; back</a></p>
-<h1>Run {{ run.run_id }}</h1>
-<p>Stage: <strong id="stage">{{ run.state.stage }}</strong>
-   -- <span id="running-indicator">{{ "running" if is_running else "not running" }}</span></p>
+<header class="topbar">
+  <a href="{{ url_for('index') }}" class="brand">&larr; Eigenmode Analysis</a>
+</header>
+
+{% macro progress_bar(p) -%}
+<span class="progress" title="{{ p.done }} done · {{ p.failed }} failed · {{ p.pending }} to go{% if p.skipped %} ({{ p.skipped }} skipped, not counted){% endif %}">
+{%- if p.total -%}
+<i class="d" style="width:{{ (100.0 * p.done / p.total)|round(1) }}%"></i><i class="f" style="width:{{ (100.0 * p.failed / p.total)|round(1) }}%"></i>
+{%- endif -%}
+</span>
+{%- endmacro %}
+
+<h1>{{ run_name }}</h1>
+<p class="muted" style="margin-top:-.6rem">
+  {{ run.run_id }}
+  <span style="margin-left:.4rem">
+    <form method="post" action="{{ url_for('set_run_label', run_id=run.run_id) }}"
+          style="display:inline-flex;gap:.3rem;vertical-align:middle">
+      <input type="text" name="label" value="{{ run.label }}" placeholder="name this run…"
+             maxlength="80" style="font-size:.9em;padding:.15rem .35rem">
+      <button type="submit" class="mini">Save name</button>
+    </form>
+  </span>
+</p>
+
+<div class="statusbar">
+  <div class="line1">
+    <span class="pill {{ stage_display.kind }}" id="stage">{{ stage_display.label }}</span>
+    <span class="pill idle" id="running-indicator">{{ "running" if is_running else "idle" }}</span>
+  </div>
+  <div class="bar-wrap">
+    {{ progress_bar(progress) }}
+    <span class="progress-num" id="progress-num"></span>
+  </div>
+  <div class="timing">
+    {%- if started_text %}started {{ started_text }}{% endif -%}
+    {%- if duration_text %} · ran {{ duration_text }}
+    {%- elif updated_text %} · updated <span id="updated-ago">{{ updated_text }}</span>{% endif -%}
+  </div>
+</div>
 
 {% if run.state.stage == "geometry_ready" %}
 <div class="note-box">
@@ -196,21 +220,33 @@
 <summary>Combinations
   <span class="muted">({{ rows.buildable|length }}{% if rows.skipped_total %} built, {{ rows.skipped_total }} skipped{% endif %})</span>
 </summary>
+<div class="combo-filter" id="combo-filter">
+  <button type="button" data-filter="all" aria-pressed="true">All <span class="chip-count"></span></button>
+  <button type="button" data-filter="pending">Pending <span class="chip-count"></span></button>
+  <button type="button" data-filter="running">Running <span class="chip-count"></span></button>
+  <button type="button" data-filter="failed">Failed <span class="chip-count"></span></button>
+  <button type="button" data-filter="done">Done <span class="chip-count"></span></button>
+</div>
+<p class="muted" style="font-size:.85em;margin:.2rem 0 .4rem">Click a row for that combination's details.</p>
 <table id="combo-table">
 <thead>
-<tr><th>Combination</th><th>Parameters</th><th>STEP</th><th>Analysis</th><th>Post-processing</th><th></th></tr>
+<tr><th>Parameters</th><th>Progress</th><th></th></tr>
 </thead>
 <tbody>
 {% for combo_id, combo in rows.buildable.items() %}
-<tr data-combo="{{ combo_id }}">
-  <td>{{ combo_id }}</td>
+<tr data-combo="{{ combo_id }}" data-state="" tabindex="0">
   <td>{{ combo_params(combo) }}</td>
-  <td class="step status-{{ combo.step_status }}">{{ combo.step_status or "pending" }}</td>
-  <td class="queue status-{{ combo.queue_status }}">{{ combo.queue_status or "not queued" }}</td>
-  <td class="post status-{{ combo.post_status }}">{{ combo.post_status or "pending" }}</td>
+  <td class="pipeline"
+      data-step="{{ combo.step_status or '' }}"
+      data-queue="{{ combo.queue_status or '' }}"
+      data-post="{{ combo.post_status or '' }}"
+      data-skip="{{ 1 if combo.skip_reason else 0 }}">
+    <span class="track"><span class="seg"></span><span class="seg"></span><span class="seg"></span></span>
+    <span class="lbl">…</span>
+  </td>
   <td class="row-actions">
-    <a href="{{ url_for('index', from_run=run.run_id, combo=combo_id) }}"
-       title="Open the new-run form with this combination's values">use as a starting point</a>
+    <a class="button mini" href="{{ url_for('index', from_run=run.run_id, combo=combo_id) }}"
+       title="Open the new-run form with this combination's values">Use as a starting point</a>
     {% if step_viewer_available and combo.step_status == "done" %}
     <button type="button" class="mini view-3d"
             data-url="{{ url_for('combo_step_file', run_id=run.run_id, combo_id=combo_id) }}"
@@ -226,7 +262,7 @@
   </td>
 </tr>
 {% else %}
-<tr><td colspan="6" class="muted">Every combination in this run was skipped -- see below.</td></tr>
+<tr><td colspan="3" class="muted">Every combination in this run was skipped -- see below.</td></tr>
 {% endfor %}
 </tbody>
 </table>
@@ -375,27 +411,116 @@
 </script>
 
 <script>
-// Polls the run's JSON status endpoint and patches the per-combination
-// cells in place. The pipeline queues each model as soon as its STEP
-// file exists and monitors the queue while the remaining geometry is
-// still being built, so these cells change constantly *within* a single
-// stage -- waiting for a stage change to reload would leave the table
-// looking frozen for the whole build. The page is only reloaded when
-// something it can't patch appears (a finished plot, or an error).
+// Polls the run's JSON status endpoint and patches the header and the
+// per-combination pipeline cells in place. The pipeline queues each model
+// as soon as its STEP file exists and monitors the queue while the
+// remaining geometry is still being built, so these change constantly
+// *within* a single stage -- waiting for a stage change to reload would
+// leave the table looking frozen for the whole build. The page is only
+// reloaded when something it can't patch appears (a finished plot, or an
+// error).
 const initialStage = "{{ run.state.stage }}";
 const hadPlot = {{ "true" if plot_exists else "false" }};
+const initialProgress = {{ progress | tojson }};
 
-function paint(cell, value, fallback) {
-  if (!cell) { return; }
-  const text = value || fallback;
-  if (cell.textContent !== text) { cell.textContent = text; }
-  const wanted = "status-" + String(value).replace(/\s+/g, "_");
-  if (cell.classList.contains(wanted)) { return; }
-  for (const name of [...cell.classList]) {
-    if (name.startsWith("status-")) { cell.classList.remove(name); }
+// One <td class="pipeline"> -> three coloured segments (STEP, analysis,
+// post-processing) and a word for the combination's overall state. The
+// same data-step/queue/post attributes are what the poll updates, so
+// this is the single place that turns them into what is shown.
+function pipeInfo(d) {
+  if (d.skip === "1") { return { state: "skipped", label: "Skipped" }; }
+  if (d.step === "failed" || d.queue === "failed" || d.post === "failed") {
+    return { state: "failed", label: "Failed" };
   }
-  cell.classList.add(wanted);
+  if (d.post === "done") { return { state: "done", label: "Done" }; }
+  if (d.queue === "in_progress") { return { state: "running", label: "Analysing…" }; }
+  if (d.queue === "done") { return { state: "running", label: "Post-processing…" }; }
+  if (d.queue === "pending" || d.queue === "deferred") { return { state: "running", label: "Queued…" }; }
+  if (d.step === "done") { return { state: "running", label: "Ready to queue…" }; }
+  return { state: "pending", label: "Pending" };
 }
+
+function renderPipe(td) {
+  const d = td.dataset;
+  const skip = d.skip === "1";
+  const segs = td.querySelectorAll(".seg");
+  segs[0].dataset.state = skip ? "skipped" : ({ done: "done", failed: "failed", skipped: "skipped" }[d.step] || "pending");
+  segs[1].dataset.state = skip ? "skipped" : ({ done: "done", failed: "failed", in_progress: "in_progress" }[d.queue] || "pending");
+  segs[2].dataset.state = skip ? "skipped" : ({ done: "done", failed: "failed" }[d.post] || "pending");
+  const info = pipeInfo(d);
+  td.querySelector(".lbl").textContent = info.label;
+  const row = td.closest("tr");
+  if (row) { row.dataset.state = info.state; }
+}
+
+function renderStage(display) {
+  const el = document.getElementById("stage");
+  if (!el || !display) { return; }
+  el.textContent = display.label;
+  ["ok", "bad", "busy", "muted"].forEach((k) => el.classList.toggle(k, k === display.kind));
+}
+
+function renderProgress(p) {
+  if (!p) { return; }
+  const wrap = document.querySelector(".statusbar .progress");
+  if (wrap && p.total) {
+    wrap.querySelector("i.d").style.width = (100 * p.done / p.total).toFixed(1) + "%";
+    wrap.querySelector("i.f").style.width = (100 * p.failed / p.total).toFixed(1) + "%";
+  }
+  const num = document.getElementById("progress-num");
+  if (num) {
+    const bits = [];
+    if (p.total) { bits.push(p.done + "/" + p.total + " done"); }
+    if (p.failed) { bits.push(p.failed + " failed"); }
+    if (p.skipped) { bits.push(p.skipped + " skipped"); }
+    num.textContent = bits.join(" · ") || "—";
+  }
+}
+
+// Filter the combination table by a row's overall state (set by
+// renderPipe), and keep a count next to each chip. Purely client-side.
+function activeComboFilter() {
+  var on = document.querySelector('#combo-filter button[aria-pressed="true"]');
+  return on ? on.dataset.filter : "all";
+}
+
+function applyComboFilter() {
+  var wanted = activeComboFilter();
+  document.querySelectorAll('#combo-table tbody tr[data-combo]').forEach(function (row) {
+    row.classList.toggle("combo-hidden", wanted !== "all" && row.dataset.state !== wanted);
+  });
+}
+
+function updateFilterCounts() {
+  var bar = document.getElementById("combo-filter");
+  if (!bar) { return; }
+  var counts = { all: 0, pending: 0, running: 0, failed: 0, done: 0 };
+  document.querySelectorAll('#combo-table tbody tr[data-combo]').forEach(function (row) {
+    counts.all++;
+    if (counts[row.dataset.state] !== undefined) { counts[row.dataset.state]++; }
+  });
+  bar.querySelectorAll("button[data-filter]").forEach(function (b) {
+    var span = b.querySelector(".chip-count");
+    if (span) { span.textContent = counts[b.dataset.filter]; }
+  });
+}
+
+(function () {
+  var bar = document.getElementById("combo-filter");
+  if (!bar) { return; }
+  bar.addEventListener("click", function (event) {
+    var button = event.target.closest("button[data-filter]");
+    if (!button) { return; }
+    bar.querySelectorAll("button").forEach(function (b) {
+      b.setAttribute("aria-pressed", String(b === button));
+    });
+    applyComboFilter();
+  });
+})();
+
+document.querySelectorAll("td.pipeline").forEach(renderPipe);
+renderProgress(initialProgress);
+updateFilterCounts();
 
 async function poll() {
   let data;
@@ -407,23 +532,30 @@ async function poll() {
     return;  // transient -- try again on the next tick
   }
 
-  document.getElementById("stage").textContent = data.stage;
-  document.getElementById("running-indicator").textContent = data.is_running ? "running" : "not running";
+  renderStage(data.stage_display || { label: data.stage, kind: "muted" });
+  document.getElementById("running-indicator").textContent = data.is_running ? "running" : "idle";
+  renderProgress(data.progress);
+  const ago = document.getElementById("updated-ago");
+  if (ago) { ago.textContent = "just now"; }
 
   for (const [comboId, combo] of Object.entries(data.combos || {})) {
     const row = document.querySelector('tr[data-combo="' + CSS.escape(comboId) + '"]');
     if (!row) continue;
-    // A combination whose geometry does not fit is never built, so its
-    // cells read "skipped" rather than sitting at "pending" forever.
-    const skipped = Boolean(combo.skip_reason);
-    paint(row.querySelector("td.step"), combo.step_status, skipped ? "skipped" : "pending");
-    paint(row.querySelector("td.queue"), combo.queue_status, skipped ? "--" : "not queued");
-    paint(row.querySelector("td.post"), combo.post_status, skipped ? "--" : "pending");
+    const td = row.querySelector("td.pipeline");
+    if (!td) continue;
+    td.dataset.step = combo.step_status || "";
+    td.dataset.queue = combo.queue_status || "";
+    td.dataset.post = combo.post_status || "";
+    renderPipe(td);
   }
+  updateFilterCounts();
+  applyComboFilter();
 
-  const finishedWithAPlot = data.stage === "complete" && !hadPlot;
+  // Reload once the plot first lands (it is rendered server-side and not
+  // something the poll can patch in), or when the run hits an error.
+  const plotJustAppeared = data.plot_ready && !hadPlot;
   const hitAnError = data.stage === "error" && initialStage !== "error";
-  if (finishedWithAPlot || hitAnError) { location.reload(); }
+  if (plotJustAppeared || hitAnError) { location.reload(); }
 }
 setInterval(poll, 4000);
 
@@ -641,6 +773,22 @@ setInterval(poll, 4000);
     var data = event.data;
     if (data && data.source === "eigenmode-plot" && data.comboId) { open(data.comboId); }
   });
+
+  // Clicking a combination row opens the same window a plot point does.
+  // The per-row action buttons/links keep their own behaviour.
+  var comboTable = document.getElementById("combo-table");
+  if (comboTable) {
+    comboTable.addEventListener("click", function (event) {
+      if (event.target.closest("a, button")) { return; }
+      var row = event.target.closest("tr[data-combo]");
+      if (row) { open(row.dataset.combo); }
+    });
+    comboTable.addEventListener("keydown", function (event) {
+      if (event.key !== "Enter") { return; }
+      var row = event.target.closest("tr[data-combo]");
+      if (row && event.target === row) { open(row.dataset.combo); }
+    });
+  }
 
   // Actions inside the window reuse the same endpoints the table rows do.
   body.addEventListener("click", async function (event) {
