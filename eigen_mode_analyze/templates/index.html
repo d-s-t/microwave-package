@@ -3,13 +3,14 @@
 <head>
 <meta charset="utf-8">
 <title>Eigenmode Analysis</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><path d='M1 9c2.5 0 2.5-6 4.5-6S8 13 10 13s2.2-8 4-8 1 3 2 3' fill='none' stroke='%232E86AB' stroke-width='1.6' stroke-linecap='round'/></svg>">
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 <style>
-  /* Colour tokens and the theme switch live in _theme.html. */
+  /* Base rules and colour tokens live in static/style.css + _theme.html;
+     only the new-run form's own styling is here. */
   /* the bottom padding keeps the floating Start run button from ever
      covering the last row of the page */
-  body{font-family:system-ui,sans-serif;max-width:900px;margin:2rem auto;padding:0 1rem 5.5rem;
-    color:var(--fg);background:var(--bg)}
-  h1,h2,h3{margin-top:2rem}
+  body{padding-bottom:5.5rem}
   table{border-collapse:collapse;width:100%;margin-top:.5rem}
   td,th{border:1px solid var(--line);padding:.4rem .6rem;text-align:left}
   input[type=text],input[type=number]{width:9rem;padding:.2rem}
@@ -31,10 +32,6 @@
   .unit-micron{color:var(--accent);font-weight:600}
   h4{margin:1.6rem 0 .2rem}
   h4 + p.muted{margin-top:0}
-  details.collapsible{margin-top:1.4rem;border:1px solid var(--line-soft);border-radius:6px;
-    padding:.5rem .8rem}
-  details.collapsible summary{cursor:pointer;font-weight:600}
-  details.collapsible[open] summary{margin-bottom:.3rem}
   details.collapsible fieldset{margin-top:.6rem}
   .setting-note{margin:.15rem 0 .5rem 1.6rem;max-width:46rem}
   /* A run with no distorted combination never uses these, so they are
@@ -65,9 +62,6 @@
   fieldset{margin-bottom:1rem;border:1px solid var(--line-soft);border-radius:6px}
   label{display:inline-block;margin:.2rem 0}
   .muted{color:var(--muted);font-size:.9em}
-  a.button,button{display:inline-block;padding:.5rem 1rem;background:var(--accent);color:#fff;border:none;
-    border-radius:4px;text-decoration:none;cursor:pointer;font-size:1em}
-  a.button:hover,button:hover{background:var(--accent-hover)}
 
   /* Parameter drawings: a thumbnail per row that opens full size on click.
      The SVGs are inlined and stroked in `currentColor`, so they inherit the
@@ -94,7 +88,53 @@
 </head>
 <body>
 {% include "_theme.html" %}
-<h1>Eigenmode Analysis</h1>
+<header class="topbar">
+  <a href="{{ url_for('index') }}" class="brand">Eigenmode Analysis</a>
+</header>
+
+{% macro progress_bar(p) -%}
+<span class="progress" title="{{ p.done }} done · {{ p.failed }} failed · {{ p.skipped }} skipped · {{ p.pending }} to go">
+{%- if p.total -%}
+<i class="d" style="width:{{ (100.0 * p.done / p.total)|round(1) }}%"></i><i class="f" style="width:{{ (100.0 * p.failed / p.total)|round(1) }}%"></i><i class="s" style="width:{{ (100.0 * p.skipped / p.total)|round(1) }}%"></i>
+{%- endif -%}
+</span>
+{%- endmacro %}
+
+{% macro run_row(r) -%}
+<tr class="run-row" tabindex="0" data-href="{{ url_for('run_status', run_id=r.run_id) }}">
+  <td>
+    <a class="run-name" href="{{ url_for('run_status', run_id=r.run_id) }}">{{ r.name }}</a>
+    <span class="run-id">{% if r.label and r.date_text %}{{ r.date_text }} · {% endif %}{{ r.started_ago }}</span>
+  </td>
+  <td class="run-swept">{{ r.swept_text or "—" }}</td>
+  <td>
+    <span class="bar-cell">
+      {{ progress_bar(r) }}
+      <span class="progress-num">{{ r.done }}/{{ r.total }}{% if r.failed %} · {{ r.failed }} failed{% endif %}{% if r.skipped %} · {{ r.skipped }} skipped{% endif %}</span>
+    </span>
+  </td>
+  <td><span class="pill {{ r.stage_display.kind }}">{{ r.stage_display.label }}</span></td>
+</tr>
+{%- endmacro %}
+
+<h2>Runs</h2>
+{% if runs %}
+{% set recent = 12 %}
+<table class="runs">
+<tr><th>Run</th><th>Swept</th><th>Progress</th><th>Stage</th></tr>
+{% for r in runs[:recent] %}{{ run_row(r) }}{% endfor %}
+</table>
+{% if runs|length > recent %}
+<details class="collapsible">
+  <summary>{{ runs|length - recent }} older run{{ "" if runs|length - recent == 1 else "s" }}</summary>
+  <table class="runs">
+  {% for r in runs[recent:] %}{{ run_row(r) }}{% endfor %}
+  </table>
+</details>
+{% endif %}
+{% else %}
+<p class="muted">No runs yet.</p>
+{% endif %}
 
 <h2>Start a new run</h2>
 
@@ -102,7 +142,7 @@
   <label for="from_run">Start from an earlier run:</label>
   <select id="from_run" name="from_run">
     {% for r in runs %}
-    <option value="{{ r.run_id }}" {% if r.run_id == loaded_from %}selected{% endif %}>{{ r.run_id }}</option>
+    <option value="{{ r.run_id }}" {% if r.run_id == loaded_from %}selected{% endif %}>{{ r.name }}{% if r.swept_text %} · {{ r.swept_text }}{% endif %}</option>
     {% endfor %}
   </select>
   <button type="submit">Load its settings</button>
@@ -115,6 +155,9 @@
 </form>
 
 <form method="post" action="{{ url_for('new_run') }}">
+  <p><label>Name <span class="muted">(optional)</span>
+    <input type="text" name="label" maxlength="80" placeholder="e.g. pedestal depth sweep" style="width:20rem"></label></p>
+
   <h3>Parameters</h3>
   <p class="muted">A box with one value pins that parameter for the run; a box with several values
     sweeps it. Leave a box empty to keep the parameter at the equation file's own value, which is
@@ -251,23 +294,9 @@
   </fieldset>
   </details>
 
+  <div class="combo-count" id="combo-count" aria-live="polite"></div>
   <button type="submit" class="start-run">Start run</button>
 </form>
-
-<h2>Existing runs</h2>
-{% if runs %}
-<table>
-<tr><th>Run</th><th>Stage</th><th>Done</th><th>Failed</th><th>Total</th><th></th></tr>
-{% for r in runs %}
-<tr>
-  <td>{{ r.run_id }}</td><td>{{ r.stage }}</td><td>{{ r.done }}</td><td>{{ r.failed }}</td><td>{{ r.total }}</td>
-  <td><a class="button" href="{{ url_for('run_status', run_id=r.run_id) }}">Open</a></td>
-</tr>
-{% endfor %}
-</table>
-{% else %}
-<p class="muted">No runs yet.</p>
-{% endif %}
 
 <div id="lightbox" hidden>
   <div class="panel" role="dialog" aria-modal="true" aria-labelledby="lightbox-title">
@@ -442,6 +471,74 @@
   render();
 })();
 {% endif %}
+
+// A live count of how many models this form would build, so a sweep that
+// expands to thousands is obvious before it is started rather than after.
+// The distortion geometry only multiplies the distorted combinations, so
+// once one of those boxes is in play the number is shown as approximate.
+(function () {
+  var out = document.getElementById('combo-count');
+  if (!out) { return; }
+  var distortionGeom = {{ distortion_geometry_params | tojson }};
+
+  function count(text) {
+    text = (text || '').trim();
+    if (!text) { return 1; }
+    if (text.indexOf(':') !== -1) {
+      var p = text.split(':').map(Number);
+      if (p.length < 2 || p.length > 3 || p.some(isNaN)) { return 1; }
+      var step = p.length === 3 ? p[2] : 1;
+      if (!step) { return 1; }
+      var n = Math.round((p[1] - p[0]) / step);
+      return n < 0 ? 1 : n + 1;
+    }
+    var vals = text.split(',').map(function (s) { return s.trim(); }).filter(Boolean);
+    return vals.length || 1;
+  }
+
+  function update() {
+    var total = 1, dims = 0, approx = false;
+    document.querySelectorAll('input.range').forEach(function (b) {
+      var n = count(b.value);
+      if (n > 1) {
+        dims++;
+        total *= n;
+        if (distortionGeom.indexOf(b.name.replace(/^range_/, '')) !== -1) { approx = true; }
+      }
+    });
+    var mode = document.querySelector('input[name="distortion_mode"]:checked');
+    if (mode && mode.value === 'both') { total *= 2; }
+
+    if (dims === 0 && !(mode && mode.value === 'both')) {
+      out.textContent = '1 model build';
+    } else {
+      out.textContent = (approx ? '≈ ' : '= ') + total.toLocaleString() + ' model builds';
+    }
+    out.classList.toggle('warn', total > 200);
+  }
+
+  document.addEventListener('input', function (e) {
+    if (e.target.matches('input.range')) { update(); }
+  });
+  document.addEventListener('change', function (e) {
+    if (e.target.matches('input[name="distortion_mode"]')) { update(); }
+  });
+  update();
+})();
+
+// The whole run row is a link to that run's page; the explicit name link
+// keeps it reachable by keyboard and screen reader.
+(function () {
+  document.querySelectorAll('tr.run-row').forEach(function (tr) {
+    tr.addEventListener('click', function (e) {
+      if (e.target.closest('a, button')) { return; }
+      window.location.href = tr.dataset.href;
+    });
+    tr.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter') { window.location.href = tr.dataset.href; }
+    });
+  });
+})();
 </script>
 </body>
 </html>

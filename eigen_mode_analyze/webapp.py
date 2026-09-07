@@ -17,6 +17,7 @@ CLI's --resume).
 """
 from __future__ import annotations
 
+import datetime as _dt
 import glob
 import itertools
 import logging
@@ -37,7 +38,7 @@ from ansys_analyze_common import queue_common
 
 from . import equations as eq
 from . import (constraints, model_builder, parameter_meta, paths, pipeline,
-               plotting, post_processing)
+               plotting, post_processing, run_manager)
 from . import resilient_io
 from .pipeline import run_pipeline
 from .run_manager import Run
@@ -47,6 +48,86 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s: %(mes
 logger = logging.getLogger("eigen_mode_analyze")
 
 app = Flask(__name__)
+
+
+# -- display helpers -----------------------------------------------------
+# The pipeline's internal stage names, mapped to something readable and a
+# colour kind ("ok"/"busy"/"bad"/"muted") the .pill class understands.
+_STAGE_DISPLAY = {
+    "created": ("Created", "muted"),
+    "generating_and_queuing": ("Building geometry", "busy"),
+    "geometry_ready": ("Waiting for the queue", "busy"),
+    "monitoring": ("Analysing", "busy"),
+    "postprocessing": ("Post-processing", "busy"),
+    "plotting": ("Plotting results", "busy"),
+    "complete": ("Complete", "ok"),
+    "error": ("Error", "bad"),
+}
+
+
+def _stage_display(stage: Optional[str]) -> dict:
+    label, kind = _STAGE_DISPLAY.get(
+        stage, ((stage or "unknown").replace("_", " ").capitalize(), "muted")
+    )
+    return {"label": label, "kind": kind}
+
+
+def _parse_dt(value):
+    if isinstance(value, _dt.datetime):
+        return value
+    try:
+        return _dt.datetime.fromisoformat(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _run_id_dt(run_id: str):
+    """The timestamp baked into a `run_YYYYmmdd_HHMMSS` id -- the fallback
+    for runs whose config predates the stored `created_at`."""
+    try:
+        return _dt.datetime.strptime(run_id, "run_%Y%m%d_%H%M%S")
+    except (TypeError, ValueError):
+        return None
+
+
+def _fmt_dt(dt) -> str:
+    return dt.strftime("%d %b %Y, %H:%M").lstrip("0") if dt else ""
+
+
+def _fmt_ago(dt) -> str:
+    if not dt:
+        return ""
+    secs = max((_dt.datetime.now() - dt).total_seconds(), 0)
+    if secs < 45:
+        return "just now"
+    if secs < 2700:
+        return f"{round(secs / 60)} min ago"
+    if secs < 86400:
+        return f"{round(secs / 3600)} h ago"
+    if secs < 2592000:
+        return f"{round(secs / 86400)} d ago"
+    return dt.strftime("%d %b %Y")
+
+
+def _fmt_dur(delta) -> str:
+    if not delta:
+        return ""
+    secs = int(delta.total_seconds())
+    if secs < 60:
+        return f"{secs}s"
+    mins, secs = divmod(secs, 60)
+    if mins < 60:
+        return f"{mins}m"
+    hrs, mins = divmod(mins, 60)
+    if hrs < 24:
+        return f"{hrs}h {mins}m"
+    days, hrs = divmod(hrs, 24)
+    return f"{days}d {hrs}h"
+
+
+def _run_started(run):
+    return _parse_dt(run.created_at) or _run_id_dt(run.run_id)
+
 
 # In-process registry of running pipeline threads, keyed by run_id -- so
 # "resume" can tell whether a run is already active, and so a run
@@ -228,11 +309,30 @@ def _form_starting_point(from_run: Optional[str], combo_id: Optional[str]):
     return settings, values, run_id, _distortion_mode_for(run, combo_id)
 
 
+def _runs_for_display(runs: list) -> list:
+    """`Run.list_runs()` rows with the run-list's presentation fields added:
+    a friendly name, a relative time, a humanised stage, and the one-line
+    "what it swept" summary."""
+    view = []
+    for r in runs:
+        started = _parse_dt(r.get("created_at")) or _run_id_dt(r["run_id"])
+        date_text = _fmt_dt(started)
+        view.append({
+            **r,
+            "name": r["label"] or date_text or r["run_id"],
+            "date_text": date_text,
+            "started_ago": _fmt_ago(started),
+            "stage_display": _stage_display(r.get("stage")),
+            "swept_text": ", ".join(f'{s["label"]} ×{s["n"]}' for s in r["swept"]),
+        })
+    return view
+
+
 @app.route("/")
 def index():
     content = eq.read_file(str(paths.DEFAULT_EQUATIONS_FILE))
     parameters = eq.get_numeric_parameters(content)
-    runs = Run.list_runs()
+    runs = _runs_for_display(Run.list_runs())
     settings, values, loaded_from, distortion_mode = _form_starting_point(
         request.args.get("from_run"), request.args.get("combo")
     )
@@ -241,6 +341,7 @@ def index():
         parameters=parameters,
         groups=parameter_meta.grouped(parameters),
         runs=runs,
+        distortion_geometry_params=parameter_meta.DISTORTION_GEOMETRY_PARAMETERS,
         drawings=_parameter_drawings(),
         meta=parameter_meta,
         settings=settings,
@@ -342,8 +443,12 @@ def new_run():
         },
     }
     run = Run.create(sweep_params, settings, parameter_defaults)
-    if notes:
-        run.config["notes"] = notes
+    label = request.form.get("label", "").strip()[:80]
+    if notes or label:
+        if notes:
+            run.config["notes"] = notes
+        if label:
+            run.config["label"] = label
         run.save()
     _start_pipeline_thread(run)
     return redirect(url_for("run_status", run_id=run.run_id))
@@ -354,6 +459,19 @@ def resume_run(run_id):
     if not _is_running(run_id):
         run = Run.load(run_id)
         _start_pipeline_thread(run)
+    return redirect(url_for("run_status", run_id=run_id))
+
+
+@app.route("/runs/<run_id>/label", methods=["POST"])
+def set_run_label(run_id):
+    """Give a run a human name (or clear it with an empty box). Stored on
+    the run's config so it shows in the run list and as the page title."""
+    try:
+        run = Run.load(run_id)
+    except (OSError, ValueError):
+        return redirect(url_for("index"))
+    run.config["label"] = request.form.get("label", "").strip()[:80]
+    run.save_config()
     return redirect(url_for("run_status", run_id=run_id))
 
 
@@ -388,12 +506,29 @@ def run_status(run_id):
     options = plotting.axis_options(df, run.sweep_param_names) if df is not None else []
     filters = plotting.filter_options(df, run.sweep_param_names) if df is not None else []
     swept = [parameter_meta.column_name(n) for n in run.sweep_param_names]
+
+    stage = run.state.get("stage")
+    started = _run_started(run)
+    try:
+        updated = _dt.datetime.fromtimestamp(os.path.getmtime(run.state_path))
+    except OSError:
+        updated = None
+    # state.json stops being rewritten once the run settles, so its mtime
+    # is a good enough "finished at" for the elapsed time.
+    duration = updated - started if (started and updated and stage in ("complete", "error")) else None
+
     return render_template(
         "run_status.html",
         run=run,
+        run_name=run.label or _fmt_dt(started) or run.run_id,
         rows=_combo_rows(run),
         is_running=_is_running(run_id),
         plot_exists=plot_exists,
+        progress=run_manager.progress_of(run.state),
+        stage_display=_stage_display(stage),
+        started_text=_fmt_dt(started),
+        updated_text=_fmt_ago(updated),
+        duration_text=_fmt_dur(duration),
         meta=parameter_meta,
         has_common_dimensions=os.path.exists(os.path.join(run.run_dir, "common_dimensions.txt")),
         axis_options=options,
@@ -525,6 +660,8 @@ def run_status_json(run_id):
     return jsonify({
         "run_id": run.run_id,
         "stage": run.state.get("stage"),
+        "stage_display": _stage_display(run.state.get("stage")),
+        "progress": run_manager.progress_of(run.state),
         "error": run.state.get("error"),
         "is_running": _is_running(run_id),
         "combos": {

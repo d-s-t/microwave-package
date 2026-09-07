@@ -19,10 +19,38 @@ from typing import Dict, List, Optional
 
 from . import constraints
 from . import equations as eq
+from . import parameter_meta
 from . import paths
 from .sweep import SweepParameter, combinations, combo_id_for
 
 logger = logging.getLogger("eigen_mode_analyze")
+
+
+def progress_of(state: dict) -> Dict[str, int]:
+    """How far a run has got, counted from its combinations.
+
+    One definition, used by both the run list and the run page, so the
+    numbers agree: a combination is *done* once it is post-processed,
+    *failed* if analysis or post-processing failed, *skipped* if its
+    geometry never fitted, and otherwise still on its way.
+    """
+    combos = state.get("combos", {})
+    done = failed = skipped = 0
+    for combo in combos.values():
+        if combo.get("skip_reason"):
+            skipped += 1
+        elif combo.get("queue_status") == "failed" or combo.get("post_status") == "failed":
+            failed += 1
+        elif combo.get("post_status") == "done":
+            done += 1
+    total = len(combos)
+    return {
+        "total": total,
+        "done": done,
+        "failed": failed,
+        "skipped": skipped,
+        "pending": total - done - failed - skipped,
+    }
 
 
 def _equation_file_values() -> Dict[str, float]:
@@ -144,22 +172,29 @@ class Run:
             return []
         summaries = []
         for run_id in sorted(os.listdir(runs_root), reverse=True):
-            state_path = os.path.join(runs_root, run_id, "state.json")
+            run_dir = os.path.join(runs_root, run_id)
+            state_path = os.path.join(run_dir, "state.json")
             if not os.path.isfile(state_path):
                 continue
             try:
                 state = cls._read_json(state_path)
             except (OSError, json.JSONDecodeError):
                 continue
-            combos = state.get("combos", {})
-            done = sum(1 for c in combos.values() if c.get("queue_status") == "done")
-            failed = sum(1 for c in combos.values() if c.get("queue_status") == "failed")
+            try:
+                config = cls._read_json(os.path.join(run_dir, "run_config.json"))
+            except (OSError, json.JSONDecodeError):
+                config = {}
+            swept = [
+                {"label": parameter_meta.label_for(p["name"]), "n": len(p.get("values", []))}
+                for p in config.get("sweep_params", [])
+            ]
             summaries.append({
                 "run_id": run_id,
+                "label": (config.get("label") or "").strip(),
+                "created_at": config.get("created_at"),
                 "stage": state.get("stage"),
-                "total": len(combos),
-                "done": done,
-                "failed": failed,
+                "swept": swept,
+                **progress_of(state),
             })
         return summaries
 
@@ -234,6 +269,14 @@ class Run:
             os.makedirs(self.run_dir, exist_ok=True)
             self._write_json(self.state_path, self.state)
 
+    def save_config(self) -> None:
+        """Just the configuration file -- for the rare edits after creation
+        (naming a run), so state.json's mtime, which the UI reads as "last
+        activity", is left alone."""
+        with self._lock:
+            os.makedirs(self.run_dir, exist_ok=True)
+            self._write_json(self.config_path, self.config)
+
     def set_stage(self, stage: str) -> None:
         with self._lock:
             self.state["stage"] = stage
@@ -261,6 +304,15 @@ class Run:
     @property
     def sweep_param_names(self) -> List[str]:
         return [p["name"] for p in self.config.get("sweep_params", [])]
+
+    @property
+    def label(self) -> str:
+        """The name the user gave this run, or "" if they haven't."""
+        return (self.config.get("label") or "").strip()
+
+    @property
+    def created_at(self) -> Optional[str]:
+        return self.config.get("created_at")
 
     @property
     def parameter_defaults(self) -> Dict[str, float]:
