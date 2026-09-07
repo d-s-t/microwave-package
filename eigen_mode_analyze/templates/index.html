@@ -100,6 +100,7 @@
 
 {% macro run_row(r, extra=false) -%}
 <tr class="run-row{% if extra %} run-extra{% endif %}" tabindex="0"
+    data-run-id="{{ r.run_id }}"
     data-href="{{ url_for('run_status', run_id=r.run_id) }}"{% if extra %} hidden{% endif %}>
   <td>
     <a class="run-name" href="{{ url_for('run_status', run_id=r.run_id) }}">{{ r.name }}</a>
@@ -557,6 +558,52 @@
       if (e.key === 'Enter') { window.location.href = tr.dataset.href; }
     });
   });
+})();
+
+// Keep the run list's progress bars and stage pills current while a run
+// is going, without reloading -- the page holds the new-run form, so it
+// only ever patches rows that are already there and never reloads.
+(function () {
+  var table = document.querySelector('table.runs');
+  if (!table) { return; }
+  var KINDS = ['ok', 'bad', 'busy', 'muted'];
+
+  function patch(runs) {
+    var byId = {};
+    runs.forEach(function (r) { byId[r.run_id] = r; });
+    table.querySelectorAll('tr[data-run-id]').forEach(function (row) {
+      var r = byId[row.dataset.runId];
+      if (!r) { return; }
+      var d = row.querySelector('.progress i.d');
+      var f = row.querySelector('.progress i.f');
+      var s = row.querySelector('.progress i.s');
+      if (d && r.total) {
+        d.style.width = (100 * r.done / r.total).toFixed(1) + '%';
+        f.style.width = (100 * r.failed / r.total).toFixed(1) + '%';
+        s.style.width = (100 * r.skipped / r.total).toFixed(1) + '%';
+      }
+      var num = row.querySelector('.progress-num');
+      if (num) {
+        var t = r.done + '/' + r.total;
+        if (r.failed) { t += ' · ' + r.failed + ' failed'; }
+        if (r.skipped) { t += ' · ' + r.skipped + ' skipped'; }
+        num.textContent = t;
+      }
+      var pill = row.querySelector('.pill');
+      if (pill && r.stage_display) {
+        pill.textContent = r.stage_display.label;
+        KINDS.forEach(function (k) { pill.classList.toggle(k, k === r.stage_display.kind); });
+      }
+    });
+  }
+
+  async function poll() {
+    try {
+      var res = await fetch("{{ url_for('runs_json') }}");
+      if (res.ok) { patch(await res.json()); }
+    } catch (e) { /* transient -- try again next tick */ }
+  }
+  setInterval(poll, 5000);
 })();
 </script>
 </body>

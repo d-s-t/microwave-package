@@ -86,7 +86,13 @@ td.pipeline .lbl{margin-left:.55rem;font-size:.82em;color:var(--muted)}
 .combo-filter button{background:transparent;color:var(--muted);border:1px solid var(--line-soft);
   border-radius:999px;padding:.15rem .6rem;font-size:.8em;margin:0}
 .combo-filter button[aria-pressed="true"]{background:var(--accent);color:#fff;border-color:var(--accent)}
+.combo-filter .chip-count{opacity:.65;font-variant-numeric:tabular-nums;margin-left:.15rem}
 tr.combo-hidden{display:none}
+
+/* Whole combination row opens its detail window (same as a plot point). */
+#combo-table tbody tr[data-combo]{cursor:pointer}
+#combo-table tbody tr[data-combo]:hover{background:var(--surface-hover)}
+#combo-table tbody tr[data-combo]:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
 
 /* --- live combination counter on the new-run form -------------- */
 .combo-count{position:fixed;right:1.5rem;bottom:4.6rem;z-index:20;font-size:.8em;

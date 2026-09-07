@@ -2,7 +2,7 @@
 <html>
 <head>
 <meta charset="utf-8">
-<title>Run {{ run.run_id }}</title>
+<title>{{ run_name }}</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><path d='M1 9c2.5 0 2.5-6 4.5-6S8 13 10 13s2.2-8 4-8 1 3 2 3' fill='none' stroke='%232E86AB' stroke-width='1.6' stroke-linecap='round'/></svg>">
 <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 <style>
@@ -14,9 +14,11 @@
   td.row-actions a{margin-right:.5rem}
   .row-msg{font-size:.85em}
   /* transparent so the figure sits on the page's own background in
-     either theme -- the plot is rendered with a see-through canvas */
-  iframe{width:100%;height:600px;border:1px solid var(--line);margin-top:1rem;background:transparent}
-  iframe.heatmap{height:680px}
+     either theme -- the plot is rendered with a see-through canvas.
+     Height follows the window so a big screen gets a big plot. */
+  iframe{width:100%;height:clamp(460px,72vh,900px);border:1px solid var(--line);
+    margin-top:1rem;background:transparent}
+  iframe.heatmap{height:clamp(500px,76vh,960px)}
   .axis-picker{display:flex;align-items:center;gap:.5rem;flex-wrap:wrap;margin:.75rem 0;
     padding:.6rem .8rem;border:1px solid var(--line-soft);border-radius:6px}
   .axis-picker label{font-weight:600;font-size:.9em}
@@ -219,20 +221,20 @@
   <span class="muted">({{ rows.buildable|length }}{% if rows.skipped_total %} built, {{ rows.skipped_total }} skipped{% endif %})</span>
 </summary>
 <div class="combo-filter" id="combo-filter">
-  <button type="button" data-filter="all" aria-pressed="true">All</button>
-  <button type="button" data-filter="pending">Pending</button>
-  <button type="button" data-filter="running">Running</button>
-  <button type="button" data-filter="failed">Failed</button>
-  <button type="button" data-filter="done">Done</button>
+  <button type="button" data-filter="all" aria-pressed="true">All <span class="chip-count"></span></button>
+  <button type="button" data-filter="pending">Pending <span class="chip-count"></span></button>
+  <button type="button" data-filter="running">Running <span class="chip-count"></span></button>
+  <button type="button" data-filter="failed">Failed <span class="chip-count"></span></button>
+  <button type="button" data-filter="done">Done <span class="chip-count"></span></button>
 </div>
+<p class="muted" style="font-size:.85em;margin:.2rem 0 .4rem">Click a row for that combination's details.</p>
 <table id="combo-table">
 <thead>
-<tr><th>Combination</th><th>Parameters</th><th>Progress</th><th></th></tr>
+<tr><th>Parameters</th><th>Progress</th><th></th></tr>
 </thead>
 <tbody>
 {% for combo_id, combo in rows.buildable.items() %}
-<tr data-combo="{{ combo_id }}" data-state="">
-  <td>{{ combo_id }}</td>
+<tr data-combo="{{ combo_id }}" data-state="" tabindex="0">
   <td>{{ combo_params(combo) }}</td>
   <td class="pipeline"
       data-step="{{ combo.step_status or '' }}"
@@ -260,7 +262,7 @@
   </td>
 </tr>
 {% else %}
-<tr><td colspan="4" class="muted">Every combination in this run was skipped -- see below.</td></tr>
+<tr><td colspan="3" class="muted">Every combination in this run was skipped -- see below.</td></tr>
 {% endfor %}
 </tbody>
 </table>
@@ -475,8 +477,50 @@ function renderProgress(p) {
   }
 }
 
+// Filter the combination table by a row's overall state (set by
+// renderPipe), and keep a count next to each chip. Purely client-side.
+function activeComboFilter() {
+  var on = document.querySelector('#combo-filter button[aria-pressed="true"]');
+  return on ? on.dataset.filter : "all";
+}
+
+function applyComboFilter() {
+  var wanted = activeComboFilter();
+  document.querySelectorAll('#combo-table tbody tr[data-combo]').forEach(function (row) {
+    row.classList.toggle("combo-hidden", wanted !== "all" && row.dataset.state !== wanted);
+  });
+}
+
+function updateFilterCounts() {
+  var bar = document.getElementById("combo-filter");
+  if (!bar) { return; }
+  var counts = { all: 0, pending: 0, running: 0, failed: 0, done: 0 };
+  document.querySelectorAll('#combo-table tbody tr[data-combo]').forEach(function (row) {
+    counts.all++;
+    if (counts[row.dataset.state] !== undefined) { counts[row.dataset.state]++; }
+  });
+  bar.querySelectorAll("button[data-filter]").forEach(function (b) {
+    var span = b.querySelector(".chip-count");
+    if (span) { span.textContent = counts[b.dataset.filter]; }
+  });
+}
+
+(function () {
+  var bar = document.getElementById("combo-filter");
+  if (!bar) { return; }
+  bar.addEventListener("click", function (event) {
+    var button = event.target.closest("button[data-filter]");
+    if (!button) { return; }
+    bar.querySelectorAll("button").forEach(function (b) {
+      b.setAttribute("aria-pressed", String(b === button));
+    });
+    applyComboFilter();
+  });
+})();
+
 document.querySelectorAll("td.pipeline").forEach(renderPipe);
 renderProgress(initialProgress);
+updateFilterCounts();
 
 async function poll() {
   let data;
@@ -504,30 +548,16 @@ async function poll() {
     td.dataset.post = combo.post_status || "";
     renderPipe(td);
   }
+  updateFilterCounts();
+  applyComboFilter();
 
-  const finishedWithAPlot = data.stage === "complete" && !hadPlot;
+  // Reload once the plot first lands (it is rendered server-side and not
+  // something the poll can patch in), or when the run hits an error.
+  const plotJustAppeared = data.plot_ready && !hadPlot;
   const hitAnError = data.stage === "error" && initialStage !== "error";
-  if (finishedWithAPlot || hitAnError) { location.reload(); }
+  if (plotJustAppeared || hitAnError) { location.reload(); }
 }
 setInterval(poll, 4000);
-
-// Filter the combination table by a row's overall state (set by
-// renderPipe). Purely client-side -- nothing is re-fetched.
-(function () {
-  var bar = document.getElementById("combo-filter");
-  if (!bar) { return; }
-  bar.addEventListener("click", function (event) {
-    var button = event.target.closest("button[data-filter]");
-    if (!button) { return; }
-    bar.querySelectorAll("button").forEach(function (b) {
-      b.setAttribute("aria-pressed", String(b === button));
-    });
-    var wanted = button.dataset.filter;
-    document.querySelectorAll('#combo-table tbody tr[data-combo]').forEach(function (row) {
-      row.classList.toggle("combo-hidden", wanted !== "all" && row.dataset.state !== wanted);
-    });
-  });
-})();
 
 // --- results plot -------------------------------------------------
 // The figure is rendered server-side and embedded, so changing an axis
@@ -743,6 +773,22 @@ setInterval(poll, 4000);
     var data = event.data;
     if (data && data.source === "eigenmode-plot" && data.comboId) { open(data.comboId); }
   });
+
+  // Clicking a combination row opens the same window a plot point does.
+  // The per-row action buttons/links keep their own behaviour.
+  var comboTable = document.getElementById("combo-table");
+  if (comboTable) {
+    comboTable.addEventListener("click", function (event) {
+      if (event.target.closest("a, button")) { return; }
+      var row = event.target.closest("tr[data-combo]");
+      if (row) { open(row.dataset.combo); }
+    });
+    comboTable.addEventListener("keydown", function (event) {
+      if (event.key !== "Enter") { return; }
+      var row = event.target.closest("tr[data-combo]");
+      if (row && event.target === row) { open(row.dataset.combo); }
+    });
+  }
 
   // Actions inside the window reuse the same endpoints the table rows do.
   body.addEventListener("click", async function (event) {

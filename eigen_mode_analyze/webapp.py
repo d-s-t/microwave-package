@@ -65,10 +65,14 @@ _STAGE_DISPLAY = {
 }
 
 
-def _stage_display(stage: Optional[str]) -> dict:
+def _stage_display(stage: Optional[str], failed: int = 0) -> dict:
     label, kind = _STAGE_DISPLAY.get(
         stage, ((stage or "unknown").replace("_", " ").capitalize(), "muted")
     )
+    # A finished run that lost some combinations is not a clean "Complete"
+    # -- flag it amber so the pill does not read green over an all-red bar.
+    if stage == "complete" and failed:
+        return {"label": f"Complete · {failed} failed", "kind": "busy"}
     return {"label": label, "kind": kind}
 
 
@@ -322,10 +326,17 @@ def _runs_for_display(runs: list) -> list:
             "name": r["label"] or date_text or r["run_id"],
             "date_text": date_text,
             "started_ago": _fmt_ago(started),
-            "stage_display": _stage_display(r.get("stage")),
+            "stage_display": _stage_display(r.get("stage"), r.get("failed", 0)),
             "swept_text": ", ".join(f'{s["label"]} ×{s["n"]}' for s in r["swept"]),
         })
     return view
+
+
+@app.route("/runs.json")
+def runs_json():
+    """The run list's live data. The index page polls this to keep each
+    run's progress bar and stage current without reloading the form."""
+    return jsonify(_runs_for_display(Run.list_runs()))
 
 
 @app.route("/")
@@ -508,6 +519,7 @@ def run_status(run_id):
     swept = [parameter_meta.column_name(n) for n in run.sweep_param_names]
 
     stage = run.state.get("stage")
+    progress = run_manager.progress_of(run.state)
     started = _run_started(run)
     try:
         updated = _dt.datetime.fromtimestamp(os.path.getmtime(run.state_path))
@@ -524,8 +536,8 @@ def run_status(run_id):
         rows=_combo_rows(run),
         is_running=_is_running(run_id),
         plot_exists=plot_exists,
-        progress=run_manager.progress_of(run.state),
-        stage_display=_stage_display(stage),
+        progress=progress,
+        stage_display=_stage_display(stage, progress["failed"]),
         started_text=_fmt_dt(started),
         updated_text=_fmt_ago(updated),
         duration_text=_fmt_dur(duration),
@@ -657,13 +669,16 @@ def run_status_json(run_id):
     instead meant a large sweep re-sent megabytes on every poll.
     """
     run = Run.load(run_id)
+    prog = run_manager.progress_of(run.state)
     return jsonify({
         "run_id": run.run_id,
         "stage": run.state.get("stage"),
-        "stage_display": _stage_display(run.state.get("stage")),
-        "progress": run_manager.progress_of(run.state),
+        "stage_display": _stage_display(run.state.get("stage"), prog["failed"]),
+        "progress": prog,
         "error": run.state.get("error"),
         "is_running": _is_running(run_id),
+        # so the page can reload itself once, when the plot first appears
+        "plot_ready": os.path.exists(os.path.join(run.plots_dir, "modes_scatter_plot.html")),
         "combos": {
             combo_id: {
                 "step_status": combo.get("step_status"),
