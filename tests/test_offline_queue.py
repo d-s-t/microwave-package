@@ -12,9 +12,10 @@ Run: python -m unittest discover -s tests
 """
 import os
 import tempfile
+import time
 import unittest
 
-from eigen_mode_analyze import resilient_io
+from eigen_mode_analyze import pipeline, resilient_io
 
 # A path that cannot exist, rather than a real disconnected network
 # drive. Probing a DISCONNECTED MAPPED drive costs ~21 s on the first
@@ -89,6 +90,57 @@ class TestEnsureQueueReady(unittest.TestCase):
             resilient_io.ensure_queue_ready(queue)
         finally:
             os.environ.pop("ANSYS_ANALYZE_QUEUE_PATH", None)
+
+
+class TestQueueProbe(unittest.TestCase):
+    """The reachability check runs on its own thread so the first STEP
+    files and AEDT models start building immediately, instead of after
+    the ~20s a disconnected mapped drive costs to answer. These pin the
+    two outcomes the pipeline branches on: `wait()` gives the right
+    answer, and a reachable queue comes back with its subfolders made.
+    """
+
+    def setUp(self):
+        self._saved = os.environ.get("ANSYS_ANALYZE_QUEUE_PATH")
+
+    def tearDown(self):
+        if self._saved is None:
+            os.environ.pop("ANSYS_ANALYZE_QUEUE_PATH", None)
+        else:
+            os.environ["ANSYS_ANALYZE_QUEUE_PATH"] = self._saved
+
+    def test_an_unreachable_share_settles_as_not_reachable(self):
+        os.environ["ANSYS_ANALYZE_QUEUE_PATH"] = OFFLINE
+        queue = resilient_io.queue_from_env()
+        probe = pipeline._QueueProbe(queue, log=lambda _m: None).start()
+        self.assertFalse(probe.wait(timeout=30))
+
+    def test_the_caller_is_not_blocked_while_the_probe_runs(self):
+        """The whole point of the thread: building starts now, and the
+        handoff only ever waits on the probe once a model is ready."""
+        os.environ["ANSYS_ANALYZE_QUEUE_PATH"] = OFFLINE
+        queue = resilient_io.queue_from_env()
+        started = time.monotonic()
+        pipeline._QueueProbe(queue, log=lambda _m: None).start()
+        self.assertLess(time.monotonic() - started, 2)
+
+    def test_a_reachable_share_comes_back_ready_to_write(self):
+        os.environ["ANSYS_ANALYZE_QUEUE_PATH"] = tempfile.mkdtemp()
+        queue = resilient_io.queue_from_env()
+        probe = pipeline._QueueProbe(queue, log=lambda _m: None).start()
+        self.assertTrue(probe.wait(timeout=30))
+        for path in (queue.pending, queue.in_progress, queue.done,
+                     queue.failed, queue.projects, queue.logs):
+            self.assertTrue(os.path.isdir(path), f"{path} should have been created")
+
+    def test_wait_after_it_settles_returns_at_once(self):
+        os.environ["ANSYS_ANALYZE_QUEUE_PATH"] = OFFLINE
+        queue = resilient_io.queue_from_env()
+        probe = pipeline._QueueProbe(queue, log=lambda _m: None).start()
+        self.assertFalse(probe.wait(timeout=30))
+        started = time.monotonic()
+        self.assertFalse(probe.wait(timeout=30))
+        self.assertLess(time.monotonic() - started, 0.5)
 
 
 class TestPathAvailable(unittest.TestCase):
