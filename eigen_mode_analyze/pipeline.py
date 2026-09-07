@@ -15,7 +15,7 @@ import argparse
 import logging
 import sys
 import threading
-from typing import List, Optional
+from typing import Callable, List, Optional
 
 from ansys_analyze_common import queue_common
 
@@ -26,6 +26,68 @@ from .run_manager import Run
 from .sweep import SweepParameter, expand_values, split_swept_and_fixed
 
 logger = logging.getLogger("eigen_mode_analyze")
+
+
+class _QueueProbe:
+    """Checks whether the queue share is reachable, on its own thread.
+
+    The check is instant for a normal folder, but a DISCONNECTED MAPPED
+    DRIVE takes about twenty seconds to answer the first time in a
+    process -- Windows retries the connection before giving up. Running
+    it here, alongside the first STEP files and AEDT models, keeps that
+    cost off the critical path: by the time a model is built and ready to
+    hand over, the answer is almost always already in.
+
+    `wait()` blocks for the result and returns whether the queue is
+    reachable. It is meant to be called at the point the handoff would
+    happen, where it normally returns at once. On the way it also creates
+    the queue's subfolders (the half of `ensure_queue_ready` that needs
+    the share), so a reachable queue is ready to be written to.
+    """
+
+    def __init__(self, queue, log: Callable[[str], None] = logger.info) -> None:
+        self._queue = queue
+        self._log = log
+        self._done = threading.Event()
+        self.reachable = False
+        self._thread = threading.Thread(target=self._run, daemon=True, name="queue-probe")
+
+    def start(self) -> "_QueueProbe":
+        self._thread.start()
+        return self
+
+    def _run(self) -> None:
+        try:
+            if resilient_io.path_available(self._queue.root):
+                self._queue.ensure_exist()
+                self.reachable = True
+                self._log("Queue is reachable.")
+            else:
+                self._log(
+                    f"Queue at {self._queue.root} is NOT reachable. The geometry will "
+                    "still be built on this machine; handing it to the worker is deferred "
+                    "until you reconnect and resume this run."
+                )
+        except OSError as exc:
+            # The share answered but a subfolder could not be created
+            # (permissions, or it dropped in the gap after the check).
+            # Degrade to the offline path rather than taking the run down.
+            self._log(
+                f"Queue at {self._queue.root} could not be prepared ({exc}); treating it "
+                "as unreachable -- the handoff is deferred to a later resume."
+            )
+        except Exception:
+            logger.exception("Unexpected error while probing the queue.")
+            self._log(
+                f"Queue at {self._queue.root} could not be checked -- treating it as "
+                "unreachable; the handoff is deferred to a later resume."
+            )
+        finally:
+            self._done.set()
+
+    def wait(self, timeout: Optional[float] = None) -> bool:
+        self._done.wait(timeout)
+        return self.reachable
 
 
 def run_pipeline(run: Run, queue: "queue_common.QueuePaths", log=logger.info, stop_event=None) -> None:
@@ -42,6 +104,16 @@ def run_pipeline(run: Run, queue: "queue_common.QueuePaths", log=logger.info, st
     # Combinations whose geometry is built but which could not be handed
     # over, because the queue was unreachable at the time.
     deferred: List[str] = []
+
+    # Start checking whether the share is reachable straight away, on its
+    # own thread, so the first STEP files and AEDT models start building
+    # now instead of after the ~20s a disconnected mapped drive costs to
+    # answer. `queue_combo` consults the result when a model is actually
+    # ready to hand over -- by then the answer is almost always already in.
+    log(f"Checking the queue at {queue.root} in the background "
+        "(a disconnected network drive can take ~20s to answer); "
+        "geometry building starts now.")
+    queue_probe = _QueueProbe(queue, log=log).start()
 
     def queue_combo(combo_id: str) -> None:
         """Build the AEDT model for one finished STEP, and hand it over
@@ -68,11 +140,14 @@ def run_pipeline(run: Run, queue: "queue_common.QueuePaths", log=logger.info, st
             # build_model has said which.
             return
 
-        if not resilient_io.path_available(queue.root):
-            # Do NOT wait here. Waiting would stall the sweep on its
-            # first combination with nothing to show for the time. The
-            # model is built and saved; only the handoff is missing, and
-            # resuming later picks up exactly there.
+        # The model is built and saved; only the handoff is left. Consult
+        # the background probe rather than checking the share here: by now
+        # it has almost always answered, so this does not block. If it
+        # somehow hasn't (a very slow share), waiting for it beats
+        # deferring a handoff that would have gone through.
+        if not queue_probe.wait():
+            # Offline. The model is built and saved; resuming once the
+            # share is back picks up exactly here.
             if combo_id not in deferred:
                 deferred.append(combo_id)
                 run.update_combo(combo_id, queue_status="deferred")
@@ -92,22 +167,8 @@ def run_pipeline(run: Run, queue: "queue_common.QueuePaths", log=logger.info, st
     # already analysing report progress to the UI while the remaining
     # geometry is still being built. The STEP files themselves are still
     # produced one at a time: they share a single SolidWorks document.
-    # Probe the queue once, up front. A DISCONNECTED MAPPED DRIVE takes
-    # about twenty seconds to answer the first time in a process, because
-    # Windows tries to reconnect it before giving up -- so without this
-    # the run would appear to hang at a random moment with nothing said.
-    # Later probes in this process are cached and instant.
-    log(f"Checking the queue at {queue.root} (a disconnected network drive can take ~20s to answer)...")
-    if resilient_io.path_available(queue.root):
-        resilient_io.ensure_queue_ready(queue)
-        log("Queue is reachable.")
-    else:
-        log(
-            f"Queue at {queue.root} is NOT reachable. The geometry will still be built "
-            "on this machine; handing it to the worker is deferred until you reconnect "
-            "and resume this run."
-        )
-
+    # The queue's reachability is being probed in parallel (see above);
+    # nothing here waits on it until there is a model to hand over.
     log("Stage 1/4: generating layouts in Altium, STEP files in SolidWorks, "
         "building AEDT models, and queuing analysis tasks...")
     run.set_stage("generating_and_queuing")
@@ -160,6 +221,11 @@ def run_pipeline(run: Run, queue: "queue_common.QueuePaths", log=logger.info, st
     if stop_event is not None and stop_event.is_set():
         monitor_thread.join(timeout=30)
         return
+
+    # If Stage 1 handed nothing over (every combo was already queued on an
+    # earlier run) the probe was never consulted; settle it now so the
+    # deferred / geometry-ready decision below rests on a real answer.
+    queue_probe.wait()
 
     if deferred:
         # The geometry is built and saved; only the handoff is missing.
