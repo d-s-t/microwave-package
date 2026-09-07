@@ -31,8 +31,14 @@ def progress_of(state: dict) -> Dict[str, int]:
 
     One definition, used by both the run list and the run page, so the
     numbers agree: a combination is *done* once it is post-processed,
-    *failed* if analysis or post-processing failed, *skipped* if its
-    geometry never fitted, and otherwise still on its way.
+    *failed* if analysis or post-processing failed, and otherwise still
+    on its way.
+
+    Skipped combinations (their geometry never fitted, so nothing is
+    built for them) are *not* progress -- a run whose every buildable
+    combination is done is finished, however many were skipped. `total`
+    is therefore the buildable count; `skipped` and `grand_total` are
+    reported alongside for context.
     """
     combos = state.get("combos", {})
     done = failed = skipped = 0
@@ -43,13 +49,15 @@ def progress_of(state: dict) -> Dict[str, int]:
             failed += 1
         elif combo.get("post_status") == "done":
             done += 1
-    total = len(combos)
+    grand_total = len(combos)
+    total = grand_total - skipped
     return {
         "total": total,
         "done": done,
         "failed": failed,
         "skipped": skipped,
-        "pending": total - done - failed - skipped,
+        "pending": total - done - failed,
+        "grand_total": grand_total,
     }
 
 

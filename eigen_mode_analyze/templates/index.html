@@ -91,9 +91,9 @@
 </header>
 
 {% macro progress_bar(p) -%}
-<span class="progress" title="{{ p.done }} done · {{ p.failed }} failed · {{ p.skipped }} skipped · {{ p.pending }} to go">
+<span class="progress" title="{{ p.done }} done · {{ p.failed }} failed · {{ p.pending }} to go{% if p.skipped %} ({{ p.skipped }} skipped, not counted){% endif %}">
 {%- if p.total -%}
-<i class="d" style="width:{{ (100.0 * p.done / p.total)|round(1) }}%"></i><i class="f" style="width:{{ (100.0 * p.failed / p.total)|round(1) }}%"></i><i class="s" style="width:{{ (100.0 * p.skipped / p.total)|round(1) }}%"></i>
+<i class="d" style="width:{{ (100.0 * p.done / p.total)|round(1) }}%"></i><i class="f" style="width:{{ (100.0 * p.failed / p.total)|round(1) }}%"></i>
 {%- endif -%}
 </span>
 {%- endmacro %}
@@ -110,7 +110,7 @@
   <td>
     <span class="bar-cell">
       {{ progress_bar(r) }}
-      <span class="progress-num">{{ r.done }}/{{ r.total }}{% if r.failed %} · {{ r.failed }} failed{% endif %}{% if r.skipped %} · {{ r.skipped }} skipped{% endif %}</span>
+      <span class="progress-num">{% if r.total %}{{ r.done }}/{{ r.total }}{% else %}&mdash;{% endif %}{% if r.failed %} · {{ r.failed }} failed{% endif %}{% if r.skipped %} · {{ r.skipped }} skipped{% endif %}</span>
     </span>
   </td>
   <td><span class="pill {{ r.stage_display.kind }}">{{ r.stage_display.label }}</span></td>
@@ -576,15 +576,13 @@
       if (!r) { return; }
       var d = row.querySelector('.progress i.d');
       var f = row.querySelector('.progress i.f');
-      var s = row.querySelector('.progress i.s');
       if (d && r.total) {
         d.style.width = (100 * r.done / r.total).toFixed(1) + '%';
         f.style.width = (100 * r.failed / r.total).toFixed(1) + '%';
-        s.style.width = (100 * r.skipped / r.total).toFixed(1) + '%';
       }
       var num = row.querySelector('.progress-num');
       if (num) {
-        var t = r.done + '/' + r.total;
+        var t = r.total ? (r.done + '/' + r.total) : '—';
         if (r.failed) { t += ' · ' + r.failed + ' failed'; }
         if (r.skipped) { t += ' · ' + r.skipped + ' skipped'; }
         num.textContent = t;

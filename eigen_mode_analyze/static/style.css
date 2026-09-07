@@ -41,13 +41,13 @@ details.collapsible table{margin-top:.5rem}
 .pill.muted{background:var(--neutral)}
 .pill.idle{background:transparent;color:var(--muted);border:1px solid var(--line)}
 
-/* --- stacked progress bar ------------------------------------- */
+/* --- progress bar (done + failed over the buildable combinations;
+       skipped combinations are not progress and are not shown here) --- */
 .progress{display:inline-flex;height:8px;width:100%;min-width:110px;max-width:260px;
   border-radius:999px;overflow:hidden;background:var(--line);vertical-align:middle}
 .progress i{display:block;height:100%}
 .progress i.d{background:var(--ok)}
 .progress i.f{background:var(--bad)}
-.progress i.s{background:var(--muted);opacity:.5}
 .progress-num{font-size:.82em;color:var(--muted);white-space:nowrap}
 
 /* --- run list --------------------------------------------------- */
