@@ -101,6 +101,18 @@ MATERIAL_FALLBACKS = {
 }
 
 
+# The SMP connector's insulator bead. Wuerth's datasheet material is LCP;
+# permittivity ~3.6 and dielectric loss tangent ~0.003 at 10 GHz. This is
+# vendor geometry, not a design variable, so it is hardcoded here rather
+# than exposed as a run setting -- `place_connectors` creates the
+# material and assigns it to the bead directly, and the `connector_dielectric`
+# material rule below carries no material of its own as a result.
+# See github.com/d-s-t/wr-smp-connector for how the bead was reconstructed.
+CONNECTOR_DIELECTRIC_MATERIAL = "SMP_LCP"
+CONNECTOR_DIELECTRIC_PERMITTIVITY = 3.6
+CONNECTOR_DIELECTRIC_LOSS_TANGENT = 0.003
+
+
 # How an imported solid's name decides its material and boundary.
 #
 # This used to be an if/elif chain of substring tests, which was fine
@@ -111,7 +123,10 @@ MATERIAL_FALLBACKS = {
 #
 # So the rules are explicit and ORDERED, most specific first, and the
 # first match wins. `perfect_e` names the setting that decides whether
-# the body also gets a perfect-E boundary; None means never.
+# the body also gets a perfect-E boundary; None means never. A `material`
+# of None means the body's material is set where it is created (the SMP
+# connector bead is the only such case) -- the rule then only records the
+# body and applies its boundary.
 #
 # Names come from the STEP, which gets them from the SolidWorks
 # components -- see base_parts/altium/README.md for where copper body
@@ -133,6 +148,12 @@ MATERIAL_RULES = [
     ("pcb_via",         "pcb_vias",        "mat_conductor_pcb",   "perfect_e_conductors"),
     ("pcb_substrate",   "pcb",             "mat_pcb",             None),
     ("wirebond",        "wirebond",        "mat_conductor_pcb",   "perfect_e_conductors"),
+    # The SMP connector imports as three bodies. The bead
+    # (connector_N_dielectric) keeps the LCP material place_connectors
+    # gives it -- hence None here, and it must precede the bare "connector"
+    # rule. The two conductors (connector_N_outer / connector_N_center)
+    # are a PEC lump like before.
+    ("dielectric",      "connector_dielectric", None,             None),
     ("connector",       "connector",       "mat_box",             "perfect_e_connector"),
     # The bare names come last, so the specific ones above win.
     ("lid",             "lid",             "mat_box",             "perfect_e_box"),
@@ -171,21 +192,78 @@ def _drop_superseded_solids(hfss, log) -> None:
         log(f"Removed the imported {', '.join(doomed)} -- rebuilt from the layout instead.")
 
 
+def _ensure_connector_dielectric_material(hfss, log) -> None:
+    """Add the SMP connector bead's LCP material to the project, once.
+
+    Datasheet LCP: permittivity ~3.6, dielectric loss tangent ~0.003 at
+    10 GHz. Hardcoded rather than a run setting -- it is vendor geometry.
+    """
+    try:
+        if hfss.materials.exists_material(CONNECTOR_DIELECTRIC_MATERIAL):
+            return
+        material = hfss.materials.add_material(CONNECTOR_DIELECTRIC_MATERIAL)
+        material.permittivity = CONNECTOR_DIELECTRIC_PERMITTIVITY
+        material.dielectric_loss_tangent = CONNECTOR_DIELECTRIC_LOSS_TANGENT
+        material.update()
+    except Exception as exc:
+        log(f"WARNING: could not create the {CONNECTOR_DIELECTRIC_MATERIAL} material ({exc}).")
+
+
+def _combined_bounding_box(hfss, names: List[str]) -> List[float]:
+    """Union of several bodies' bounding boxes, as [xmin, ymin, zmin, xmax, ymax, zmax]."""
+    boxes = [hfss.modeler[n].bounding_box for n in names]
+    return [
+        min(b[0] for b in boxes), min(b[1] for b in boxes), min(b[2] for b in boxes),
+        max(b[3] for b in boxes), max(b[4] for b in boxes), max(b[5] for b in boxes),
+    ]
+
+
+def _classify_connector_bodies(hfss, names: List[str]):
+    """Sort the three split-STEP bodies into (outer, centre, dielectric).
+
+    Prefers the STEP product names (SMP_outer_conductor / SMP_center_conductor
+    / SMP_dielectric); falls back to volume order -- outer ~33 > dielectric
+    ~11 > centre ~1 mm^3 -- if the importer named them something else.
+    Returns None when there are not exactly three bodies to sort.
+    """
+    if len(names) != 3:
+        return None
+
+    def by_key(*keys):
+        for n in names:
+            low = n.lower()
+            if any(k in low for k in keys):
+                return n
+        return None
+
+    outer, centre, diel = by_key("outer"), by_key("center", "centre"), by_key("diel")
+    if not (outer and centre and diel) or len({outer, centre, diel}) != 3:
+        try:
+            ordered = sorted(names, key=lambda n: float(hfss.modeler[n].volume), reverse=True)
+        except Exception:
+            return None
+        outer, diel, centre = ordered
+    return outer, centre, diel
+
+
 def place_connectors(hfss, frame, board_top: float, half_length: float,
                      port_space: float, count: int, log=logger.info) -> List[str]:
-    """Import the SMP connector model once per port and set it on its launch.
+    """Import the split SMP connector model once per port and set it on its launch.
 
-    The vendor ships a single solid -- no separated pin, dielectric and
-    shell exists in any format they provide -- so each connector is one
-    body, named so the material rules give it a perfect-E boundary.
+    The vendor ships one fused solid; github.com/d-s-t/wr-smp-connector
+    splits it into three named bodies -- outer conductor, centre conductor
+    and dielectric bead -- so each port becomes `connector_N_outer`,
+    `connector_N_center` and `connector_N_dielectric`. The two conductors
+    match the `connector` material rule and get a perfect-E boundary; the
+    bead is set to LCP here (vendor geometry, not a run setting).
 
-    Placement is by BOUNDING BOX, not by the model's own origin. A
-    vendor model's origin can sit anywhere, and this one's does not
-    coincide with the footprint origin, which is what left the
-    connectors offset from their launches. Aligning measured faces
-    instead is self-correcting: the outer face lands port_space from the
-    board edge, the underside sits on the board, and the body is centred
-    across it, whatever the file happens to use as its datum.
+    Placement is by the BOUNDING BOX of the three bodies together, not by
+    the model's own origin. A vendor model's origin can sit anywhere, and
+    this one's does not coincide with the footprint origin, which is what
+    left the connectors offset from their launches. Aligning measured
+    faces instead is self-correcting: the outer face lands port_space from
+    the board edge, the underside sits on the board, and the body is
+    centred across it, whatever the file happens to use as its datum.
     """
     from . import paths, smp
 
@@ -194,12 +272,22 @@ def place_connectors(hfss, frame, board_top: float, half_length: float,
         log(f"No SMP model at {model} -- building the board without connectors.")
         return []
 
-    placed = []
+    _ensure_connector_dielectric_material(hfss, log)
+
+    placed: List[str] = []
     for index in range(int(count)):
         sign = -1.0 if index == 0 else 1.0
         before = set(hfss.modeler.object_names)
         try:
-            hfss.modeler.import_3d_cad(str(model))
+            hfss.modeler.import_3d_cad(
+                str(model),
+                healing=True,
+                refresh_all_ids=True,
+                import_materials=False,
+                group_by_assembly=False,
+                create_group=False,
+                separate_disjoints_lumped_object=False,
+            )
         except Exception as exc:
             log(f"WARNING: could not import the SMP model ({exc}); no connector placed.")
             return placed
@@ -209,28 +297,60 @@ def place_connectors(hfss, frame, board_top: float, half_length: float,
             log("WARNING: importing the SMP model added no object; no connector placed.")
             return placed
 
-        name = f"connector_{index + 1}"
-        hfss.modeler[new_objects[0]].name = name
+        prefix = f"connector_{index + 1}"
+        classified = _classify_connector_bodies(hfss, new_objects)
+        if classified is None:
+            # Not the three-body split we expect. Name whatever arrived so
+            # the `connector` rule still catches it (PEC lump) and carry on.
+            log(
+                f"WARNING: the SMP model imported {len(new_objects)} bodies, not 3; "
+                "treating them all as connector conductors."
+            )
+            bodies = []
+            for i, obj_name in enumerate(new_objects):
+                body = prefix if i == 0 else f"{prefix}_{i}"
+                hfss.modeler[obj_name].name = body
+                bodies.append(body)
+            dielectric = None
+        else:
+            outer, centre, diel = classified
+            hfss.modeler[outer].name = f"{prefix}_outer"
+            hfss.modeler[centre].name = f"{prefix}_center"
+            hfss.modeler[diel].name = f"{prefix}_dielectric"
+            bodies = [f"{prefix}_outer", f"{prefix}_center", f"{prefix}_dielectric"]
+            dielectric = f"{prefix}_dielectric"
 
         try:
-            # Stand it up: the model has Z up, the assembly has Y up.
-            hfss.modeler.rotate(name, "X", smp.model_rotation_degrees())
-            # Turn it to face the board. The near connector is the far
-            # one through half a revolution about the up axis.
+            # Stand it up: the model has Z up, the assembly has Y up. The
+            # three bodies rotate and move as one list so the assembly
+            # stays rigid.
+            hfss.modeler.rotate(bodies, "X", smp.model_rotation_degrees())
+            # Turn it to face the board. The near connector is the far one
+            # through half a revolution about the up axis.
             if sign < 0:
-                hfss.modeler.rotate(name, "Y", 180.0)
+                hfss.modeler.rotate(bodies, "Y", 180.0)
 
-            box = hfss.modeler[name].bounding_box
+            box = _combined_bounding_box(hfss, bodies)
             move = smp.model_alignment(box, frame, board_top, half_length, port_space, sign)
-            hfss.modeler.move(name, move)
-            log(f"Placed {name}: bounding box now {hfss.modeler[name].bounding_box}")
+            hfss.modeler.move(bodies, move)
+            log(f"Placed {prefix}: bounding box now {_combined_bounding_box(hfss, bodies)}")
         except Exception as exc:
             log(
-                f"WARNING: {name} was imported but could not be positioned ({exc}). "
+                f"WARNING: {prefix} was imported but could not be positioned ({exc}). "
                 "It is in the model at the wrong place."
             )
 
-        placed.append(name)
+        if dielectric is not None:
+            try:
+                hfss.modeler[dielectric].material_name = CONNECTOR_DIELECTRIC_MATERIAL
+                hfss.modeler[dielectric].solve_inside = True
+            except Exception as exc:
+                log(
+                    f"WARNING: {dielectric} could not be set to "
+                    f"{CONNECTOR_DIELECTRIC_MATERIAL} ({exc}); it stays on the modeller default."
+                )
+
+        placed.extend(bodies)
 
     return placed
 
@@ -488,15 +608,20 @@ def assign_materials_and_boundaries(hfss, mat_settings: dict, log=logger.info) -
         for pattern, key, material_key, perfect_e_key in MATERIAL_RULES:
             if pattern not in name:
                 continue
-            material = mat_settings.get(material_key) or MATERIAL_FALLBACKS.get(material_key)
-            if material:
-                if not mat_settings.get(material_key):
-                    fell_back.add(material_key)
-                is_conductor = "conductor" in material_key
-                if not _assign_material(hfss, obj, material, is_conductor, log):
-                    rejected.append(f"{obj.name} ({material})")
+            if material_key is None:
+                # The body's material is set where it is created (the SMP
+                # connector bead). Nothing to resolve, and not a warning.
+                pass
             else:
-                unnamed.append(obj.name)
+                material = mat_settings.get(material_key) or MATERIAL_FALLBACKS.get(material_key)
+                if material:
+                    if not mat_settings.get(material_key):
+                        fell_back.add(material_key)
+                    is_conductor = "conductor" in material_key
+                    if not _assign_material(hfss, obj, material, is_conductor, log):
+                        rejected.append(f"{obj.name} ({material})")
+                else:
+                    unnamed.append(obj.name)
             objects_dict.setdefault(key, obj)
             if perfect_e_key and mat_settings.get(perfect_e_key):
                 hfss.assign_perfect_e(assignment=obj.name)
@@ -549,10 +674,11 @@ def carve_vacuum(hfss, objects_dict, log=logger.info) -> None:
     The tool list is read straight from `hfss.modeler.solid_objects`,
     not from `objects_dict`. Several material rules legitimately match
     MORE than one body -- pcb_copper matches both the top and bottom
-    layer, connector matches one body per port -- and objects_dict keeps
-    only the first body per rule key, so building the tool list from it
-    silently carved just one of them and left the rest overlapping
-    vacuum. That is exactly how a second connector went uncarved.
+    layer, connector matches two conductor bodies per port -- and
+    objects_dict keeps only the first body per rule key, so building the
+    tool list from it silently carved just one of them and left the rest
+    overlapping vacuum. That is exactly how a second connector went
+    uncarved.
     """
     vacuum = objects_dict.get("vacuum")
     if vacuum is None:

@@ -116,7 +116,8 @@ class TestCopperDoesNotBecomeSubstrate(unittest.TestCase):
         names = [
             "vacuum", "box", "lid", "chip_lid",
             "pcb_substrate", "pcb_copper_top", "pcb_copper_bottom", "pcb_vias",
-            "chip_substrate", "chip_conductor", "wirebond_1", "connector_J1",
+            "chip_substrate", "chip_conductor", "wirebond_1",
+            "connector_1_outer", "connector_1_center", "connector_1_dielectric",
         ]
         hfss, _ = assign(names)
         got = {o.name: o.material_name for o in hfss.modeler.solid_objects}
@@ -127,15 +128,38 @@ class TestCopperDoesNotBecomeSubstrate(unittest.TestCase):
         self.assertEqual(got["chip_substrate"], "silicon")
         self.assertEqual(got["chip_conductor"], "niobium")
         self.assertEqual(got["wirebond_1"], "copper")
-        self.assertEqual(got["connector_J1"], "aluminum")
+        # The two connector conductors are a PEC lump on mat_box.
+        self.assertEqual(got["connector_1_outer"], "aluminum")
+        self.assertEqual(got["connector_1_center"], "aluminum")
+        # The bead's material is set in place_connectors, not by the
+        # rules, so the rule layer leaves it untouched here.
+        self.assertIsNone(got["connector_1_dielectric"])
 
 
 class TestPerfectEToggles(unittest.TestCase):
     def test_conductors_get_perfect_e_by_default(self):
-        hfss, _ = assign(["pcb_copper_top", "chip_conductor", "connector_J1"])
+        hfss, _ = assign(["pcb_copper_top", "chip_conductor", "connector_1_outer"])
         self.assertEqual(
-            sorted(hfss.perfect_e), ["chip_conductor", "connector_J1", "pcb_copper_top"]
+            sorted(hfss.perfect_e),
+            ["chip_conductor", "connector_1_outer", "pcb_copper_top"],
         )
+
+    def test_the_connector_bead_is_a_dielectric_not_a_pec_lump(self):
+        """The two conductors are perfect-E; the bead must not be, or the
+        dielectric that was the whole point of splitting is shorted out."""
+        hfss, objects = assign(
+            ["connector_1_outer", "connector_1_center", "connector_1_dielectric"]
+        )
+        self.assertEqual(
+            sorted(hfss.perfect_e), ["connector_1_center", "connector_1_outer"]
+        )
+        self.assertIn("connector_dielectric", objects)
+
+    def test_perfect_e_connector_toggle_still_gates_the_conductors(self):
+        settings = dict(SETTINGS, perfect_e_connector=False)
+        hfss, _ = assign(["connector_1_outer", "connector_1_center"], settings)
+        self.assertEqual(hfss.perfect_e, [])
+        self.assertEqual(hfss.modeler.solid_objects[0].material_name, "aluminum")
 
     def test_turning_the_conductor_toggle_off_leaves_the_materials(self):
         settings = dict(SETTINGS, perfect_e_conductors=False)
@@ -305,8 +329,9 @@ class TestMaterialFallbacks(unittest.TestCase):
 
     def test_every_material_key_the_rules_use_has_a_fallback(self):
         """Structural: a rule naming a key with no fallback can still
-        strand a body on vacuum."""
-        used = {rule[2] for rule in model_builder.MATERIAL_RULES}
+        strand a body on vacuum. A `None` key is exempt -- it means the
+        body's material is set where it is created (the connector bead)."""
+        used = {rule[2] for rule in model_builder.MATERIAL_RULES if rule[2] is not None}
         missing = used - set(model_builder.MATERIAL_FALLBACKS)
         self.assertEqual(missing, set(), f"no fallback for {missing}")
 
@@ -324,9 +349,16 @@ class TestRuleTableIsSane(unittest.TestCase):
         patterns = [rule[0] for rule in model_builder.MATERIAL_RULES]
         for specific, bare in (("chip_copper", "chip"), ("chip_substrate", "chip"),
                                ("pcb_copper", "pcb"), ("pcb_substrate", "pcb"),
-                               ("chip_lid", "chip")):
+                               ("chip_lid", "chip"), ("dielectric", "connector")):
             self.assertLess(patterns.index(specific), patterns.index(bare),
                             f"{specific} must be tested before {bare}")
+
+    def test_the_connector_bead_rule_carries_no_material_of_its_own(self):
+        """`None` there means place_connectors set it; a real key would
+        double-assign and, worse, log a spurious fallback NOTE every run."""
+        rule = next(r for r in model_builder.MATERIAL_RULES if r[0] == "dielectric")
+        self.assertIsNone(rule[2], "the connector_dielectric rule must not name a material")
+        self.assertIsNone(rule[3], "the bead must not get a perfect-E boundary")
 
 
 class TestCavityFrame(unittest.TestCase):
@@ -410,29 +442,35 @@ class TestCarveVacuum(unittest.TestCase):
     This exists because the FIRST version silently missed bodies:
     several material rules legitimately match more than one solid --
     pcb_copper matches both the top and bottom layer, connector matches
-    one body per port -- and objects_dict (used elsewhere to look
-    something up by a single semantic key like "vacuum" or "chip") keeps
-    only the first body per rule key. Building the vacuum-carving tool
-    list from objects_dict therefore carved only ONE of two connectors
+    two conductor bodies per port -- and objects_dict (used elsewhere to
+    look something up by a single semantic key like "vacuum" or "chip")
+    keeps only the first body per rule key. Building the vacuum-carving
+    tool list from objects_dict therefore carved only ONE of two connectors
     and left the second one overlapping vacuum, invisibly. carve_vacuum
     now scans the modeler's raw solid list instead, which has no such
     collapsing.
     """
 
     def test_every_connector_is_carved_even_though_they_share_a_rule_key(self):
-        hfss = FakeHfss(["vacuum", "box", "connector_1", "connector_2"])
+        hfss = FakeHfss([
+            "vacuum", "box",
+            "connector_1_outer", "connector_1_center", "connector_1_dielectric",
+            "connector_2_outer", "connector_2_center", "connector_2_dielectric",
+        ])
         # Simulate what assign_materials_and_boundaries actually leaves
-        # behind: only the FIRST connector survives objects_dict's
+        # behind: only the FIRST body per rule key survives objects_dict's
         # setdefault, exactly like the bug that shipped.
         objects_dict = {
             "vacuum": hfss.solid_objects[0],
             "box": hfss.solid_objects[1],
-            "connector": hfss.solid_objects[2],  # connector_2 is not here
+            "connector": hfss.solid_objects[2],
+            "connector_dielectric": hfss.solid_objects[4],
         }
         model_builder.carve_vacuum(hfss, objects_dict, log=lambda _m: None)
-        target, tools, keep = hfss.subtractions[0]
-        self.assertIn("connector_1", tools)
-        self.assertIn("connector_2", tools, "the second connector must not be skipped")
+        _target, tools, _keep = hfss.subtractions[0]
+        for body in ("connector_1_outer", "connector_1_center", "connector_1_dielectric",
+                     "connector_2_outer", "connector_2_center", "connector_2_dielectric"):
+            self.assertIn(body, tools, f"{body} must not be skipped")
 
     def test_both_copper_layers_are_carved_even_though_they_share_a_rule_key(self):
         hfss = FakeHfss(["vacuum", "box", "pcb_copper_top", "pcb_copper_bottom"])

@@ -103,6 +103,21 @@ the run's resumable state (`state.json`, `run_config.json`), and the
 final combined CSV + interactive plot (`plots/`). This folder is
 git-ignored -- it's backed up elsewhere, not committed.
 
+## The SMP connector model
+
+The launch connector is Würth Elektronik WR-SMP, part **60124102122403**.
+The vendor ships its 3D model as a single fused solid, which HFSS would
+import as one object with no metal/insulator interfaces. The companion
+project
+[`wr-smp-connector`](https://github.com/d-s-t/wr-smp-connector) splits it
+into three named solids -- outer conductor, centre conductor and
+dielectric bead -- and that split file is committed here as
+`base_parts/smp_connector_split.step`; `model_builder.place_connectors`
+imports it as three bodies so the bead is modelled as LCP rather than
+swallowed into a PEC lump. Nothing at build time reaches outside this
+repo -- the split STEP is checked in, and `wr-smp-connector` is only a
+reference for how it was reconstructed and how to regenerate it.
+
 ## Extending
 
 - **New scripts for this experiment**: add them under `eigen_mode_analyze/`

@@ -340,8 +340,11 @@ DEFAULT_ANALYSIS_SETTINGS = {
         "mat_conductor_pcb": "copper",
         "mat_conductor_chip": "niobium",
         "perfect_e_conductors": True,
-        # The SMP connector arrives as one fused body, so it cannot be
-        # split into pin, dielectric and shell. It is a PEC lump.
+        # The SMP connector imports as three bodies (outer conductor,
+        # centre conductor, dielectric bead -- see
+        # github.com/d-s-t/wr-smp-connector). This toggle makes the two
+        # conductors a PEC lump; the bead is LCP, set in model_builder
+        # rather than here because it is vendor geometry, not a setting.
         "perfect_e_connector": True,
     },
 }
