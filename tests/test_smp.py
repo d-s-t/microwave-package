@@ -96,7 +96,16 @@ class TestTheConnectorModel(unittest.TestCase):
         from eigen_mode_analyze import paths
 
         self.assertTrue(paths.SMP_MODEL_FILE.is_file(),
-                        "the vendor STEP should be in base_parts")
+                        "the split connector STEP should be in base_parts")
+
+    def test_the_split_model_has_three_named_bodies(self):
+        """The whole point of the split: HFSS must see outer conductor,
+        centre conductor and dielectric as separate solids, not one lump."""
+        from eigen_mode_analyze import paths
+
+        text = paths.SMP_MODEL_FILE.read_text(encoding="utf-8", errors="ignore")
+        for product in ("SMP_outer_conductor", "SMP_center_conductor", "SMP_dielectric"):
+            self.assertIn(product, text, f"{product} missing from the split STEP")
 
     def test_the_rotation_matches_the_frame_used_everywhere_else(self):
         """The model has Z up and the assembly has Y up. -90 about X is
@@ -128,11 +137,82 @@ class TestTheConnectorModel(unittest.TestCase):
         offset = smp.model_offset(frame, 1.381, 13.0, 1.5, +1.0)
         self.assertAlmostEqual(offset[1], 1.381, msg="height must be the board top face")
 
-    def test_the_name_it_gets_is_treated_as_a_conductor(self):
+    def test_the_split_bodies_land_on_the_right_material_rules(self):
+        """The two conductors hit the bare `connector` rule (PEC lump);
+        the bead hits `dielectric` first, which carries no material so
+        place_connectors' LCP assignment stands."""
         from eigen_mode_analyze import model_builder
 
-        patterns = [rule[0] for rule in model_builder.MATERIAL_RULES]
-        self.assertTrue(any(p in "connector_1" for p in patterns))
+        def first_rule(name):
+            for rule in model_builder.MATERIAL_RULES:
+                if rule[0] in name.lower():
+                    return rule
+            return None
+
+        self.assertEqual(first_rule("connector_1_outer")[1], "connector")
+        self.assertEqual(first_rule("connector_1_center")[1], "connector")
+        diel_rule = first_rule("connector_1_dielectric")
+        self.assertEqual(diel_rule[1], "connector_dielectric")
+        self.assertIsNone(diel_rule[2], "the bead rule must not override the LCP material")
+
+
+class _FakeHfss:
+    """Enough of an Hfss for the split-body helpers: modeler[name] with a
+    bounding_box and/or a volume."""
+
+    def __init__(self, boxes=None, volumes=None):
+        boxes, volumes = boxes or {}, volumes or {}
+
+        class _Modeler:
+            def __getitem__(_self, name):
+                obj = type("_Obj", (), {})()
+                if name in boxes:
+                    obj.bounding_box = boxes[name]
+                if name in volumes:
+                    obj.volume = volumes[name]
+                return obj
+
+        self.modeler = _Modeler()
+
+
+class TestSplitBodyHandling(unittest.TestCase):
+    """The helpers place_connectors uses to make sense of the three
+    imported bodies."""
+
+    def test_bodies_are_sorted_by_the_step_product_names(self):
+        from eigen_mode_analyze import model_builder as mb
+
+        got = mb._classify_connector_bodies(
+            _FakeHfss(), ["SMP_center_conductor", "SMP_dielectric", "SMP_outer_conductor"]
+        )
+        self.assertEqual(got, ("SMP_outer_conductor", "SMP_center_conductor", "SMP_dielectric"))
+
+    def test_opaque_names_fall_back_to_volume_order(self):
+        """outer ~33 > dielectric ~11 > centre ~1 mm^3."""
+        from eigen_mode_analyze import model_builder as mb
+
+        got = mb._classify_connector_bodies(
+            _FakeHfss(volumes={"a": 1.29, "b": 33.36, "c": 10.63}), ["a", "b", "c"]
+        )
+        self.assertEqual(got, ("b", "a", "c"))  # outer, centre, dielectric
+
+    def test_anything_but_three_bodies_is_unclassifiable(self):
+        from eigen_mode_analyze import model_builder as mb
+
+        self.assertIsNone(mb._classify_connector_bodies(_FakeHfss(), ["only_one"]))
+        self.assertIsNone(mb._classify_connector_bodies(_FakeHfss(), ["a", "b", "c", "d"]))
+
+    def test_combined_bounding_box_is_the_union(self):
+        from eigen_mode_analyze import model_builder as mb
+
+        hfss = _FakeHfss(boxes={
+            "a": [0.0, -1.0, 0.0, 2.0, 1.0, 3.0],
+            "b": [-3.0, 0.0, -0.5, 1.0, 2.0, 1.0],
+        })
+        self.assertEqual(
+            mb._combined_bounding_box(hfss, ["a", "b"]),
+            [-3.0, -1.0, -0.5, 2.0, 2.0, 3.0],
+        )
 
 
 class TestOurNumbersStillMatchTheVendorFile(unittest.TestCase):

@@ -28,11 +28,13 @@ ALTIUM_COPPER_REPORT = ALTIUM_OUT_DIR / "copper_report.txt"
 # the pads) and HFSS (for the wires), so the two agree.
 ALTIUM_BONDS_FILE = ALTIUM_OUT_DIR / "bonds.txt"
 
-# The SMP connector's 3D model, as shipped by the vendor (Wuerth
-# WR-SMP 60124102122403). A single solid -- there is no separated
-# pin/dielectric/shell version of this part in any format the vendor
-# provides -- so it goes into the model as one body.
-SMP_MODEL_FILE = BASE_PARTS_DIR / "smp_connector.step"
+# The SMP connector's 3D model (Wuerth WR-SMP 60124102122403). The
+# vendor ships one fused solid in every format, so it splits into three
+# named solids -- outer conductor / centre conductor / dielectric -- by
+# the companion project github.com/d-s-t/wr-smp-connector, and HFSS
+# imports it as three bodies so the insulator bead is modelled as a
+# dielectric rather than swallowed into a metal lump.
+SMP_MODEL_FILE = BASE_PARTS_DIR / "smp_connector_split.step"
 
 # One SVG per sweep parameter, showing which dimension that parameter
 # drives. Named after the parameter itself (wall_width.svg, ...) and

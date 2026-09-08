@@ -127,12 +127,14 @@ def launch_inner_edge(half_length: float, port_space: float) -> float:
 
 # --- the connector's own 3D model -------------------------------------
 #
-# The vendor ships one solid. There is no separated pin / dielectric /
-# shell version in any format they provide -- STEP, IGES, Cadence, Eagle
-# and KiCad all carry a single closed shell -- so the part goes into the
-# model as one body and is treated as a perfect conductor. That loses the
-# dielectric inside the launch, which is a real approximation and worth
-# revisiting if the launch discontinuity turns out to matter.
+# The vendor ships one solid -- STEP, IGES, Cadence, Eagle and KiCad all
+# carry a single closed shell, with no separated pin / dielectric / shell.
+# The companion project github.com/d-s-t/wr-smp-connector reconstructs the
+# split from the STEP's per-face colour and the datasheet and ships
+# base_parts/smp_connector_split.step: three named solids, imported as
+# three bodies. The two conductors are a PEC lump; the dielectric bead is
+# LCP (permittivity ~3.6). The old approximation -- the whole connector as
+# one perfect conductor, with no dielectric in the launch -- is gone.
 #
 # The STEP sits in the connector's own frame, which is NOT the footprint
 # frame and not the board's:
@@ -143,6 +145,9 @@ def launch_inner_edge(half_length: float, port_space: float) -> float:
 #
 # so v = -Xs and u = Ys.
 
+# Indicative extents of the vendor solid, kept for reference. Placement
+# does not use them -- `place_connectors` measures the three imported
+# bodies' combined bounding box, so it follows the split file exactly.
 MODEL_X_SPAN = (-3.30, 2.50)   # along the signal axis
 MODEL_Y_SPAN = (-2.50, 2.50)   # across
 
