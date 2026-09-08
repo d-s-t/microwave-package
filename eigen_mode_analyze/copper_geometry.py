@@ -319,14 +319,10 @@ def build(
         created[name] = _unite_as(modeler, parts, name)
 
     if copper.vias:
-        # Vias run along the up axis, which is Y here rather than Z.
+        # Vias run along the up axis, which is Y here rather than Z, and
+        # each is a hollow plated barrel, not a slug -- see `_via_barrel`.
         parts = [
-            modeler.create_cylinder(
-                orientation="Y",
-                origin=frame.point(via.x, via.y, bottom_face),
-                radius=via.diameter / 2.0,
-                height=top_face - bottom_face,
-            ).name
+            _via_barrel(modeler, via, frame, bottom_face, top_face)
             for via in copper.vias
         ]
         name = f"{prefix}_vias"
@@ -337,6 +333,43 @@ def build(
         + ", ".join(sorted(created))
     )
     return created
+
+
+def _via_barrel(modeler, via: Via, frame: Frame, bottom_face: float,
+                top_face: float) -> str:
+    """One plated-through via, as a hollow copper barrel.
+
+    A real via is a drilled hole with copper plated onto its wall -- not
+    a solid post. So this is an annulus: copper out to `via.diameter / 2`
+    (the extent it has on the layers), with `via.hole` diameter of clear
+    space down the middle. Altium exports both numbers; only the outer
+    one was ever used, which put solid metal where the hole is.
+
+    The bore is cut a little proud of both faces, so the barrel finishes
+    as a clean ring instead of keeping a skin of copper across the mouth
+    from a boolean that stopped exactly flush. A via with no hole (a
+    filled or a tented via, `hole` = 0) stays a solid post.
+
+    The board still has to lose the whole footprint, not just this ring;
+    that is `drill_vias`, with its own solid tool.
+    """
+    span = top_face - bottom_face
+    outer = modeler.create_cylinder(
+        orientation="Y",
+        origin=frame.point(via.x, via.y, bottom_face),
+        radius=via.diameter / 2.0,
+        height=span,
+    )
+    if 0.0 < via.hole < via.diameter:
+        proud = max(span, via.diameter) * 0.05
+        bore = modeler.create_cylinder(
+            orientation="Y",
+            origin=frame.point(via.x, via.y, bottom_face - proud),
+            radius=via.hole / 2.0,
+            height=span + 2.0 * proud,
+        )
+        modeler.subtract(outer.name, [bore.name], keep_originals=False)
+    return outer.name
 
 
 def _is_rectangle(points) -> bool:
@@ -583,22 +616,48 @@ def clear_chip_area(
     log(f"Cleared the die footprint out of {', '.join(targets)}.")
 
 
-def drill_vias(modeler, substrate: str, vias: str, log=logger.info) -> None:
-    """Cut the via barrels out of the substrate.
+def drill_vias(modeler, substrate: str, vias: Sequence[Via], frame: Frame,
+               top_face: float, bottom_face: float, log=logger.info) -> None:
+    """Cut a clear hole through the substrate for every via.
 
-    Without this the barrels and the board claim the same volume. HFSS
+    Without this the board and the barrels claim the same volume. HFSS
     either errors or resolves the overlap by material priority, and the
     quiet case is the dangerous one: the model still solves, with copper
     and dielectric occupying one region.
 
-    The barrels are kept -- they are the conductor being modelled; it is
-    the board that gets the holes.
+    The barrels are now hollow (`_via_barrel`), so subtracting them would
+    leave a plug of dielectric standing inside each one -- right where
+    the hole is meant to be -- and `carve_vacuum` would then fill that
+    same space, two materials in one region. So the drill is its own
+    solid tool, the via's full outer diameter, run right through the
+    board and consumed by the cut. The barrels are left untouched; the
+    bore down their middle becomes vacuum when the cavity is carved.
     """
+    if not vias:
+        return
+
+    span = top_face - bottom_face
+    proud = max(span, max(v.diameter for v in vias)) * 0.05
+    holes = [
+        modeler.create_cylinder(
+            orientation="Y",
+            origin=frame.point(v.x, v.y, bottom_face - proud),
+            radius=v.diameter / 2.0,
+            height=span + 2.0 * proud,
+        ).name
+        for v in vias
+    ]
+    if len(holes) > 1:
+        modeler.unite(holes)
+    # Named, not left anonymous: if the cut below fails to consume it, a
+    # stray NewObject_* with no material is how that hides in the tree.
+    modeler[holes[0]].name = "via_drill_tool"
+
     try:
-        modeler.subtract(substrate, [vias], keep_originals=True)
-        log(f"Drilled {vias} out of {substrate}.")
+        modeler.subtract(substrate, ["via_drill_tool"], keep_originals=False)
+        log(f"Drilled {len(holes)} via holes clear through {substrate}.")
     except Exception as exc:
         log(
-            f"WARNING: could not drill {vias} out of {substrate} ({exc}). "
+            f"WARNING: could not drill the via holes out of {substrate} ({exc}). "
             "The board and its vias overlap and the model should not be trusted."
         )

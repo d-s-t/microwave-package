@@ -290,6 +290,43 @@ class TestBuildingCopper(unittest.TestCase):
         self.assertAlmostEqual(via[1][1], STACK.pcb_bottom)
         self.assertAlmostEqual(via[3], STACK.pcb_top - STACK.pcb_bottom)
 
+    def test_each_via_is_a_hollow_barrel_with_the_drill_hole_clear(self):
+        """A plated through-hole, not a solid post: copper out to the via
+        radius, with `hole` diameter of clear space bored down the middle
+        and taken back out of the barrel."""
+        modeler, _ = self._build()
+        barrels = [c for c in modeler.cylinders if abs(c[2] - 0.15) < 1e-9]
+        bores = [c for c in modeler.cylinders if abs(c[2] - 0.075) < 1e-9]
+        self.assertEqual(len(barrels), 2, "one barrel OD per via")
+        self.assertEqual(len(bores), 2, "one drilled bore per via")
+        self.assertTrue(all(c[0] == "Y" for c in barrels + bores))
+        self.assertTrue(
+            any(keep is False for _t, _tools, keep in modeler.subtractions),
+            "the bore must be subtracted from the barrel",
+        )
+
+    def test_the_bore_passes_clear_through_the_barrel(self):
+        """Proud of both ends, so no skin of copper is left across the
+        mouth by a boolean that stopped exactly flush."""
+        modeler, _ = self._build()
+        barrel = [c for c in modeler.cylinders if abs(c[2] - 0.15) < 1e-9][0]
+        bore = [c for c in modeler.cylinders if abs(c[2] - 0.075) < 1e-9][0]
+        self.assertLess(bore[1][1], barrel[1][1], "bore starts below the barrel")
+        self.assertGreater(
+            bore[1][1] + bore[3], barrel[1][1] + barrel[3],
+            "bore ends above the barrel",
+        )
+
+    def test_a_filled_via_stays_solid(self):
+        """`hole` = 0 is a filled or tented via -- no bore to cut."""
+        modeler = FakeModeler()
+        board = cg.BoardCopper(name="package", vias=[cg.Via(1.0, 2.0, 0.3, 0.0)])
+        cg.build(modeler, board, FRAME, top_face=STACK.pcb_top,
+                 bottom_face=STACK.pcb_bottom, thickness=STACK.copper_thickness,
+                 prefix="pcb", log=lambda _m: None)
+        self.assertEqual(len(modeler.cylinders), 1, "just the solid post")
+        self.assertEqual(modeler.subtractions, [])
+
     def test_top_copper_sits_on_the_board_face(self):
         """Regions and rectangular pads are now boxes (create_box), not
         thickened sheets -- thicken_sheet's extrusion direction follows
@@ -501,16 +538,45 @@ class TestWireBondNaming(unittest.TestCase):
 
 
 class TestDrillVias(unittest.TestCase):
-    def test_the_board_is_drilled_and_the_barrels_kept(self):
-        """A barrel and the board cannot share a volume. It is the board
-        that gets the hole; the barrels are the conductor being
-        modelled."""
-        modeler = FakeModeler()
-        cg.drill_vias(modeler, "pcb_substrate", "pcb_vias", log=lambda _m: None)
-        target, tools, keep = modeler.subtractions[0]
+    VIAS = [cg.Via(11.8, -0.67131, 0.3, 0.15), cg.Via(11.8, 0.67131, 0.3, 0.15)]
+
+    def _drill(self, modeler=None):
+        modeler = modeler if modeler is not None else FakeModeler()
+        cg.drill_vias(modeler, "pcb_substrate", self.VIAS, FRAME,
+                      top_face=STACK.pcb_top, bottom_face=STACK.pcb_bottom,
+                      log=lambda _m: None)
+        return modeler
+
+    def test_the_board_loses_the_whole_footprint_with_its_own_tool(self):
+        """The barrels are hollow, so drilling with the barrels
+        themselves would leave a dielectric plug where the hole belongs.
+        The drill is a separate solid tool at the via's full outer
+        radius, and it is consumed by the cut."""
+        modeler = self._drill()
+        drills = [c for c in modeler.cylinders if abs(c[2] - 0.15) < 1e-9]
+        self.assertEqual(len(drills), 2, "one solid drill per via, at the outer radius")
+        target, tools, keep = modeler.subtractions[-1]
         self.assertEqual(target, "pcb_substrate")
-        self.assertEqual(tools, ["pcb_vias"])
-        self.assertTrue(keep, "the via barrels must survive the drilling")
+        self.assertEqual(tools, ["via_drill_tool"])
+        self.assertFalse(keep, "the drill tool must be consumed by the cut")
+
+    def test_the_hole_runs_right_through_the_board(self):
+        """A shade proud of both faces, so nothing is left as a skin of
+        dielectric across the via mouth."""
+        modeler = self._drill()
+        drill = [c for c in modeler.cylinders if abs(c[2] - 0.15) < 1e-9][0]
+        low = drill[1][1]
+        high = drill[1][1] + drill[3]
+        self.assertLess(low, STACK.pcb_bottom)
+        self.assertGreater(high, STACK.pcb_top)
+
+    def test_nothing_to_drill_is_a_no_op(self):
+        modeler = FakeModeler()
+        cg.drill_vias(modeler, "pcb_substrate", [], FRAME,
+                      top_face=STACK.pcb_top, bottom_face=STACK.pcb_bottom,
+                      log=lambda _m: None)
+        self.assertEqual(modeler.cylinders, [])
+        self.assertEqual(modeler.subtractions, [])
 
     def test_a_failure_is_loud(self):
         class Failing(FakeModeler):
@@ -518,7 +584,9 @@ class TestDrillVias(unittest.TestCase):
                 raise RuntimeError("nope")
 
         messages = []
-        cg.drill_vias(Failing(), "pcb_substrate", "pcb_vias", log=messages.append)
+        cg.drill_vias(Failing(), "pcb_substrate", self.VIAS, FRAME,
+                      top_face=STACK.pcb_top, bottom_face=STACK.pcb_bottom,
+                      log=messages.append)
         self.assertTrue(any("WARNING" in m for m in messages))
         self.assertTrue(any("overlap" in m for m in messages))
 

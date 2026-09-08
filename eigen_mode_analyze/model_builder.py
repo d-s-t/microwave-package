@@ -356,15 +356,25 @@ def build_layout(hfss, combo_dir: str, dimensions_txt_content: str, log=logger.i
         )
         # A via barrel and the board cannot share a volume: drill them.
         if "pcb_vias" in made:
-            cg.drill_vias(hfss.modeler, "pcb_substrate", "pcb_vias", log=log)
+            cg.drill_vias(
+                hfss.modeler, "pcb_substrate", package.vias, frame,
+                top_face=stack.pcb_top, bottom_face=stack.pcb_bottom, log=log,
+            )
 
     chip = boards.get("chip")
     if chip is not None and len(chip):
-        cg.build(
+        made_chip = cg.build(
             hfss.modeler, chip, frame,
             top_face=stack.chip_top, bottom_face=stack.chip_bottom,
             thickness=stack.chip_metal_thickness, prefix="chip", log=log,
         )
+        # Same reasoning as the package: if the die carries through-vias,
+        # the die substrate has to lose their footprint too.
+        if "chip_vias" in made_chip:
+            cg.drill_vias(
+                hfss.modeler, "chip_substrate", chip.vias, frame,
+                top_face=stack.chip_top, bottom_face=stack.chip_bottom, log=log,
+            )
 
     # The connectors are real vendor geometry rather than a stand-in, so
     # the launch is represented rather than left as bare copper. They
