@@ -138,9 +138,10 @@ class TestTheConnectorModel(unittest.TestCase):
         self.assertAlmostEqual(offset[1], 1.381, msg="height must be the board top face")
 
     def test_the_split_bodies_land_on_the_right_material_rules(self):
-        """The two conductors hit the bare `connector` rule (PEC lump);
-        the bead hits `dielectric` first, which carries no material so
-        place_connectors' LCP assignment stands."""
+        """The conductors hit the bare `connector` rule, the bead hits
+        `dielectric` first -- and both rules carry no material and no
+        boundary, so place_connectors' brass/LCP assignments stand and
+        nothing on the connector is a PEC surface."""
         from eigen_mode_analyze import model_builder
 
         def first_rule(name):
@@ -149,11 +150,15 @@ class TestTheConnectorModel(unittest.TestCase):
                     return rule
             return None
 
-        self.assertEqual(first_rule("connector_1_outer")[1], "connector")
-        self.assertEqual(first_rule("connector_1_center")[1], "connector")
-        diel_rule = first_rule("connector_1_dielectric")
-        self.assertEqual(diel_rule[1], "connector_dielectric")
-        self.assertIsNone(diel_rule[2], "the bead rule must not override the LCP material")
+        outer = first_rule("connector_1_outer")
+        centre = first_rule("connector_1_center")
+        diel = first_rule("connector_1_dielectric")
+        self.assertEqual(outer[1], "connector")
+        self.assertEqual(centre[1], "connector")
+        self.assertEqual(diel[1], "connector_dielectric")
+        for rule in (outer, centre, diel):
+            self.assertIsNone(rule[2], "place_connectors owns the connector materials")
+            self.assertIsNone(rule[3], "the connector carries no perfect-E boundary")
 
 
 class _FakeHfss:
