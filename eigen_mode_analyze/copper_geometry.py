@@ -661,3 +661,60 @@ def drill_vias(modeler, substrate: str, vias: Sequence[Via], frame: Frame,
             f"WARNING: could not drill the via holes out of {substrate} ({exc}). "
             "The board and its vias overlap and the model should not be trusted."
         )
+
+
+def open_via_holes(modeler, coppers: Sequence[str], vias: Sequence[Via],
+                   frame: Frame, top_face: float, bottom_face: float,
+                   copper_thickness: float, log=logger.info) -> None:
+    """Carry each via's drilled hole on through the copper it lands in.
+
+    `_via_barrel` bores the hole down the barrel and `drill_vias` takes
+    the whole footprint out of the substrate -- but the lands and planes
+    on the top and bottom layers are still solid across the via. That
+    leaves a plated through-hole capped at each end by a copper disc,
+    where a real one is open: the drill passes through the annular ring
+    on every layer.
+
+    Only the drilled diameter (`via.hole`) comes out, never the barrel OD
+    (`via.diameter`). Copper out to the land radius is the annular ring --
+    real metal, the via's tie into the plane -- and cutting the OD here
+    would sink a clearance into every ground plane the board does not
+    have. A stray anti-pad on a stitching via is the quiet kind of wrong
+    this model keeps guarding against.
+
+    A via with no hole (`hole` = 0, a filled or a tented via) keeps solid
+    copper over it, matching the solid post `_via_barrel` leaves.
+    """
+    coppers = [c for c in coppers if c]
+    bores = [v for v in vias if 0.0 < v.hole < v.diameter]
+    if not coppers or not bores:
+        return
+
+    span = top_face - bottom_face
+    # Start below the bottom layer and finish above the top one, so
+    # neither keeps a skin of copper across the via mouth.
+    reach = copper_thickness + max(span, max(v.hole for v in bores)) * 0.05
+    tools = [
+        modeler.create_cylinder(
+            orientation="Y",
+            origin=frame.point(v.x, v.y, bottom_face - reach),
+            radius=v.hole / 2.0,
+            height=span + 2.0 * reach,
+        ).name
+        for v in bores
+    ]
+    if len(tools) > 1:
+        modeler.unite(tools)
+    # Named for the same reason as via_drill_tool: a cut that fails to
+    # consume it leaves a material-less NewObject_* hiding in the tree.
+    modeler[tools[0]].name = "via_hole_tool"
+
+    try:
+        modeler.subtract(list(coppers), ["via_hole_tool"], keep_originals=False)
+        log(f"Opened {len(bores)} via holes through {', '.join(coppers)}.")
+    except Exception as exc:
+        log(
+            f"WARNING: could not open the via holes through {', '.join(coppers)} "
+            f"({exc}). The plated through-holes stay capped by copper and the "
+            "model should not be trusted."
+        )

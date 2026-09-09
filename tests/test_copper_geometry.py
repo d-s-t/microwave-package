@@ -591,6 +591,76 @@ class TestDrillVias(unittest.TestCase):
         self.assertTrue(any("overlap" in m for m in messages))
 
 
+class TestOpenViaHoles(unittest.TestCase):
+    """The barrel is bored and the substrate is drilled, but the lands
+    and planes on the two layers are still solid over the via. A real
+    plated through-hole is open through the annular ring on every layer,
+    not capped by a copper disc at each end."""
+
+    COPPERS = ["pcb_copper_top", "pcb_copper_bottom"]
+    VIAS = [cg.Via(11.8, -0.67131, 0.3, 0.15), cg.Via(11.8, 0.67131, 0.3, 0.15)]
+
+    def _open(self, modeler=None, vias=None, coppers=None):
+        modeler = modeler if modeler is not None else FakeModeler()
+        cg.open_via_holes(
+            modeler, self.COPPERS if coppers is None else coppers,
+            self.VIAS if vias is None else vias, FRAME,
+            top_face=STACK.pcb_top, bottom_face=STACK.pcb_bottom,
+            copper_thickness=STACK.copper_thickness, log=lambda _m: None,
+        )
+        return modeler
+
+    def test_only_the_drill_diameter_comes_out_not_the_land(self):
+        """Cutting the barrel OD would sink an anti-pad into every plane
+        the board does not have. The hole is `via.hole` across, so the
+        annular ring survives."""
+        modeler = self._open()
+        radii = {round(c[2], 6) for c in modeler.cylinders}
+        self.assertEqual(radii, {0.075}, "every tool is hole/2, never diameter/2")
+
+    def test_both_layers_lose_the_hole_together_and_the_tool_is_consumed(self):
+        modeler = self._open()
+        target, tools, keep = modeler.subtractions[-1]
+        self.assertEqual(target, self.COPPERS)
+        self.assertEqual(tools, ["via_hole_tool"])
+        self.assertFalse(keep, "the tool must be consumed by the cut")
+
+    def test_the_hole_reaches_past_both_copper_layers(self):
+        """It has to start below the bottom copper and end above the top
+        copper, or one layer keeps its cap."""
+        modeler = self._open()
+        tool = modeler.cylinders[0]
+        low = tool[1][1]
+        high = tool[1][1] + tool[3]
+        self.assertLess(low, STACK.pcb_bottom - STACK.copper_thickness)
+        self.assertGreater(high, STACK.pcb_top + STACK.copper_thickness)
+
+    def test_a_filled_via_keeps_its_copper(self):
+        """`hole` = 0 is a filled or tented via -- solid copper over it,
+        matching the solid post `_via_barrel` leaves."""
+        modeler = self._open(vias=[cg.Via(1.0, 2.0, 0.3, 0.0)])
+        self.assertEqual(modeler.cylinders, [])
+        self.assertEqual(modeler.subtractions, [])
+
+    def test_no_copper_on_a_layer_is_a_no_op(self):
+        modeler = self._open(coppers=[])
+        self.assertEqual(modeler.cylinders, [])
+        self.assertEqual(modeler.subtractions, [])
+
+    def test_a_failure_is_loud(self):
+        class Failing(FakeModeler):
+            def subtract(self, *a, **k):
+                raise RuntimeError("nope")
+
+        messages = []
+        cg.open_via_holes(Failing(), self.COPPERS, self.VIAS, FRAME,
+                          top_face=STACK.pcb_top, bottom_face=STACK.pcb_bottom,
+                          copper_thickness=STACK.copper_thickness,
+                          log=messages.append)
+        self.assertTrue(any("WARNING" in m for m in messages))
+        self.assertTrue(any("capped" in m for m in messages))
+
+
 class TestExportedLayoutIsSane(unittest.TestCase):
     """Geometric facts about the real generated board.
 
