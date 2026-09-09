@@ -340,12 +340,10 @@ DEFAULT_ANALYSIS_SETTINGS = {
         "mat_conductor_pcb": "copper",
         "mat_conductor_chip": "niobium",
         "perfect_e_conductors": True,
-        # The SMP connector imports as three bodies (outer conductor,
-        # centre conductor, dielectric bead -- see
-        # github.com/d-s-t/wr-smp-connector). This toggle makes the two
-        # conductors a PEC lump; the bead is LCP, set in model_builder
-        # rather than here because it is vendor geometry, not a setting.
-        "perfect_e_connector": True,
+        # The SMP connector's materials (brass conductors, LCP bead) and
+        # the fact that it has no perfect-E boundary are fixed in
+        # model_builder -- it is vendor geometry, not a run setting.
+        # See github.com/d-s-t/wr-smp-connector.
     },
 }
 
@@ -372,7 +370,6 @@ def build_analysis_settings(args: argparse.Namespace) -> dict:
             "mat_conductor_pcb": args.mat_conductor_pcb,
             "mat_conductor_chip": args.mat_conductor_chip,
             "perfect_e_conductors": args.perfect_e_conductors,
-            "perfect_e_connector": args.perfect_e_connector,
         },
     }
 
@@ -408,8 +405,6 @@ def parse_args() -> argparse.Namespace:
                         action="store_false", default=True,
                         help="Use the named conductor materials instead of perfect E. "
                              "Only meaningful with a proper cryogenic surface impedance.")
-    parser.add_argument("--no-perfect-e-connector", dest="perfect_e_connector",
-                        action="store_false", default=True)
     return parser.parse_args()
 
 

@@ -53,7 +53,6 @@ SETTINGS = {
     "mat_conductor_chip": "niobium",
     "perfect_e_box": True,
     "perfect_e_conductors": True,
-    "perfect_e_connector": True,
 }
 
 
@@ -128,38 +127,31 @@ class TestCopperDoesNotBecomeSubstrate(unittest.TestCase):
         self.assertEqual(got["chip_substrate"], "silicon")
         self.assertEqual(got["chip_conductor"], "niobium")
         self.assertEqual(got["wirebond_1"], "copper")
-        # The two connector conductors are a PEC lump on mat_box.
-        self.assertEqual(got["connector_1_outer"], "aluminum")
-        self.assertEqual(got["connector_1_center"], "aluminum")
-        # The bead's material is set in place_connectors, not by the
-        # rules, so the rule layer leaves it untouched here.
+        # All three connector bodies get their material in place_connectors
+        # (brass conductors, LCP bead), not from the rules, so the rule
+        # layer leaves them untouched here.
+        self.assertIsNone(got["connector_1_outer"])
+        self.assertIsNone(got["connector_1_center"])
         self.assertIsNone(got["connector_1_dielectric"])
 
 
 class TestPerfectEToggles(unittest.TestCase):
     def test_conductors_get_perfect_e_by_default(self):
-        hfss, _ = assign(["pcb_copper_top", "chip_conductor", "connector_1_outer"])
+        hfss, _ = assign(["pcb_copper_top", "chip_conductor"])
         self.assertEqual(
-            sorted(hfss.perfect_e),
-            ["chip_conductor", "connector_1_outer", "pcb_copper_top"],
+            sorted(hfss.perfect_e), ["chip_conductor", "pcb_copper_top"],
         )
 
-    def test_the_connector_bead_is_a_dielectric_not_a_pec_lump(self):
-        """The two conductors are perfect-E; the bead must not be, or the
-        dielectric that was the whole point of splitting is shorted out."""
+    def test_the_connector_never_gets_a_perfect_e_boundary(self):
+        """It carries its real vendor metal -- brass on the conductors,
+        LCP on the bead, all set in place_connectors -- so none of its
+        three bodies is a PEC surface."""
         hfss, objects = assign(
             ["connector_1_outer", "connector_1_center", "connector_1_dielectric"]
         )
-        self.assertEqual(
-            sorted(hfss.perfect_e), ["connector_1_center", "connector_1_outer"]
-        )
-        self.assertIn("connector_dielectric", objects)
-
-    def test_perfect_e_connector_toggle_still_gates_the_conductors(self):
-        settings = dict(SETTINGS, perfect_e_connector=False)
-        hfss, _ = assign(["connector_1_outer", "connector_1_center"], settings)
         self.assertEqual(hfss.perfect_e, [])
-        self.assertEqual(hfss.modeler.solid_objects[0].material_name, "aluminum")
+        self.assertIn("connector", objects)
+        self.assertIn("connector_dielectric", objects)
 
     def test_turning_the_conductor_toggle_off_leaves_the_materials(self):
         settings = dict(SETTINGS, perfect_e_conductors=False)
@@ -353,12 +345,14 @@ class TestRuleTableIsSane(unittest.TestCase):
             self.assertLess(patterns.index(specific), patterns.index(bare),
                             f"{specific} must be tested before {bare}")
 
-    def test_the_connector_bead_rule_carries_no_material_of_its_own(self):
-        """`None` there means place_connectors set it; a real key would
-        double-assign and, worse, log a spurious fallback NOTE every run."""
-        rule = next(r for r in model_builder.MATERIAL_RULES if r[0] == "dielectric")
-        self.assertIsNone(rule[2], "the connector_dielectric rule must not name a material")
-        self.assertIsNone(rule[3], "the bead must not get a perfect-E boundary")
+    def test_the_connector_rules_carry_no_material_or_boundary_of_their_own(self):
+        """place_connectors sets brass on the conductors and LCP on the
+        bead; a real material key here would double-assign and log a
+        spurious fallback NOTE every run. Neither body is perfect-E."""
+        for pattern in ("dielectric", "connector"):
+            rule = next(r for r in model_builder.MATERIAL_RULES if r[0] == pattern)
+            self.assertIsNone(rule[2], f"the {pattern} rule must not name a material")
+            self.assertIsNone(rule[3], f"the {pattern} rule must not add a perfect-E boundary")
 
 
 class TestCavityFrame(unittest.TestCase):

@@ -450,7 +450,6 @@ def new_run():
             "mat_conductor_pcb": request.form.get("mat_conductor_pcb") or "copper",
             "mat_conductor_chip": request.form.get("mat_conductor_chip") or "niobium",
             "perfect_e_conductors": "perfect_e_conductors" in request.form,
-            "perfect_e_connector": "perfect_e_connector" in request.form,
         },
     }
     run = Run.create(sweep_params, settings, parameter_defaults)

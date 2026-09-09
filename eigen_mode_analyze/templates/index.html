@@ -285,12 +285,13 @@
     <label><input type="checkbox" name="perfect_e_box" {% if materials.perfect_e_box %}checked{% endif %}> Perfect E on box/lid/chip_lid</label><br>
     <label>PCB conductor <input type="text" name="mat_conductor_pcb" value="{{ materials.mat_conductor_pcb or 'copper' }}"></label><br>
     <label>Chip conductor <input type="text" name="mat_conductor_chip" value="{{ materials.mat_conductor_chip or 'niobium' }}"></label><br>
-    <label><input type="checkbox" name="perfect_e_conductors" {% if materials.perfect_e_conductors %}checked{% endif %}> Perfect E on the conductors</label><br>
-    <label><input type="checkbox" name="perfect_e_connector" {% if materials.perfect_e_connector %}checked{% endif %}> Perfect E on the connector</label>
+    <label><input type="checkbox" name="perfect_e_conductors" {% if materials.perfect_e_conductors %}checked{% endif %}> Perfect E on the conductors</label>
     <p style="font-size:0.85em;opacity:0.75;margin:0.4em 0 0">
       Leave the conductor boxes on perfect E unless you have a cryogenic surface
       impedance to hand: HFSS's stock copper and niobium are room-temperature
       normal-state values, which at millikelvin are less realistic than PEC.
+      The SMP connector is not covered by this: its metal is fixed to brass and
+      its bead to LCP, from the vendor datasheet, with no perfect-E boundary.
     </p>
   </fieldset>
   </details>

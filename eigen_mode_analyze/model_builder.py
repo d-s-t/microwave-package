@@ -101,16 +101,24 @@ MATERIAL_FALLBACKS = {
 }
 
 
-# The SMP connector's insulator bead. Wuerth's datasheet material is LCP;
-# permittivity ~3.6 and dielectric loss tangent ~0.003 at 10 GHz. This is
-# vendor geometry, not a design variable, so it is hardcoded here rather
-# than exposed as a run setting -- `place_connectors` creates the
-# material and assigns it to the bead directly, and the `connector_dielectric`
-# material rule below carries no material of its own as a result.
-# See github.com/d-s-t/wr-smp-connector for how the bead was reconstructed.
+# The SMP connector's materials. All of it is vendor geometry, not a
+# design variable, so it is hardcoded here rather than exposed as run
+# settings -- `place_connectors` assigns it to the imported bodies
+# directly, and the `connector` / `connector_dielectric` material rules
+# below carry no material of their own as a result.
+# See github.com/d-s-t/wr-smp-connector for the datasheet references.
+#
+# Bead: Wuerth's datasheet material is LCP; permittivity ~3.6 and
+# dielectric loss tangent ~0.003 at 10 GHz.
 CONNECTOR_DIELECTRIC_MATERIAL = "SMP_LCP"
 CONNECTOR_DIELECTRIC_PERMITTIVITY = 3.6
 CONNECTOR_DIELECTRIC_LOSS_TANGENT = 0.003
+# Outer and centre conductor: brass (datasheet body + centre contact),
+# with 0.127 um Au over Ni plating that is thinner than the skin depth
+# above ~1 GHz, so bulk brass is the honest first approximation. A stock
+# HFSS library material, so no properties to set. There is no perfect-E
+# boundary on the connector -- it carries its real metal.
+CONNECTOR_CONDUCTOR_MATERIAL = "brass"
 
 
 # How an imported solid's name decides its material and boundary.
@@ -124,9 +132,9 @@ CONNECTOR_DIELECTRIC_LOSS_TANGENT = 0.003
 # So the rules are explicit and ORDERED, most specific first, and the
 # first match wins. `perfect_e` names the setting that decides whether
 # the body also gets a perfect-E boundary; None means never. A `material`
-# of None means the body's material is set where it is created (the SMP
-# connector bead is the only such case) -- the rule then only records the
-# body and applies its boundary.
+# of None means the body's material is set where it is created (the three
+# SMP connector bodies) -- the rule then only records the body and
+# applies its boundary, if any.
 #
 # Names come from the STEP, which gets them from the SolidWorks
 # components -- see base_parts/altium/README.md for where copper body
@@ -148,13 +156,13 @@ MATERIAL_RULES = [
     ("pcb_via",         "pcb_vias",        "mat_conductor_pcb",   "perfect_e_conductors"),
     ("pcb_substrate",   "pcb",             "mat_pcb",             None),
     ("wirebond",        "wirebond",        "mat_conductor_pcb",   "perfect_e_conductors"),
-    # The SMP connector imports as three bodies. The bead
-    # (connector_N_dielectric) keeps the LCP material place_connectors
-    # gives it -- hence None here, and it must precede the bare "connector"
-    # rule. The two conductors (connector_N_outer / connector_N_center)
-    # are a PEC lump like before.
+    # The SMP connector imports as three bodies, and place_connectors sets
+    # the material on all three (LCP bead, brass conductors) -- hence None
+    # for both rules. The bead rule must precede the bare "connector" one.
+    # Neither gets a perfect-E boundary: the connector carries its real
+    # metal.
     ("dielectric",      "connector_dielectric", None,             None),
-    ("connector",       "connector",       "mat_box",             "perfect_e_connector"),
+    ("connector",       "connector",       None,                  None),
     # The bare names come last, so the specific ones above win.
     ("lid",             "lid",             "mat_box",             "perfect_e_box"),
     ("box",             "box",             "mat_box",             "perfect_e_box"),
@@ -253,9 +261,9 @@ def place_connectors(hfss, frame, board_top: float, half_length: float,
     The vendor ships one fused solid; github.com/d-s-t/wr-smp-connector
     splits it into three named bodies -- outer conductor, centre conductor
     and dielectric bead -- so each port becomes `connector_N_outer`,
-    `connector_N_center` and `connector_N_dielectric`. The two conductors
-    match the `connector` material rule and get a perfect-E boundary; the
-    bead is set to LCP here (vendor geometry, not a run setting).
+    `connector_N_center` and `connector_N_dielectric`. All three get their
+    material here (brass conductors, LCP bead -- vendor geometry, not run
+    settings), and the connector carries no perfect-E boundary.
 
     Placement is by the BOUNDING BOX of the three bodies together, not by
     the model's own origin. A vendor model's origin can sit anywhere, and
@@ -301,7 +309,8 @@ def place_connectors(hfss, frame, board_top: float, half_length: float,
         classified = _classify_connector_bodies(hfss, new_objects)
         if classified is None:
             # Not the three-body split we expect. Name whatever arrived so
-            # the `connector` rule still catches it (PEC lump) and carry on.
+            # the `connector` rule still catches it, treat it all as brass,
+            # and carry on.
             log(
                 f"WARNING: the SMP model imported {len(new_objects)} bodies, not 3; "
                 "treating them all as connector conductors."
@@ -311,13 +320,14 @@ def place_connectors(hfss, frame, board_top: float, half_length: float,
                 body = prefix if i == 0 else f"{prefix}_{i}"
                 hfss.modeler[obj_name].name = body
                 bodies.append(body)
-            dielectric = None
+            conductor_bodies, dielectric = list(bodies), None
         else:
             outer, centre, diel = classified
             hfss.modeler[outer].name = f"{prefix}_outer"
             hfss.modeler[centre].name = f"{prefix}_center"
             hfss.modeler[diel].name = f"{prefix}_dielectric"
             bodies = [f"{prefix}_outer", f"{prefix}_center", f"{prefix}_dielectric"]
+            conductor_bodies = [f"{prefix}_outer", f"{prefix}_center"]
             dielectric = f"{prefix}_dielectric"
 
         try:
@@ -340,6 +350,17 @@ def place_connectors(hfss, frame, board_top: float, half_length: float,
                 "It is in the model at the wrong place."
             )
 
+        # Vendor materials, set here rather than through the rule table:
+        # brass on the conductors, LCP on the bead, no perfect-E boundary.
+        for body in conductor_bodies:
+            try:
+                hfss.modeler[body].material_name = CONNECTOR_CONDUCTOR_MATERIAL
+                hfss.modeler[body].solve_inside = False
+            except Exception as exc:
+                log(
+                    f"WARNING: {body} could not be set to "
+                    f"{CONNECTOR_CONDUCTOR_MATERIAL} ({exc}); it stays on the modeller default."
+                )
         if dielectric is not None:
             try:
                 hfss.modeler[dielectric].material_name = CONNECTOR_DIELECTRIC_MATERIAL
