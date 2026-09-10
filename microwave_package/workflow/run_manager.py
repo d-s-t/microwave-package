@@ -74,6 +74,32 @@ def _equation_file_values() -> Dict[str, float]:
         return {}
 
 
+def parameter_values_for(name: str, sweep_params, parameter_defaults) -> List[float]:
+    """Every value `name` takes across the combinations a run would build.
+
+    The same layering `Run.create` applies to each combination -- the
+    equations file underneath, the run's pinned values over it, the swept
+    values on top -- so a check made against this answers for the geometry
+    that will actually be built.
+
+    That last layer is the one easy to forget: a parameter nobody typed
+    into the form is not absent from the run, it just takes the value the
+    equations file gives it. Treating it as absent is how a default
+    `port_count` of 2 came to be reported as 0 ports.
+
+    An empty list means the parameter is not in the equations file at all
+    and the run has not pinned it, so there is genuinely nothing to check
+    against -- better to let the build say so than to invent a value here.
+    """
+    for param in sweep_params:
+        if param.name == name:
+            return list(param.values)
+    if name in (parameter_defaults or {}):
+        return [parameter_defaults[name]]
+    base = _equation_file_values()
+    return [base[name]] if name in base else []
+
+
 class Run:
     # When the atomic replace is being blocked by something outside this
     # process, this holds the time until which to assume it still is.

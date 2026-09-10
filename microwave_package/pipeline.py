@@ -30,6 +30,7 @@ from .hfss import model_builder, registry
 from .hfss.driven import ports
 from .workflow import plotting, postprocess, resilient_io, results
 from .workflow.monitor import monitor_run
+from .workflow import run_manager
 from .workflow.run_manager import Run
 
 logger = logging.getLogger("microwave_package")
@@ -476,9 +477,8 @@ def main() -> None:
         # run needs two real ports to have an S21, and finding that out
         # one model at a time would mean a sweep's worth of geometry
         # built for projects that can never be given ports.
-        swept_values = {p.name: p.values for p in sweep_params}
         complaint = registry.get(analysis_settings["solution_type"]).validate(
-            swept_values.get("port_count") or [parameter_defaults.get("port_count", 0)]
+            run_manager.parameter_values_for("port_count", sweep_params, parameter_defaults)
         )
         if complaint:
             raise SystemExit(complaint)

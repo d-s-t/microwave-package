@@ -486,9 +486,8 @@ def new_run():
     # port_count is geometry rather than an analysis setting -- so it is
     # checked here, before a sweep's worth of STEP files get built for
     # models that could never be given ports.
-    swept_values = {p.name: p.values for p in sweep_params}
     complaint = registry.get(solve_settings["solution_type"]).validate(
-        swept_values.get("port_count") or [parameter_defaults.get("port_count", 0)]
+        run_manager.parameter_values_for("port_count", sweep_params, parameter_defaults)
     )
     if complaint:
         return redirect(url_for("index", error=complaint))
