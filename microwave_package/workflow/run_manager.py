@@ -17,13 +17,13 @@ import threading
 import time
 from typing import Dict, List, Optional
 
-from . import constraints
-from . import equations as eq
-from . import parameter_meta
-from . import paths
-from .sweep import SweepParameter, combinations, combo_id_for
+from ..design import constraints
+from ..design import equations as eq
+from ..design import parameter_meta
+from .. import paths
+from ..design.sweep import SweepParameter, combinations, combo_id_for
 
-logger = logging.getLogger("eigen_mode_analyze")
+logger = logging.getLogger("microwave_package")
 
 
 def progress_of(state: dict) -> Dict[str, int]:

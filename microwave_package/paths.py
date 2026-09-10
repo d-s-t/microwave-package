@@ -2,9 +2,13 @@
 Central, single-source-of-truth paths for this package -- so every
 module resolves the project root, the shared SolidWorks part library,
 and the output-runs folder the same way.
+
+PACKAGE_DIR is this file's own folder, so it stays correct wherever the
+package is checked out; PROJECT_ROOT is its parent, the repo root.
 """
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 PACKAGE_DIR = Path(__file__).resolve().parent
@@ -42,9 +46,19 @@ SMP_MODEL_FILE = BASE_PARTS_DIR / "smp_connector_split.step"
 PARAMETER_DRAWINGS_DIR = BASE_PARTS_DIR / "parameters_visual"
 
 # Every run's generated STEP/AEDT files, state, and plots live under
-# here -- one subfolder per run_id. This is output, not source, so it's
-# excluded in .gitignore (these get backed up elsewhere -- see README).
-RUNS_ROOT = PACKAGE_DIR / "runs"
+# here -- one subfolder per run_id.
+#
+# At the repo root rather than inside the package: this is output, not
+# source, and a run's models folder is the largest thing this project
+# produces by a wide margin. Keeping gigabytes of AEDT projects inside
+# the importable package meant every tool that walked the source tree
+# walked those too.
+#
+# MICROWAVE_RUNS_PATH moves it somewhere else entirely -- another disk,
+# a share, wherever there is room -- without touching the code. Runs
+# already written under the old location can simply be moved to the new
+# one; nothing inside a run folder records where it lives.
+RUNS_ROOT = Path(os.environ.get("MICROWAVE_RUNS_PATH") or (PROJECT_ROOT / "runs"))
 
 # Third-party JS/WASM for the in-browser STEP viewer (three.js and
 # occt-import-js). Not committed -- populated by `fetch_vendor.py`, and

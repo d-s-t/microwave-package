@@ -11,7 +11,7 @@ import os
 import tempfile
 import unittest
 
-from eigen_mode_analyze import altium_generation as ag
+from microwave_package.design import altium_generation as ag
 
 
 class TestWriteParams(unittest.TestCase):

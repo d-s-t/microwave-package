@@ -16,9 +16,9 @@ import pandas as pd
 
 from ansys_analyze_common import queue_common
 
-from . import parameter_meta
+from ..design import parameter_meta
 
-logger = logging.getLogger("eigen_mode_analyze")
+logger = logging.getLogger("microwave_package")
 
 
 def build_combined_results(run, queue: "queue_common.QueuePaths", log: Callable[[str], None] = logger.info) -> pd.DataFrame:
@@ -64,12 +64,23 @@ def build_combined_results(run, queue: "queue_common.QueuePaths", log: Callable[
             skipped.append((combo_id, summary.get("status", "unknown")))
             continue
 
-        modes = summary.get("result", {}).get("modes")
-        if not modes:
-            skipped.append((combo_id, "no mode data in client_result.json"))
+        result = summary.get("result", {})
+        # `rows` is what post-processing writes now -- a driven run's rows
+        # are frequency points, not modes. `modes` is the same list under
+        # the name it had before driven runs existed, so results produced
+        # then still read back.
+        rows = result.get("rows") or result.get("modes")
+        if not rows:
+            skipped.append((combo_id, "no result rows in client_result.json"))
             continue
 
-        df = pd.DataFrame(modes)
+        df = pd.DataFrame(rows)
+        # Which solver produced these, carried per row so a table built
+        # from several combinations still says what it holds. Older
+        # results have no solution type recorded and read back as the
+        # default one, which is what they were.
+        if result.get("solution_type"):
+            df["solution_type"] = result["solution_type"]
         # Swept parameters are reported in the unit they were entered in,
         # with the column named accordingly (`chip_width_um`), so the CSV
         # says what its numbers mean. The run's own state stays in mm.
@@ -77,7 +88,7 @@ def build_combined_results(run, queue: "queue_common.QueuePaths", log: Callable[
             df[parameter_meta.column_name(key)] = parameter_meta.to_display(key, value)
         df["combo_id"] = combo_id
 
-        csv_path = os.path.join(run.combo_dir(combo_id), "modes_results.csv")
+        csv_path = os.path.join(run.combo_dir(combo_id), "results.csv")
         df.to_csv(csv_path, index=False)
         frames.append(df)
 

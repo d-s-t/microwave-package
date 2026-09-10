@@ -16,25 +16,72 @@ from typing import Dict, List, Optional
 import pandas as pd
 import plotly.express as px
 
-from . import parameter_meta
+from ..design import parameter_meta
+from ..hfss import registry
 
-logger = logging.getLogger("eigen_mode_analyze")
+logger = logging.getLogger("microwave_package")
 
 # Result quantities a run can plot, and how they are labelled. Keys are
 # the column names post-processing writes into the results table; a
 # quantity only shows up in the axis pickers if it is actually present.
-RESULT_FIELDS: Dict[str, str] = {
-    "freq_ghz": "Frequency (GHz)",
-    "q": "Q factor",
-    "chip_mag_E_max": "Chip max |E| (V/m)",
-    "chip_mag_E_mean": "Chip mean |E| (V/m)",
-    "vacuum_mag_E_max": "Vacuum max |E| (V/m)",
-    "vacuum_mag_E_mean": "Vacuum mean |E| (V/m)",
-}
+def result_fields() -> Dict[str, str]:
+    """Result column -> label, gathered from every registered solver.
 
-# The sweep reads most naturally with the parameter you varied along the
-# bottom and the frequency it produced up the side.
-DEFAULT_Y = "freq_ghz"
+    A column only reaches an axis picker if some solver claims it, so a
+    new solution type's quantities become plottable by being declared on
+    its solver rather than by being listed here.
+    """
+    return registry.result_fields()
+
+
+# Where a run's plot is saved inside its plots/ folder. The name is
+# historical -- a driven run's plot is neither modes nor a scatter -- and
+# is kept because runs plotted before driven runs existed look for a file
+# with exactly this name.
+PLOT_FILENAME = "modes_scatter_plot.html"
+
+
+def has_sparameters(df: pd.DataFrame) -> bool:
+    """Whether this results table holds a scattering matrix.
+
+    Asked of the data rather than of the run's settings because the plot
+    can only draw what the table actually holds, and because it decides a
+    presentation question -- curves or points -- that belongs to the
+    figure rather than to the solver.
+    """
+    return any(column in df.columns for column in ("s11_db", "s21_db"))
+
+
+def default_axes(df: pd.DataFrame, sweep_param_names: List[str],
+                 solution_type: Optional[str] = None) -> Dict[str, Optional[str]]:
+    """Which columns a run's plot should open on.
+
+    The solver decides -- an eigenmode sweep is read across combinations
+    and a driven run along the band -- so all this does is hand it the
+    swept columns in the form the table names them.
+
+    A caller that has the run should pass its `solution_type`. Without
+    one this falls back to what the table says about itself, which is how
+    a bare CSV still plots sensibly.
+    """
+    swept = [parameter_meta.column_name(name) for name in sweep_param_names]
+    solver = registry.get(solution_type or solution_type_of(df))
+    return solver.default_axes(df, swept)
+
+
+def solution_type_of(df: pd.DataFrame) -> Optional[str]:
+    """Which solver produced this table, from the table itself.
+
+    Post-processing records it per row, so a table assembled from several
+    combinations of one run agrees with itself. A table from before that
+    was recorded has no column at all and reads as None, which callers
+    resolve to the default solver -- which is what those runs used.
+    """
+    if "solution_type" in df.columns:
+        values = df["solution_type"].dropna().unique().tolist()
+        if len(values) == 1:
+            return values[0]
+    return None
 
 
 def axis_options(df: pd.DataFrame, sweep_param_names: List[str]) -> List[Dict[str, str]]:
@@ -45,7 +92,7 @@ def axis_options(df: pd.DataFrame, sweep_param_names: List[str]) -> List[Dict[st
         column = parameter_meta.column_name(name)
         if column in df.columns:
             options.append({"value": column, "label": parameter_meta.axis_label(name), "kind": "parameter"})
-    for column, label in RESULT_FIELDS.items():
+    for column, label in result_fields().items():
         if column in df.columns and df[column].notna().any():
             options.append({"value": column, "label": label, "kind": "result"})
     if "combo_id" in df.columns:
@@ -57,8 +104,9 @@ def label_for_column(column: str, sweep_param_names: List[str]) -> str:
     for name in sweep_param_names:
         if column == parameter_meta.column_name(name):
             return parameter_meta.axis_label(name)
-    if column in RESULT_FIELDS:
-        return RESULT_FIELDS[column]
+    fields = result_fields()
+    if column in fields:
+        return fields[column]
     return "Combination" if column == "combo_id" else column
 
 
@@ -121,6 +169,7 @@ def figure_html(
     x: Optional[str] = None,
     y: Optional[str] = None,
     color: Optional[str] = None,
+    solution_type: Optional[str] = None,
     dark: bool = False,
     plotlyjs_src: Optional[str] = None,
 ) -> str:
@@ -142,17 +191,32 @@ def figure_html(
     def usable(column, fallback):
         return column if column in df.columns else fallback
 
-    x = usable(x, options[0])
-    default_y = DEFAULT_Y if DEFAULT_Y in df.columns and DEFAULT_Y != x else next(
+    # A stale bookmark, or a run whose post-processing did not produce
+    # the column it asks for, falls back to what this solver would have
+    # opened on -- and to any column at all if even that is missing.
+    preferred = default_axes(df, sweep_param_names, solution_type)
+    x = usable(x, usable(preferred["x"], options[0]))
+    fallback_y = preferred["y"] if preferred["y"] in df.columns and preferred["y"] != x else next(
         (o for o in options if o != x), x)
-    y = usable(y, default_y)
+    y = usable(y, fallback_y)
     if color and color not in df.columns:
         color = None
 
     labels = {column: label_for_column(column, sweep_param_names) for column in df.columns}
 
-    figure = px.scatter(
-        df, x=x, y=y, color=color,
+    # A driven run against frequency is a curve, not a cloud: several
+    # hundred points per combination drawn as markers is unreadable, and
+    # the shape between the points is the whole result. Anything else --
+    # including a driven run plotted against a swept parameter rather
+    # than frequency -- stays a scatter, where each point is its own
+    # measurement and joining them would invent a trend.
+    as_curve = has_sparameters(df) and x == "freq_ghz"
+    draw = px.line if as_curve else px.scatter
+    extra = {"line_group": "combo_id"} if as_curve and "combo_id" in df.columns else {}
+
+    figure = draw(
+        df.sort_values(x) if as_curve else df,
+        x=x, y=y, color=color,
         hover_data=[c for c in ("combo_id", "mode", *options) if c in df.columns and c not in (x, y)],
         # always first in each point's customdata, whatever hover_data
         # holds -- the run page reads it back to tell which combination
@@ -160,6 +224,7 @@ def figure_html(
         custom_data=["combo_id"] if "combo_id" in df.columns else None,
         labels=labels,
         template="plotly_dark" if dark else "plotly_white",
+        **extra,
     )
     # let the page behind the plot show through, so the embedded figure
     # matches whichever theme the run page is being viewed in
@@ -208,115 +273,6 @@ _CLICK_BRIDGE = """
 </script>"""
 
 
-def _interpolate(points, axis: int, resolution: int = 120):
-    """Turn scattered mesh-node samples into a grid that can be drawn as
-    a heatmap, over the two axes that are not the body's thin one."""
-    import numpy as np
-    from scipy.interpolate import griddata
-
-    across = [a for a in range(3) if a != axis]
-    # coordinates come out of AEDT in metres; millimetres read better
-    horizontal = np.array([c[across[0]] for c, _ in points]) * 1000.0
-    vertical = np.array([c[across[1]] for c, _ in points]) * 1000.0
-    values = np.array([v for _, v in points])
-
-    x = np.linspace(horizontal.min(), horizontal.max(), resolution)
-    y = np.linspace(vertical.min(), vertical.max(), resolution)
-    grid_x, grid_y = np.meshgrid(x, y)
-    grid_z = griddata((horizontal, vertical), values, (grid_x, grid_y), method="linear")
-    return x, y, grid_z, across
-
-
-# How many chips the "all variants" grid draws. Every extra panel is a
-# full interpolated surface, so a few hundred of them is tens of
-# megabytes and several seconds -- and unreadable besides.
-MAX_HEATMAP_PANELS = 12
-
-
-def chip_heatmap_html(
-    entries: List[dict],
-    dark: bool = False,
-    plotlyjs_src: Optional[str] = None,
-    columns: int = 3,
-    note: Optional[str] = None,
-) -> str:
-    """Chip top-face |E| as a heatmap, for one variant or all of them.
-
-    Every panel is drawn against one shared colour axis, so the grid can
-    be read across variants -- a per-panel scale would make the weakest
-    and strongest chips look identical.
-    """
-    from plotly.subplots import make_subplots
-    import plotly.graph_objects as go
-
-    usable = [e for e in entries if e.get("points")]
-    if not usable:
-        return "<p>No chip field data in this run yet.</p>"
-
-    lowest = min(min(v for _, v in e["points"]) for e in usable)
-    highest = max(max(v for _, v in e["points"]) for e in usable)
-
-    count = len(usable)
-    cols = 1 if count == 1 else min(columns, count)
-    rows = (count + cols - 1) // cols
-
-    # Plotly caps the gap between panels at 1/(rows-1), so a sweep with
-    # hundreds of combinations would otherwise fail outright rather than
-    # draw anything. Shrink the gap to fit, and give each row a fixed
-    # height so a tall grid stays readable instead of being squashed.
-    spacing = min(0.12, 0.8 / (rows - 1)) if rows > 1 else 0.0
-
-    figure = make_subplots(
-        rows=rows, cols=cols,
-        subplot_titles=[e["label"] for e in usable],
-        horizontal_spacing=0.08, vertical_spacing=spacing,
-    )
-
-    axis_names = None
-    for index, entry in enumerate(usable):
-        row, col = index // cols + 1, index % cols + 1
-        x, y, z, across = _interpolate(entry["points"], entry["axis"])
-        axis_names = ("xyz"[across[0]], "xyz"[across[1]])
-        figure.add_trace(
-            go.Heatmap(x=x, y=y, z=z, coloraxis="coloraxis",
-                       hovertemplate="%{x:.2f}, %{y:.2f} mm<br>|E| = %{z:.4g}<extra></extra>"),
-            row=row, col=col,
-        )
-        figure.update_xaxes(title_text=f"{axis_names[0]} (mm)", row=row, col=col,
-                            constrain="domain")
-        figure.update_yaxes(title_text=f"{axis_names[1]} (mm)", row=row, col=col,
-                            scaleanchor=f"x{'' if index == 0 else index + 1}", scaleratio=1)
-
-    figure.update_layout(
-        coloraxis=dict(
-            cmin=lowest, cmax=highest, colorscale="Turbo",
-            colorbar=dict(title="|E| (V/m)"),
-        ),
-        template="plotly_dark" if dark else "plotly_white",
-        paper_bgcolor="rgba(0,0,0,0)",
-        plot_bgcolor="rgba(0,0,0,0)",
-        height=max(320, 300 * rows),
-        margin=dict(l=60, r=30, t=50, b=50),
-        showlegend=False,
-    )
-
-    if not plotlyjs_src:
-        return figure.to_html(include_plotlyjs=True, full_html=True)
-    fragment = figure.to_html(include_plotlyjs=False, full_html=False)
-    scheme = "dark" if dark else "light"
-    banner = (
-        f"<p style='margin:.4rem .6rem;font:13px system-ui;opacity:.7'>{note}</p>"
-        if note else ""
-    )
-    return (
-        "<!doctype html><html><head><meta charset='utf-8'>"
-        f"<script src='{plotlyjs_src}'></script>"
-        "<style>html,body{margin:0;padding:0;background:transparent;"
-        f"color-scheme:{scheme}}}</style>"
-        f"</head><body>{banner}{fragment}</body></html>"
-    )
-
-
 def plot_results(df: pd.DataFrame, run, sweep_param_names: List[str], log=logger.info) -> Optional[str]:
     if df.empty:
         log("No data to plot.")
@@ -327,15 +283,13 @@ def plot_results(df: pd.DataFrame, run, sweep_param_names: List[str], log=logger
     df.to_csv(combined_csv, index=False)
     log(f"Combined {len(df)} rows into {combined_csv}")
 
-    swept = [parameter_meta.column_name(n) for n in sweep_param_names]
+    solution_type = registry.solution_type_of(run.config.get("analysis_settings", {}))
     html = figure_html(
-        df, sweep_param_names,
-        x=swept[0] if swept else "combo_id",
-        y=DEFAULT_Y,
-        color="chip_mag_E_max" if "chip_mag_E_max" in df.columns else (swept[1] if len(swept) > 1 else None),
+        df, sweep_param_names, solution_type=solution_type,
+        **default_axes(df, sweep_param_names, solution_type),
     )
 
-    plot_path = os.path.join(run.plots_dir, "modes_scatter_plot.html")
+    plot_path = os.path.join(run.plots_dir, PLOT_FILENAME)
     with open(plot_path, "w", encoding="utf-8") as handle:
         handle.write(html)
     log(f"Plot saved to {plot_path}")

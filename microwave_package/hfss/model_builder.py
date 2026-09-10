@@ -1,10 +1,15 @@
 """
-AEDT model-building step: for each STEP file, build an HFSS Eigenmode
-model (geometry, materials, boundaries, and its single analysis setup --
-everything the student license covers), then queue it with the worker for
-analysis. Never calls Analyze/analyze_setup itself -- that's the worker's
-job, on the full license, in a different process entirely (see
-ansys-analyze-worker's ARCHITECTURE.md section 8).
+AEDT model-building step: for each STEP file, build an HFSS model
+(geometry, materials, boundaries, ports if the run has any, and its
+single analysis setup -- everything the student license covers), then
+queue it with the worker for analysis. Never calls Analyze/analyze_setup
+itself -- that's the worker's job, on the full license, in a different
+process entirely (see ansys-analyze-worker's ARCHITECTURE.md section 8).
+
+The geometry, materials and boundaries here are the same whatever is
+being solved on them. Everything that is not -- which setup to create,
+whether there are ports and where they go -- is asked of the run's
+solver rather than branched on. See registry.py for that contract.
 """
 from __future__ import annotations
 
@@ -12,13 +17,15 @@ import logging
 import os
 import re
 import time
+from dataclasses import dataclass
 from typing import Callable, Dict, List, Optional
 
 from ansys_analyze_common import queue_common
 
-from . import equations as eq
+from ..design import equations as eq
+from . import registry
 
-logger = logging.getLogger("eigen_mode_analyze")
+logger = logging.getLogger("microwave_package")
 
 
 def get_installed_versions() -> List[str]:
@@ -58,33 +65,6 @@ def get_installed_versions() -> List[str]:
     cleaned = {re.sub(r"[A-Za-z]+$", "", v).strip() for v in raw_versions}
     cleaned = {v for v in cleaned if v}
     return sorted(cleaned, reverse=True)
-
-
-def calculate_min_freq(dimensions_txt_content: str, safety_factor: float = 0.4, floor_ghz: float = 0.1) -> float:
-    """
-    Estimate a starting MinimumFrequency for the eigenmode sweep from the
-    PCB footprint, then pull it DOWN by `safety_factor` before returning.
-
-    The naive estimate (half-wavelength resonance across the larger PCB
-    dimension) only accounts for the PCB itself -- the actual enclosure
-    (box/lid/pedestal cavity) is typically comparable in size or larger,
-    so its true lowest cavity mode can sit below that naive estimate.
-    Starting the sweep too high silently skips real low-frequency modes.
-    `safety_factor` (default 0.4, i.e. start at 40% of the naive value)
-    gives headroom to catch those; `floor_ghz` is a hard lower bound.
-    """
-    params = eq.get_numeric_parameters(dimensions_txt_content)
-    try:
-        pcb_length = params["pcb_length"]
-        pcb_side = params["pcb_side"]
-    except KeyError as exc:
-        raise ValueError(f"Could not find {exc} in the equations file") from exc
-
-    max_dim_m = max(pcb_length, pcb_side) * 1e-3
-    c = 299792458
-    wave_lambda = 2 * max_dim_m
-    naive_min_freq_ghz = (c / wave_lambda) / 1e9
-    return max(naive_min_freq_ghz * safety_factor, floor_ghz)
 
 
 # What a material setting falls back to when the run does not carry one.
@@ -273,7 +253,8 @@ def place_connectors(hfss, frame, board_top: float, half_length: float,
     the board edge, the underside sits on the board, and the body is
     centred across it, whatever the file happens to use as its datum.
     """
-    from . import paths, smp
+    from .. import paths
+    from ..design import smp
 
     model = paths.SMP_MODEL_FILE
     if not model.is_file():
@@ -390,7 +371,7 @@ def cavity_frame(hfss, fallback_x: float, fallback_z: float, log=logger.info):
     Falls back to the computed values, loudly, if the cavity is not
     there to measure.
     """
-    from . import copper_geometry as cg
+    from ..design import copper_geometry as cg
 
     for wanted in ("vacuum", "box"):
         for obj in hfss.modeler.solid_objects:
@@ -418,19 +399,35 @@ def cavity_frame(hfss, fallback_x: float, fallback_z: float, log=logger.info):
     return cg.Frame(x_offset=fallback_x, z_offset=fallback_z)
 
 
-def build_layout(hfss, combo_dir: str, dimensions_txt_content: str, log=logger.info) -> None:
+@dataclass(frozen=True)
+class LayoutContext:
+    """Where the layout put things, for whoever needs it after the fact.
+
+    `build_layout` works all of this out to place copper, and a driven
+    run's ports need the same numbers to sit under the trace or against
+    the launch. Recomputing them from the equation file a second time
+    would be two places to get the stack-up wrong, so the one that
+    already did it hands its answer back instead.
+    """
+    frame: "copper_geometry.Frame"
+    stack: "copper_geometry.Stack"
+    values: Dict[str, float]
+
+
+def build_layout(hfss, combo_dir: str, dimensions_txt_content: str,
+                 log=logger.info) -> Optional["LayoutContext"]:
     """Rebuild the boards from the layout: substrates, copper and bonds.
 
-    Silently does nothing when there is no copper file. A run built from
-    a SolidWorks-only assembly is still perfectly valid, and was the only
-    kind of run until the Altium stage existed.
+    Returns where it put them, or None when there is no copper file --
+    a run built from a SolidWorks-only assembly is still perfectly valid,
+    and was the only kind of run until the Altium stage existed.
     """
-    from . import copper_geometry as cg, equations as eq
+    from ..design import copper_geometry as cg, equations as eq
 
     copper_path = os.path.join(combo_dir, "copper.txt")
     if not os.path.isfile(copper_path):
         log("No copper.txt for this combination -- building the model without a layout.")
-        return
+        return None
 
     v = eq.get_numeric_parameters(dimensions_txt_content)
     boards = cg.read_file(copper_path)
@@ -553,7 +550,7 @@ def build_layout(hfss, combo_dir: str, dimensions_txt_content: str, log=logger.i
     # The wires come from the same layout file Altium placed the pads
     # from, so each one lands on its pad -- on the copper, again, not the
     # substrate.
-    from . import bonds as bond_layout
+    from ..design import bonds as bond_layout
 
     bonds_path = os.path.join(combo_dir, "bonds.txt")
     if os.path.isfile(bonds_path):
@@ -569,6 +566,8 @@ def build_layout(hfss, combo_dir: str, dimensions_txt_content: str, log=logger.i
         )
     else:
         log("No bonds.txt for this combination -- the die is not bonded.")
+
+    return LayoutContext(frame=frame, stack=stack, values=v)
 
 
 # Tried in turn when the preferred material will not stick. The last
@@ -749,28 +748,6 @@ def carve_vacuum(hfss, objects_dict, log=logger.info) -> None:
         )
 
 
-SETUP_NAME = "Setup_1"
-
-
-def create_eigenmode_setup(hfss, dimensions_txt_content: str, analysis_settings: dict):
-    """Create the project's single Eigenmode setup. The student license
-    covers `create_setup` -- it's only `analyze`/`analyze_setup` that needs
-    the full license, which is why this still runs here (client side,
-    student version) and the worker only ever runs the setup this
-    produces, never creates one itself (see ARCHITECTURE.md section 8)."""
-    min_freq_ghz = calculate_min_freq(
-        dimensions_txt_content, safety_factor=analysis_settings["min_freq_safety_factor"]
-    )
-    setup = hfss.create_setup(name=SETUP_NAME)
-    setup.props["MinimumFrequency"] = f"{min_freq_ghz}GHz"
-    setup.props["NumModes"] = analysis_settings["modes"]
-    setup.props["MaximumPasses"] = analysis_settings["max_passes"]
-    setup.props["MinimumPasses"] = analysis_settings["min_passes"]
-    setup.props["MinimumConvergedPasses"] = analysis_settings["min_converged"]
-    setup.props["MaxDeltaFreq"] = analysis_settings["max_delta_f"]
-    return setup
-
-
 def project_file_for(run, combo_id: str) -> str:
     """Where this combo's AEDT project lives -- and, because AEDT names a
     project after its file, what that project is called inside the AEDT
@@ -919,10 +896,12 @@ def build_model(
     combo_dir = run.combo_dir(combo_id)
     project_path = project_file_for(run, combo_id)
 
+    solver = registry.for_settings(analysis_settings)
+
     hfss = Hfss(
         project=project_path,
         version=aedt_version,
-        solution_type="Eigenmode",
+        solution_type=solver.value,
         new_desktop=False,
         student_version=student_version,
         non_graphical=not graphical,
@@ -952,13 +931,24 @@ def build_model(
         # die can be pocketed into the board and everything shares one
         # frame. Must happen BEFORE materials are assigned, or the new
         # bodies exist without any.
-        build_layout(hfss, combo_dir, dimensions_txt_content, log=log)
+        layout = build_layout(hfss, combo_dir, dimensions_txt_content, log=log)
 
         objects_dict = assign_materials_and_boundaries(hfss, analysis_settings["materials"], log=log)
         carve_vacuum(hfss, objects_dict, log=log)
         object_names = {key: obj.name for key, obj in objects_dict.items()}
 
-        create_eigenmode_setup(hfss, dimensions_txt_content, analysis_settings)
+        # After the carve, not before: a boolean renumbers the faces of
+        # everything it touches, and a port is attached to a face id.
+        try:
+            port_names = solver.place_ports(hfss, layout, analysis_settings, log=log)
+        except registry.PortPlacementError as exc:
+            log(
+                f"{combo_id}: {exc} Not saving or queueing this combination -- a driven "
+                "model with no ports has nothing to excite and no S-matrix to read."
+            )
+            return
+
+        solver.create_setup(hfss, dimensions_txt_content, analysis_settings, log=log)
 
         hfss.save_project(project_path)
         closed = close_project_safely(hfss, log=log)
@@ -976,7 +966,9 @@ def build_model(
         if not closed:
             log(f"{combo_id}'s project unlocked despite that close error -- queueing it anyway.")
 
-        object_names = _remember_built_model(run, combo_id, project_path, object_names, log)
+        object_names = _remember_built_model(
+            run, combo_id, project_path, object_names, port_names, log
+        )
         return object_names
 
     finally:
@@ -1010,19 +1002,27 @@ def build_and_queue(
     queue_model(combo_id, step_path, run, queue, object_names, log=log)
 
 
-def _remember_built_model(run, combo_id, project_path, object_names, log) -> Dict[str, str]:
+def _remember_built_model(run, combo_id, project_path, object_names,
+                          port_names, log) -> Dict[str, str]:
     """Record that this combination's model exists and is ready to hand over.
 
     The body names are stored with it because the task needs them and
     they are only known while the model is being built. Without this, a
     handoff deferred to a later session would have to reopen the project
     just to rediscover them.
+
+    The port names go in beside them for the same reason, minus the need:
+    nothing downstream addresses a port by name -- S-parameters are
+    indexed by port number -- but a run that came out wrong is much
+    easier to read back when its record says which ports were built and
+    which were not.
     """
     run.update_combo(
         combo_id,
         model_status="built",
         project_path=project_path,
         object_names=object_names,
+        ports=port_names,
     )
     log(f"{combo_id}: model built and saved to {os.path.basename(project_path)}.")
     return object_names
@@ -1048,12 +1048,22 @@ def queue_model(
 
     combo_dir = run.combo_dir(combo_id)
     project_path = project_file_for(run, combo_id)
-    task_id = queue_common.new_task_id("eigenmode_analyze")
+    analysis_settings = run.config["analysis_settings"]
+    solver = registry.for_settings(analysis_settings)
+    # The task id prefixes the queue folder this combination's project is
+    # copied into, so it says which kind of run it came from even though
+    # `task_type` no longer does -- every task is a "run_setups" task now.
+    task_id = queue_common.new_task_id(solver.task_id_prefix)
     relative_project_file = queue_common.copy_project_to_queue(queue, task_id, combo_dir)
     relative_output_dir = queue_common.project_dir_for_task(task_id)
 
     task = queue_common.build_task(
-        task_type="eigenmode_analyze",
+        # What the worker should DO, which is the same whatever kind of
+        # setup this is: open the project and run the setup(s) already in
+        # it. `solution_type` below is what says which kind they are.
+        # (The worker still answers to the old "eigenmode_analyze" name as
+        # a legacy alias, but nothing here should send it any more.)
+        task_type="run_setups",
         project_file=relative_project_file,
         output_dir=relative_output_dir,
         task_id=task_id,
@@ -1061,23 +1071,9 @@ def queue_model(
         # passing it through lets the worker skip auto-detecting it
         # from the AEDT session when it reopens the project. See
         # queue_common.build_task()'s docstring for why that matters.
-        solution_type="Eigenmode",
+        solution_type=solver.value,
         objects=object_names,
-        post_processing=[
-            # The four numbers the run page plots. The chip's are taken
-            # on its top face only -- the surface the circuit is on --
-            # while the vacuum's cover the whole cavity volume.
-            {"op": "field_statistics", "params": {
-                "object_key": "chip", "quantity": "Mag_E",
-                "region": "top_surface", "key": "chip_mag_E",
-            }},
-            {"op": "field_statistics", "params": {
-                "object_key": "vacuum", "quantity": "Mag_E",
-                "region": "volume", "key": "vacuum_mag_E",
-            }},
-            # Best-effort picture of that same chip face.
-            {"op": "field_plot_surface", "params": {"object_key": "chip", "quantity": "Mag_E"}},
-        ],
+        post_processing=solver.post_processing_ops(analysis_settings),
         metadata={
             "combo_id": combo_id,
             "params": run.state["combos"][combo_id]["params"],

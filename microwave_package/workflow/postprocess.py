@@ -1,13 +1,16 @@
 """
 Client-side post-processing: once the worker reports a task as done (it
-only ever ran the project's one existing setup -- see
-ansys-analyze-worker's handlers/eigenmode_analyze.py), this reopens the
-now-solved project itself and pulls every bit of data the run needs
-straight out of it: mode frequencies, Q, and the field plots configured
-in the task's `post_processing` list. All of that used to happen inside
-the worker, right after analyze() -- it's here now because none of it
-needs the full license, only the worker's analyze() call does (see
+only ever ran the project's existing setups -- see
+ansys-analyze-worker's handlers/run_setups.py), this brings the analysed
+files over, reopens the now-solved project itself, and hands it to the
+run's solver to read. All of that used to happen inside the worker,
+right after analyze() -- it's here now because none of it needs the full
+license, only the worker's analyze() call does (see
 ansys-analyze-worker's ARCHITECTURE.md section 12).
+
+What gets read out is the solver's business, not this module's: it
+orchestrates (fetch, open, write client_result.json, record the outcome)
+and delegates the reading.
 
 Runs strictly one task at a time, never in parallel -- driving more than
 one AEDT session from the same pipeline at once isn't something the
@@ -20,95 +23,15 @@ from __future__ import annotations
 import json
 import logging
 import os
-import re
 import shutil
 from typing import Any, Callable, Dict, List, Optional
 
 from ansys_analyze_common import queue_common
 
-from .model_builder import close_project_safely
-from .post_processing import run_post_processing
+from ..hfss import registry
+from ..hfss.model_builder import close_project_safely
 
-logger = logging.getLogger("eigen_mode_analyze")
-
-
-def _solution_name(hfss, setup) -> str:
-    """The "<setup> : LastAdaptive" string that identifies this setup's
-    solution in every post-processing call -- see the note in
-    ansys-analyze-worker's ARCHITECTURE.md section 11 on why this can't
-    just be assumed/constructed from the setup name alone."""
-    for name in hfss.existing_analysis_sweeps:
-        if name.split(" : ")[0] == setup.name:
-            return name
-    raise RuntimeError(
-        f"Setup {setup.name} has no solution entry in the design "
-        f"(existing_analysis_sweeps={hfss.existing_analysis_sweeps})."
-    )
-
-
-def _mode_index(expression: str) -> int:
-    """1 out of 'Mode(1)' / 'Q(1)'."""
-    match = re.search(r"\((\d+)\)", expression)
-    if not match:
-        raise RuntimeError(f"Cannot read a mode number out of report quantity {expression!r}.")
-    return int(match.group(1))
-
-
-def get_eigenmode_results(hfss, setup, log) -> List[Dict[str, Any]]:
-    """Resonant frequency and Q for every mode of the solved Eigenmode setup."""
-    if not setup.is_solved:
-        raise RuntimeError(
-            f"Setup {setup.name} is not solved -- the worker should have solved it "
-            "before handing the task back as done. Check the worker's log."
-        )
-
-    solution = _solution_name(hfss, setup)
-
-    mode_exprs = hfss.post.available_report_quantities(solution=solution)
-    q_exprs = hfss.post.available_report_quantities(solution=solution, quantities_category="Eigen Q")
-    if not mode_exprs:
-        return []
-
-    data = hfss.post.get_solution_data(
-        expressions=mode_exprs + q_exprs,
-        setup_sweep_name=solution,
-        report_category="Eigenmode Parameters",
-    )
-    if data is None:
-        raise RuntimeError(f"No solution data returned for {solution}.")
-
-    def first_real(expression):
-        if expression not in data.expressions:
-            return None
-        _, y = data.get_expression_data(expression=expression, formula="real")
-        values = list(y)
-        return float(values[0]) if values else None
-
-    qs = {_mode_index(e): first_real(e) for e in q_exprs}
-
-    results: List[Dict[str, Any]] = []
-    for mode_expr in mode_exprs:
-        mode = _mode_index(mode_expr)
-        freq_hz = first_real(mode_expr)
-        if freq_hz is None:
-            log(f"{setup.name}: no data for {mode_expr!r}; skipping.")
-            continue
-        results.append({
-            "mode": mode,
-            "freq_hz": freq_hz,
-            "freq_ghz": freq_hz / 1e9,
-            "q": qs.get(mode),
-        })
-
-    results.sort(key=lambda r: r["freq_hz"])
-    return results
-
-
-def get_convergence_data(setup):
-    try:
-        return setup.props.get("MaxDeltaFreq", "N/A")
-    except Exception:
-        return "N/A"
+logger = logging.getLogger("microwave_package")
 
 
 def postprocess_task(
@@ -118,10 +41,15 @@ def postprocess_task(
     graphical: bool,
     log: Callable[[str], None],
 ) -> Dict[str, Any]:
-    """Open the analyzed project (student version), extract eigenmode
-    results, and run the task's post_processing ops per mode. `task`'s
-    `project_file`/`output_dir` must already be resolved to real paths
-    (see queue_common.resolve_path)."""
+    """Open the analyzed project (student version) and pull its results out.
+
+    What "results" means is the solver's business -- an eigenmode
+    project's modes, a driven project's S-matrix -- and it comes back as
+    `rows`, one dict per result whatever a result is, so everything
+    downstream builds one table the same way.
+
+    `task`'s `project_file`/`output_dir` must already be resolved to real
+    paths (see queue_common.resolve_path)."""
     from ansys.aedt.core import Hfss
 
     kwargs = dict(
@@ -142,30 +70,17 @@ def postprocess_task(
         if not setup_names:
             raise RuntimeError("Analyzed project has no setup to post-process.")
 
-        out_dir = task["output_dir"]
-        modes_data: List[Dict[str, Any]] = []
-        for setup_name in setup_names:
-            setup = hfss.get_setup(setup_name)
-            eigen_results = get_eigenmode_results(hfss, setup, log)
-            conv_error = str(get_convergence_data(setup))
+        solver = registry.get(task.get("solution_type"))
+        rows = solver.read_results(hfss, setup_names, task, task["output_dir"], log)
 
-            for mode_result in eigen_results:
-                row = {
-                    "setup": setup_name,
-                    "mode": mode_result["mode"],
-                    "freq_ghz": mode_result["freq_ghz"],
-                    "q": mode_result["q"],
-                    "convergence_error": conv_error,
-                }
-                mode_out_dir = os.path.join(out_dir, f"{setup_name}_Mode_{mode_result['mode']}")
-                os.makedirs(mode_out_dir, exist_ok=True)
-                pp_result = run_post_processing(
-                    hfss, task, {"setup_name": setup_name, "mode": mode_result["mode"]}, mode_out_dir,
-                )
-                row.update(pp_result)
-                modes_data.append(row)
-
-        return {"modes": modes_data, "num_modes_found": len(modes_data)}
+        # `rows`, not `modes`: a driven run's rows are frequency points,
+        # not modes. Results written before driven runs existed still say
+        # `modes`, and results.py reads either.
+        return {
+            "rows": rows,
+            "solution_type": solver.value,
+            "row_count": len(rows),
+        }
     finally:
         close_project_safely(hfss, log=log)
 
@@ -340,7 +255,7 @@ def postprocess_run(
             with open(os.path.join(local_dir, "client_result.json"), "w") as f:
                 json.dump(client_result, f, indent=2, default=str)
             run.update_combo(combo_id, post_status="done", analysis_dir=local_dir)
-            log(f"{combo_id}: post-processing done ({result['num_modes_found']} mode(s)).")
+            log(f"{combo_id}: post-processing done ({result['row_count']} result row(s)).")
         except Exception as exc:
             # The files are already local by this point, so a failure here
             # is retryable without going back to the queue.

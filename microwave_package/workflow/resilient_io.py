@@ -11,7 +11,7 @@ import logging
 import time
 from typing import Callable, Optional
 
-logger = logging.getLogger("eigen_mode_analyze")
+logger = logging.getLogger("microwave_package")
 
 
 def path_available(path: str) -> bool:

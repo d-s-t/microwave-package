@@ -6,8 +6,11 @@ the combined results -- all resumable from wherever it left off. Runs
 standalone from the command line, or driven by the web UI (webapp.py),
 which calls `run_pipeline()` directly in a background thread.
 
-    python -m eigen_mode_analyze.pipeline --sweep pedestal_depth=0:10:2
-    python -m eigen_mode_analyze.pipeline --resume run_20260819_140102
+    python -m microwave_package.pipeline --sweep pedestal_depth=0:10:2
+    python -m microwave_package.pipeline --resume run_20260819_140102
+
+A run solves either for the cavity's eigenmodes or for the package's
+S-parameters, and the same stages carry both -- see hfss/registry.py.
 """
 from __future__ import annotations
 
@@ -19,13 +22,17 @@ from typing import Callable, List, Optional
 
 from ansys_analyze_common import queue_common
 
-from . import equations as eq
-from . import model_builder, paths, plotting, postprocess, resilient_io, results, step_generation
-from .monitor import monitor_run
-from .run_manager import Run
-from .sweep import SweepParameter, expand_values, split_swept_and_fixed
+from . import paths
+from .design import equations as eq
+from .design import step_generation
+from .design.sweep import SweepParameter, expand_values, split_swept_and_fixed
+from .hfss import model_builder, registry
+from .hfss.driven import ports
+from .workflow import plotting, postprocess, resilient_io, results
+from .workflow.monitor import monitor_run
+from .workflow.run_manager import Run
 
-logger = logging.getLogger("eigen_mode_analyze")
+logger = logging.getLogger("microwave_package")
 
 
 class _QueueProbe:
@@ -308,13 +315,14 @@ def run_pipeline(run: Run, queue: "queue_common.QueuePaths", log=logger.info, st
 
 # What a brand-new run uses when there is no earlier run to copy from.
 # Kept here so the web form and the CLI start from the same numbers.
+#
+# The per-solution-type numbers come from the solvers rather than being
+# repeated here: both types' defaults are always present, and the run's
+# `solution_type` decides which half is ever read. See that module for
+# why the unused half is kept rather than stripped.
 DEFAULT_ANALYSIS_SETTINGS = {
-    "modes": 20,
-    "max_passes": 99,
-    "min_passes": 5,
-    "min_converged": 3,
-    "max_delta_f": 1.0,
-    "min_freq_safety_factor": 0.4,
+    "solution_type": registry.default_solution_type(),
+    **registry.all_defaults(),
     "aedt_version": None,
     "student_version": True,
     "graphical": False,
@@ -350,12 +358,19 @@ DEFAULT_ANALYSIS_SETTINGS = {
 
 def build_analysis_settings(args: argparse.Namespace) -> dict:
     return {
+        "solution_type": args.solution_type,
         "modes": args.modes,
         "max_passes": args.max_passes,
         "min_passes": args.min_passes,
         "min_converged": args.min_converged,
         "max_delta_f": args.max_delta_f,
         "min_freq_safety_factor": args.min_freq_safety_factor,
+        "f_start_ghz": args.f_start_ghz,
+        "f_stop_ghz": args.f_stop_ghz,
+        "sweep_points": args.sweep_points,
+        "max_delta_s": args.max_delta_s,
+        "port_impedance_ohm": args.port_impedance_ohm,
+        "reference_plane": args.reference_plane,
         "aedt_version": args.aedt_version,
         "student_version": args.student_version,
         "graphical": args.graphical,
@@ -375,19 +390,42 @@ def build_analysis_settings(args: argparse.Namespace) -> dict:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run the eigenmode-analysis client pipeline end to end")
+    parser = argparse.ArgumentParser(description="Run the analysis client pipeline end to end")
     parser.add_argument(
         "--sweep", action="append", default=[], metavar="NAME=SPEC",
         help='A parameter to sweep, e.g. --sweep pedestal_depth=0:10:2 (repeatable for '
              "multiple parameters -- combinations are the cartesian product across all of them)",
     )
     parser.add_argument("--resume", type=str, default=None, help="Resume an existing run by its run_id instead of starting a new one")
+    parser.add_argument(
+        "--solution-type", choices=[t["value"] for t in registry.solution_types()],
+        default=registry.default_solution_type(),
+        help="Eigenmode reports resonant frequencies and Q; DrivenModal drives the "
+             "two ports and reports S11/S21. The settings below are grouped by which "
+             "one they apply to -- the other group is ignored.",
+    )
+    # Eigenmode settings.
     parser.add_argument("--modes", type=int, default=20)
+    parser.add_argument("--max-delta-f", type=float, default=1.0, help="Maximum Delta Frequency Per Pass (%%)")
+    parser.add_argument("--min-freq-safety-factor", type=float, default=0.4)
+    # DrivenModal settings.
+    parser.add_argument("--f-start-ghz", type=float, default=1.0, help="Frequency sweep start")
+    parser.add_argument("--f-stop-ghz", type=float, default=15.0, help="Frequency sweep stop")
+    parser.add_argument("--sweep-points", type=int, default=401, help="Frequency points reported by the sweep")
+    parser.add_argument("--max-delta-s", type=float, default=0.02, help="Maximum Delta S Per Pass")
+    parser.add_argument("--port-impedance-ohm", type=float, default=50.0)
+    parser.add_argument(
+        "--reference-plane", choices=[p["value"] for p in ports.REFERENCE_PLANES],
+        default=ports.DEFAULT_REFERENCE_PLANE,
+        help="Where the driven run's ports go: 'connector' puts a wave port on the "
+             "SMP bead's coax cross-section (connector transition included); 'launch' "
+             "puts a lumped port under the CPW trace just inboard of the land pattern "
+             "(board only).",
+    )
+    # Shared.
     parser.add_argument("--max-passes", type=int, default=99)
     parser.add_argument("--min-passes", type=int, default=5)
     parser.add_argument("--min-converged", type=int, default=3)
-    parser.add_argument("--max-delta-f", type=float, default=1.0, help="Maximum Delta Frequency Per Pass (%%)")
-    parser.add_argument("--min-freq-safety-factor", type=float, default=0.4)
     parser.add_argument("--aedt-version", type=str, default=None)
     parser.add_argument("--no-student-version", dest="student_version", action="store_false", default=True)
     parser.add_argument("--graphical", action="store_true", help="Show the AEDT UI while building")
@@ -433,7 +471,19 @@ def main() -> None:
                 "Pinned for this run: %s",
                 ", ".join(f"{n}={v:g}" for n, v in parameter_defaults.items()),
             )
-        run = Run.create(sweep_params, build_analysis_settings(args), parameter_defaults)
+        analysis_settings = build_analysis_settings(args)
+        # Checked before anything is built, not per combination: a driven
+        # run needs two real ports to have an S21, and finding that out
+        # one model at a time would mean a sweep's worth of geometry
+        # built for projects that can never be given ports.
+        swept_values = {p.name: p.values for p in sweep_params}
+        complaint = registry.get(analysis_settings["solution_type"]).validate(
+            swept_values.get("port_count") or [parameter_defaults.get("port_count", 0)]
+        )
+        if complaint:
+            raise SystemExit(complaint)
+
+        run = Run.create(sweep_params, analysis_settings, parameter_defaults)
         logger.info("Created run %s with %d combination(s)", run.run_id, len(run.state["combos"]))
 
     run_pipeline(run, queue)

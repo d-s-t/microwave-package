@@ -35,7 +35,7 @@ import subprocess
 import time
 from typing import Callable, Dict, Optional, Tuple
 
-logger = logging.getLogger("eigen_mode_analyze")
+logger = logging.getLogger("microwave_package")
 
 # Where Altium is installed. The version segment moves with upgrades, so
 # the search is ordered newest-first rather than pinned.
@@ -89,7 +89,7 @@ def write_params(path: str, values: Dict[str, float], extra: Optional[Dict[str, 
     geometry quietly ends up a thousand times too large.
     """
     lines = [
-        "# Written by eigen_mode_analyze.altium_generation -- do not edit by hand.",
+        "# Written by microwave_package.altium_generation -- do not edit by hand.",
         "# All lengths in millimetres.",
     ]
     for name in sorted(values):
@@ -250,7 +250,8 @@ def generate_for_combo(
     layout cannot be built should be recorded and skipped, exactly as a
     failed STEP already is, not abort the whole sweep.
     """
-    from . import constraints, paths
+    from . import constraints
+    from .. import paths
 
     # Cheaper to refuse here than to let Altium build a board that is
     # quietly wrong -- and the message names the parameter to change.

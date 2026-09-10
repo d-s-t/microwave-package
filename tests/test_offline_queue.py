@@ -15,7 +15,8 @@ import tempfile
 import time
 import unittest
 
-from eigen_mode_analyze import pipeline, resilient_io
+from microwave_package import pipeline
+from microwave_package.workflow import resilient_io
 
 # A path that cannot exist, rather than a real disconnected network
 # drive. Probing a DISCONNECTED MAPPED drive costs ~21 s on the first

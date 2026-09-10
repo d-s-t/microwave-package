@@ -16,7 +16,7 @@ import os
 import tempfile
 import unittest
 
-from eigen_mode_analyze import model_builder
+from microwave_package.hfss import model_builder
 
 
 class FakeRun:
@@ -96,12 +96,14 @@ class TestRememberBuiltModel(unittest.TestCase):
         project just to rediscover them."""
         run = FakeRun()
         names = model_builder._remember_built_model(
-            run, "c1", r"C:\runs\c1\m.aedt", {"vacuum": "vacuum"}, lambda _m: None
+            run, "c1", r"C:\runs\c1\m.aedt", {"vacuum": "vacuum"},
+            ["port_1", "port_2"], lambda _m: None,
         )
         combo = run.state["combos"]["c1"]
         self.assertEqual(combo["model_status"], "built")
         self.assertEqual(combo["project_path"], r"C:\runs\c1\m.aedt")
         self.assertEqual(combo["object_names"], {"vacuum": "vacuum"})
+        self.assertEqual(combo["ports"], ["port_1", "port_2"])
         self.assertEqual(names, {"vacuum": "vacuum"})
 
 

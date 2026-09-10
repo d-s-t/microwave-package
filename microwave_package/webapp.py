@@ -6,7 +6,7 @@ STEP generation, AEDT build+queue, worker analysis, and the final plot
 -- without touching a terminal.
 
 Run with:
-    python -m eigen_mode_analyze.webapp
+    python -m microwave_package.webapp
 then open http://127.0.0.1:5000/
 
 Each run's pipeline executes in a background thread inside this process
@@ -36,16 +36,23 @@ from markupsafe import Markup
 
 from ansys_analyze_common import queue_common
 
-from . import equations as eq
-from . import (constraints, model_builder, parameter_meta, paths, pipeline,
-               plotting, post_processing, run_manager)
-from . import resilient_io
+from . import paths, pipeline
+from .design import constraints, parameter_meta
+from .design import equations as eq
+from .design.sweep import SweepParameter, expand_values, split_swept_and_fixed
+from .hfss import model_builder, registry
+from .hfss.driven import ports
+# The chip |E| heatmap is an eigenmode picture end to end -- the export,
+# the .fld files and the plot -- so the one route that shows it reaches
+# into that solver directly rather than the registry pretending every
+# solver has a view like it.
+from .hfss.eigenmode import fields as eigenmode_fields
 from .pipeline import run_pipeline
-from .run_manager import Run
-from .sweep import SweepParameter, expand_values, split_swept_and_fixed
+from .workflow import plotting, resilient_io, run_manager
+from .workflow.run_manager import Run
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s: %(message)s", stream=sys.stdout)
-logger = logging.getLogger("eigen_mode_analyze")
+logger = logging.getLogger("microwave_package")
 
 app = Flask(__name__)
 
@@ -313,6 +320,41 @@ def _form_starting_point(from_run: Optional[str], combo_id: Optional[str]):
     return settings, values, run_id, _distortion_mode_for(run, combo_id)
 
 
+def _solve_settings_from_form(form) -> dict:
+    """The solution type the form picked, and that type's own settings.
+
+    The form renders BOTH types' controls and hides the one that does not
+    apply, so a submission always carries values for settings this run
+    will never use. Only the chosen type's fields are read back -- the
+    others keep whatever the defaults say, which is what makes switching
+    an existing run's solution type land on real numbers rather than on
+    whatever was last left in a hidden box.
+
+    A field the form did not send, or sent unparseably, falls back to its
+    default rather than failing the whole submission: the run is
+    recoverable from a wrong number and not from a form that will not
+    submit.
+    """
+    solution_type = form.get("solution_type") or registry.default_solution_type()
+    if not registry.is_known(solution_type):
+        logger.warning("Unknown solution type %r from the form; using the default.", solution_type)
+        solution_type = registry.default_solution_type()
+
+    settings = {"solution_type": solution_type, **registry.all_defaults()}
+    for field in registry.get(solution_type).all_fields:
+        raw = form.get(field["name"])
+        if raw is None or raw == "":
+            continue
+        try:
+            settings[field["name"]] = registry.coerce(field, raw)
+        except (TypeError, ValueError):
+            logger.warning(
+                "Ignoring %s=%r from the form: not a valid %s. Using %r.",
+                field["name"], raw, field["kind"], field["default"],
+            )
+    return settings
+
+
 def _runs_for_display(runs: list) -> list:
     """`Run.list_runs()` rows with the run-list's presentation fields added:
     a friendly name, a relative time, a humanised stage, and the one-line
@@ -364,6 +406,16 @@ def index():
         distortion_group=_distortion_group(parameters),
         distortion_limits=_distortion_limits(parameters, values),
         constraint_payload=constraints.client_payload(),
+        solution_types=registry.solution_types(),
+        # Both types' controls are rendered and the form hides the one
+        # that does not apply, so switching solution type is instant
+        # rather than a round-trip. Only the chosen type's values are read
+        # back -- see _solve_settings_from_form.
+        solve_fields={
+            t["value"]: registry.get(t["value"]).fields for t in registry.solution_types()
+        },
+        shared_solve_fields=registry.SHARED,
+        current_solution_type=registry.solution_type_of(settings),
     )
 
 
@@ -429,13 +481,20 @@ def new_run():
             )
             logger.info("Ignoring distortion-geometry sweep (%s) -- this run has no distorted combination.", names)
 
+    solve_settings = _solve_settings_from_form(request.form)
+    # A driven run needs two real ports to have an S21 at all, and
+    # port_count is geometry rather than an analysis setting -- so it is
+    # checked here, before a sweep's worth of STEP files get built for
+    # models that could never be given ports.
+    swept_values = {p.name: p.values for p in sweep_params}
+    complaint = registry.get(solve_settings["solution_type"]).validate(
+        swept_values.get("port_count") or [parameter_defaults.get("port_count", 0)]
+    )
+    if complaint:
+        return redirect(url_for("index", error=complaint))
+
     settings = {
-        "modes": int(request.form.get("modes", 20)),
-        "max_passes": int(request.form.get("max_passes", 99)),
-        "min_passes": int(request.form.get("min_passes", 5)),
-        "min_converged": int(request.form.get("min_converged", 3)),
-        "max_delta_f": float(request.form.get("max_delta_f", 1.0)),
-        "min_freq_safety_factor": float(request.form.get("min_freq_safety_factor", 0.4)),
+        **solve_settings,
         "aedt_version": request.form.get("aedt_version") or None,
         "student_version": "student_version" in request.form,
         "graphical": "graphical" in request.form,
@@ -511,11 +570,17 @@ def _combo_rows(run) -> dict:
 @app.route("/runs/<run_id>")
 def run_status(run_id):
     run = Run.load(run_id)
-    plot_exists = os.path.exists(os.path.join(run.plots_dir, "modes_scatter_plot.html"))
+    plot_exists = os.path.exists(os.path.join(run.plots_dir, plotting.PLOT_FILENAME))
     df = _results_frame(run)
     options = plotting.axis_options(df, run.sweep_param_names) if df is not None else []
     filters = plotting.filter_options(df, run.sweep_param_names) if df is not None else []
-    swept = [parameter_meta.column_name(n) for n in run.sweep_param_names]
+    # Which columns the plot opens on depends on what the run solved --
+    # an eigenmode sweep and an S-parameter band are read along different
+    # axes. plotting decides; this only passes the answer to the page.
+    axes = plotting.default_axes(
+        df if df is not None else pd.DataFrame(), run.sweep_param_names,
+        registry.solution_type_of(run.config.get("analysis_settings", {})),
+    )
 
     stage = run.state.get("stage")
     progress = run_manager.progress_of(run.state)
@@ -543,8 +608,9 @@ def run_status(run_id):
         meta=parameter_meta,
         has_common_dimensions=os.path.exists(os.path.join(run.run_dir, "common_dimensions.txt")),
         axis_options=options,
-        default_x=(swept[0] if swept else "combo_id"),
-        default_y=plotting.DEFAULT_Y,
+        default_x=axes["x"],
+        default_y=axes["y"],
+        default_color=axes["color"] or "",
         disk_usage_mb=_run_disk_usage(run) / (1024 * 1024),
         heatmap_combos=_chip_field_combos(run),
         step_viewer_available=_step_viewer_available(),
@@ -677,7 +743,7 @@ def run_status_json(run_id):
         "error": run.state.get("error"),
         "is_running": _is_running(run_id),
         # so the page can reload itself once, when the plot first appears
-        "plot_ready": os.path.exists(os.path.join(run.plots_dir, "modes_scatter_plot.html")),
+        "plot_ready": os.path.exists(os.path.join(run.plots_dir, plotting.PLOT_FILENAME)),
         "combos": {
             combo_id: {
                 "step_status": combo.get("step_status"),
@@ -729,7 +795,7 @@ def run_plot(run_id):
     run = Run.load(run_id)
     df = _results_frame(run)
     if df is None:
-        return send_from_directory(run.plots_dir, "modes_scatter_plot.html")
+        return send_from_directory(run.plots_dir, plotting.PLOT_FILENAME)
 
     df = plotting.apply_filters(df, _plot_filters(request.args))
     if df.empty:
@@ -746,6 +812,7 @@ def run_plot(run_id):
         x=request.args.get("x"),
         y=request.args.get("y"),
         color=request.args.get("color") or None,
+        solution_type=registry.solution_type_of(run.config.get("analysis_settings", {})),
         dark=request.args.get("theme") == "dark",
         plotlyjs_src=url_for("plotly_js"),
     )
@@ -784,13 +851,13 @@ def _chip_field_entries(run, combo_ids) -> list:
         if not path:
             continue
         try:
-            points = post_processing.read_field_points(path)
+            points = eigenmode_fields.read_field_points(path)
         except OSError:
             logger.warning("Could not read %s", path)
             continue
         if not points:
             continue
-        axis = post_processing.thin_axis(points)
+        axis = eigenmode_fields.thin_axis(points)
         highest = max(c[axis] for c, _ in points)
         extent = highest - min(c[axis] for c, _ in points)
         band = extent * 0.02
@@ -816,7 +883,7 @@ def run_heatmap(run_id):
                 f"pick one from the list above to see it on its own.")
         combos = combos[:plotting.MAX_HEATMAP_PANELS]
 
-    html = plotting.chip_heatmap_html(
+    html = eigenmode_fields.chip_heatmap_html(
         _chip_field_entries(run, combos),
         dark=request.args.get("theme") == "dark",
         plotlyjs_src=url_for("plotly_js"),
@@ -842,7 +909,7 @@ def plotly_js():
     return response
 
 
-# The STEP viewer's third-party files, served from eigen_mode_analyze/vendor/
+# The STEP viewer's third-party files, served from microwave_package/vendor/
 # (see fetch_vendor.py). Only these names are servable, and the .wasm has
 # to go out as application/wasm or the browser refuses to stream-compile it.
 _VENDOR_MIME = {
@@ -958,7 +1025,9 @@ def run_results_csv(run_id):
 
 
 def main() -> None:
-    app.run(host="127.0.0.1", port=5000, debug=False)
+    # 5000 unless PORT says otherwise, so a second instance can be run
+    # beside one that is already serving without having to stop it.
+    app.run(host="127.0.0.1", port=int(os.environ.get("PORT", 5000)), debug=False)
 
 
 if __name__ == "__main__":

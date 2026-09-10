@@ -9,7 +9,8 @@ import os
 import tempfile
 import unittest
 
-from eigen_mode_analyze import altium_generation as ag, bonds, equations as eq, paths
+from microwave_package import paths
+from microwave_package.design import altium_generation as ag, bonds, equations as eq
 
 
 def defaults():
@@ -120,7 +121,7 @@ class TestPadsStayOnTheDiesCopper(unittest.TestCase):
     """
 
     def setUp(self):
-        from eigen_mode_analyze import constraints
+        from microwave_package.design import constraints
 
         self.v = defaults()
         self.gap = ag.build_params(self.v)["pcb_cpw_gap"]

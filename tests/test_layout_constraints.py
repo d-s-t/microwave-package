@@ -8,7 +8,8 @@ Run: python -m unittest discover -s tests
 """
 import unittest
 
-from eigen_mode_analyze import constraints, equations as eq, paths
+from microwave_package import paths
+from microwave_package.design import constraints, equations as eq
 
 
 def defaults():
