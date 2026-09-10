@@ -8,6 +8,9 @@ which calls `run_pipeline()` directly in a background thread.
 
     python -m eigen_mode_analyze.pipeline --sweep pedestal_depth=0:10:2
     python -m eigen_mode_analyze.pipeline --resume run_20260819_140102
+
+A run solves either for the cavity's eigenmodes or for the package's
+S-parameters, and the same stages carry both -- see solve_types.py.
 """
 from __future__ import annotations
 
@@ -383,7 +386,7 @@ def build_analysis_settings(args: argparse.Namespace) -> dict:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run the eigenmode-analysis client pipeline end to end")
+    parser = argparse.ArgumentParser(description="Run the analysis client pipeline end to end")
     parser.add_argument(
         "--sweep", action="append", default=[], metavar="NAME=SPEC",
         help='A parameter to sweep, e.g. --sweep pedestal_depth=0:10:2 (repeatable for '
@@ -464,7 +467,20 @@ def main() -> None:
                 "Pinned for this run: %s",
                 ", ".join(f"{n}={v:g}" for n, v in parameter_defaults.items()),
             )
-        run = Run.create(sweep_params, build_analysis_settings(args), parameter_defaults)
+        analysis_settings = build_analysis_settings(args)
+        # Checked before anything is built, not per combination: a driven
+        # run needs two real ports to have an S21, and finding that out
+        # one model at a time would mean a sweep's worth of geometry
+        # built for projects that can never be given ports.
+        swept_values = {p.name: p.values for p in sweep_params}
+        complaint = solve_types.validate(
+            analysis_settings["solution_type"],
+            swept_values.get("port_count") or [parameter_defaults.get("port_count", 0)],
+        )
+        if complaint:
+            raise SystemExit(complaint)
+
+        run = Run.create(sweep_params, analysis_settings, parameter_defaults)
         logger.info("Created run %s with %d combination(s)", run.run_id, len(run.state["combos"]))
 
     run_pipeline(run, queue)

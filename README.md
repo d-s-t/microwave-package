@@ -1,11 +1,26 @@
 # pedestal_experiment
 
-The client pipeline for the pedestal eigenmode experiment, in
+The client pipeline for the pedestal experiment, in
 [`eigen_mode_analyze/`](eigen_mode_analyze/): one script (or a web UI on
 top of it) that, end to end, builds a SolidWorks STEP file per point in a
 parameter sweep, builds an AEDT model from each, queues them for
 analysis, waits for and monitors the worker's progress, and plots the
 combined results once they're in. Resumable at every stage.
+
+A run asks HFSS one of two questions, chosen per run:
+
+- **Eigenmode** -- what does this cavity resonate at? Source-free, no
+  ports; the answer is a frequency and a Q per mode.
+- **Driven Modal** -- what does this package do to a signal? Drives the
+  two SMP ports over a frequency sweep; the answer is S11 and S21 across
+  the band, plus a Touchstone file per combination.
+
+They share the same geometry and differ only in what is solved on it.
+See [`solve_types.py`](eigen_mode_analyze/solve_types.py) for which
+settings belong to which, and
+[`ports.py`](eigen_mode_analyze/ports.py) for where a driven run's ports
+go -- that choice fixes the reference plane, so it is asked rather than
+assumed.
 
 The worker -- the generic background service that actually runs the
 AEDT analyses -- lives in its own repo,
@@ -44,9 +59,11 @@ machine) need this pointed at the same shared location.
 python -m eigen_mode_analyze.webapp
 ```
 
-Open <http://127.0.0.1:5000/>. Pick which parameter(s) from
-`base_parts/default.txt` to sweep and over what range, set the analysis
-settings, and start the run. The status page updates live as STEP files
+Open <http://127.0.0.1:5000/> (or set `PORT` to serve somewhere else).
+Pick which parameter(s) from `base_parts/default.txt` to sweep and over
+what range, choose what to solve -- Eigenmode or Driven Modal, which
+decides which analysis settings the form then asks for -- and start the
+run. The status page updates live as STEP files
 get built, models get queued, the worker finishes each analysis, and
 this pipeline reopens each analyzed project to pull out its results (one
 at a time, never in parallel) -- the plot appears there automatically
@@ -82,8 +99,19 @@ interrupted run instead of starting a new one:
 python -m eigen_mode_analyze.pipeline --resume run_20260819_140102
 ```
 
+A run is Eigenmode unless told otherwise. For S-parameters:
+
+```
+python -m eigen_mode_analyze.pipeline --solution-type DrivenModal --f-start-ghz 1 --f-stop-ghz 15 --sweep pedestal_depth=0:10:2
+```
+
+`--reference-plane connector` (the default) puts a wave port on the SMP
+bead's coax cross-section, so the connector transition is inside the
+measurement; `--reference-plane launch` puts a lumped port under the CPW
+trace instead and measures the board alone.
+
 Run `python -m eigen_mode_analyze.pipeline --help` for every analysis
-setting (mode count, pass counts, materials, etc.).
+setting -- they are grouped by which solution type they apply to.
 
 ### If the queue share is unreachable
 
@@ -100,8 +128,10 @@ already built or queued is lost.
 Every run gets its own folder under `eigen_mode_analyze/runs/<run_id>/`:
 the generated STEP/AEDT files per combination (`models/<combo_id>/`),
 the run's resumable state (`state.json`, `run_config.json`), and the
-final combined CSV + interactive plot (`plots/`). This folder is
-git-ignored -- it's backed up elsewhere, not committed.
+final combined CSV + interactive plot (`plots/`). A driven run also
+leaves a Touchstone (`.s2p`) file per combination beside its analysed
+project, so its S-parameters are readable by anything else. This folder
+is git-ignored -- it's backed up elsewhere, not committed.
 
 ## The SMP connector model
 
@@ -123,17 +153,23 @@ reference for how it was reconstructed and how to regenerate it.
 - **New scripts for this experiment**: add them under `eigen_mode_analyze/`
   alongside the existing modules (`equations.py`, `sweep.py`,
   `step_generation.py`, `model_builder.py`, `monitor.py`,
-  `post_processing.py`, `postprocess.py`, `results.py`, `plotting.py`,
-  `run_manager.py`) and wire them into `pipeline.py` / `webapp.py` as
-  needed.
-- **New analysis types**: see `ansys-analyze-worker`'s
-  `docs/ARCHITECTURE.md` section 6 -- add a handler there; this repo's
-  `task_type` (currently always `"eigenmode_analyze"`, set in
-  `model_builder.build_and_queue`) just needs to name it. Remember the
-  worker only ever runs a setup this repo already created (§8.1/§12 of
-  that doc) -- it never creates one, and it never post-processes the
-  result either (that's `postprocess.py`, run sequentially, one project
-  at a time, right after the worker finishes each task).
+  `post_processing.py`, `postprocess.py`, `ports.py`, `results.py`,
+  `plotting.py`, `run_manager.py`, `solve_types.py`) and wire them into
+  `pipeline.py` / `webapp.py` as needed.
+- **New solution types**: usually no worker change at all. Every task
+  this repo queues is a `"run_setups"` task -- "open the project and run
+  the setup(s) already in it" -- and the kind of solve is carried
+  separately in the task's `solution_type`. So a new solution type means
+  a new entry in `solve_types.py`, a setup builder in
+  `model_builder.create_analysis_setup`, and a results reader in
+  `postprocess.py`. A new handler in `ansys-analyze-worker`
+  (`docs/ARCHITECTURE.md` section 6) is only for a genuinely different
+  *workflow* -- one where the worker has to do something other than run
+  what it was given. Remember it only ever runs a setup this repo
+  already created (§8.1/§12 of that doc) -- it never creates one, and it
+  never post-processes the result either (that's `postprocess.py`, run
+  sequentially, one project at a time, right after the worker finishes
+  each task).
 - **New sweepable parameters**: anything in `base_parts/default.txt`
   with a plain numeric value (not a formula) is automatically offered in
   the web UI and usable via `--sweep NAME=...` -- no code changes needed.
