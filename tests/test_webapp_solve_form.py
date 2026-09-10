@@ -11,7 +11,9 @@ import unittest
 
 from werkzeug.datastructures import MultiDict
 
-from eigen_mode_analyze import solve_types, webapp
+from microwave_package import webapp
+from microwave_package.hfss import registry
+from microwave_package.hfss.driven import ports
 
 
 def form(**fields):
@@ -31,7 +33,7 @@ class TestReadingTheChosenType(unittest.TestCase):
             sweep_points="801", max_delta_s="0.01", port_impedance_ohm="75",
             reference_plane="launch", max_passes="30",
         ))
-        self.assertEqual(settings["solution_type"], solve_types.DRIVEN_MODAL)
+        self.assertEqual(settings["solution_type"], "DrivenModal")
         self.assertEqual(settings["f_start_ghz"], 2.0)
         self.assertEqual(settings["f_stop_ghz"], 12.0)
         self.assertEqual(settings["sweep_points"], 801)
@@ -46,7 +48,7 @@ class TestReadingTheChosenType(unittest.TestCase):
             solution_type="DrivenModal", modes="7", max_delta_f="9.5",
             min_freq_safety_factor="0.9",
         ))
-        defaults = solve_types.all_defaults()
+        defaults = registry.all_defaults()
         self.assertEqual(settings["modes"], defaults["modes"])
         self.assertEqual(settings["max_delta_f"], defaults["max_delta_f"])
         self.assertEqual(settings["min_freq_safety_factor"], defaults["min_freq_safety_factor"])
@@ -55,7 +57,7 @@ class TestReadingTheChosenType(unittest.TestCase):
         settings = webapp._solve_settings_from_form(form(
             solution_type="Eigenmode", modes="7", f_stop_ghz="999", reference_plane="launch",
         ))
-        defaults = solve_types.all_defaults()
+        defaults = registry.all_defaults()
         self.assertEqual(settings["modes"], 7)
         self.assertEqual(settings["f_stop_ghz"], defaults["f_stop_ghz"])
         self.assertEqual(settings["reference_plane"], defaults["reference_plane"])
@@ -64,7 +66,7 @@ class TestReadingTheChosenType(unittest.TestCase):
         """Switching an existing run's solution type has to land on real
         numbers, not on missing keys."""
         settings = webapp._solve_settings_from_form(form(solution_type="Eigenmode"))
-        for name in solve_types.all_defaults():
+        for name in registry.all_defaults():
             self.assertIn(name, settings)
 
 
@@ -79,27 +81,27 @@ class TestBadInput(unittest.TestCase):
         settings = webapp._solve_settings_from_form(form(
             solution_type="DrivenModal", sweep_points="not a number",
         ))
-        self.assertEqual(settings["sweep_points"], solve_types.all_defaults()["sweep_points"])
+        self.assertEqual(settings["sweep_points"], registry.all_defaults()["sweep_points"])
 
     def test_a_select_outside_its_options_falls_back_too(self):
         settings = webapp._solve_settings_from_form(form(
             solution_type="DrivenModal", reference_plane="somewhere_else",
         ))
-        self.assertEqual(settings["reference_plane"], solve_types.DEFAULT_REFERENCE_PLANE)
+        self.assertEqual(settings["reference_plane"], ports.DEFAULT_REFERENCE_PLANE)
 
     def test_an_empty_box_leaves_the_default(self):
         settings = webapp._solve_settings_from_form(form(
             solution_type="DrivenModal", f_stop_ghz="",
         ))
-        self.assertEqual(settings["f_stop_ghz"], solve_types.all_defaults()["f_stop_ghz"])
+        self.assertEqual(settings["f_stop_ghz"], registry.all_defaults()["f_stop_ghz"])
 
     def test_an_unknown_solution_type_falls_back_to_the_default(self):
         settings = webapp._solve_settings_from_form(form(solution_type="Bogus"))
-        self.assertEqual(settings["solution_type"], solve_types.DEFAULT_SOLUTION_TYPE)
+        self.assertEqual(settings["solution_type"], registry.default_solution_type())
 
     def test_a_submission_with_no_solution_type_is_an_eigenmode_run(self):
         self.assertEqual(
-            webapp._solve_settings_from_form(form())["solution_type"], solve_types.EIGENMODE
+            webapp._solve_settings_from_form(form())["solution_type"], "Eigenmode"
         )
 
 

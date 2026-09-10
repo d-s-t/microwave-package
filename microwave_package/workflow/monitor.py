@@ -15,7 +15,7 @@ from ansys_analyze_common import queue_common
 
 from . import resilient_io
 
-logger = logging.getLogger("eigen_mode_analyze")
+logger = logging.getLogger("microwave_package")
 
 TERMINAL_STATUSES = {"done", "failed"}
 

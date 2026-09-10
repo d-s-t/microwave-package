@@ -6,7 +6,7 @@ hand, and to pin the placement rule the board depends on.
 """
 import unittest
 
-from eigen_mode_analyze import smp
+from microwave_package.design import smp
 
 
 class TestTheVendorNumbers(unittest.TestCase):
@@ -93,7 +93,7 @@ class TestTheConnectorModel(unittest.TestCase):
     """
 
     def test_the_model_ships_with_the_repo(self):
-        from eigen_mode_analyze import paths
+        from microwave_package import paths
 
         self.assertTrue(paths.SMP_MODEL_FILE.is_file(),
                         "the split connector STEP should be in base_parts")
@@ -101,7 +101,7 @@ class TestTheConnectorModel(unittest.TestCase):
     def test_the_split_model_has_three_named_bodies(self):
         """The whole point of the split: HFSS must see outer conductor,
         centre conductor and dielectric as separate solids, not one lump."""
-        from eigen_mode_analyze import paths
+        from microwave_package import paths
 
         text = paths.SMP_MODEL_FILE.read_text(encoding="utf-8", errors="ignore")
         for product in ("SMP_outer_conductor", "SMP_center_conductor", "SMP_dielectric"):
@@ -111,7 +111,7 @@ class TestTheConnectorModel(unittest.TestCase):
         """The model has Z up and the assembly has Y up. -90 about X is
         the same mapping Frame applies; disagreeing would put the
         connector in a different plane from the board."""
-        from eigen_mode_analyze import copper_geometry as cg
+        from microwave_package.design import copper_geometry as cg
 
         self.assertAlmostEqual(smp.model_rotation_degrees(), -90.0)
 
@@ -121,7 +121,7 @@ class TestTheConnectorModel(unittest.TestCase):
         self.assertEqual(frame.point(1.0, 2.0, 3.0), [1.0, 3.0, -2.0])
 
     def test_the_two_connectors_sit_at_opposite_ends(self):
-        from eigen_mode_analyze import copper_geometry as cg
+        from microwave_package.design import copper_geometry as cg
 
         frame = cg.Frame(x_offset=14.0, z_offset=6.0)
         near = smp.model_offset(frame, 1.381, 13.0, 1.5, -1.0)
@@ -131,7 +131,7 @@ class TestTheConnectorModel(unittest.TestCase):
         self.assertAlmostEqual(frame.x_offset - near[0], far[0] - frame.x_offset)
 
     def test_the_connector_sits_on_the_board_surface(self):
-        from eigen_mode_analyze import copper_geometry as cg
+        from microwave_package.design import copper_geometry as cg
 
         frame = cg.Frame(x_offset=14.0, z_offset=6.0)
         offset = smp.model_offset(frame, 1.381, 13.0, 1.5, +1.0)
@@ -142,7 +142,7 @@ class TestTheConnectorModel(unittest.TestCase):
         `dielectric` first -- and both rules carry no material and no
         boundary, so place_connectors' brass/LCP assignments stand and
         nothing on the connector is a PEC surface."""
-        from eigen_mode_analyze import model_builder
+        from microwave_package.hfss import model_builder
 
         def first_rule(name):
             for rule in model_builder.MATERIAL_RULES:
@@ -185,7 +185,7 @@ class TestSplitBodyHandling(unittest.TestCase):
     imported bodies."""
 
     def test_bodies_are_sorted_by_the_step_product_names(self):
-        from eigen_mode_analyze import model_builder as mb
+        from microwave_package.hfss import model_builder as mb
 
         got = mb._classify_connector_bodies(
             _FakeHfss(), ["SMP_center_conductor", "SMP_dielectric", "SMP_outer_conductor"]
@@ -194,7 +194,7 @@ class TestSplitBodyHandling(unittest.TestCase):
 
     def test_opaque_names_fall_back_to_volume_order(self):
         """outer ~33 > dielectric ~11 > centre ~1 mm^3."""
-        from eigen_mode_analyze import model_builder as mb
+        from microwave_package.hfss import model_builder as mb
 
         got = mb._classify_connector_bodies(
             _FakeHfss(volumes={"a": 1.29, "b": 33.36, "c": 10.63}), ["a", "b", "c"]
@@ -202,13 +202,13 @@ class TestSplitBodyHandling(unittest.TestCase):
         self.assertEqual(got, ("b", "a", "c"))  # outer, centre, dielectric
 
     def test_anything_but_three_bodies_is_unclassifiable(self):
-        from eigen_mode_analyze import model_builder as mb
+        from microwave_package.hfss import model_builder as mb
 
         self.assertIsNone(mb._classify_connector_bodies(_FakeHfss(), ["only_one"]))
         self.assertIsNone(mb._classify_connector_bodies(_FakeHfss(), ["a", "b", "c", "d"]))
 
     def test_combined_bounding_box_is_the_union(self):
-        from eigen_mode_analyze import model_builder as mb
+        from microwave_package.hfss import model_builder as mb
 
         hfss = _FakeHfss(boxes={
             "a": [0.0, -1.0, 0.0, 2.0, 1.0, 3.0],

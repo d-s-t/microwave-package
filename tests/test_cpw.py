@@ -5,7 +5,7 @@ Run: python -m unittest discover -s tests
 import math
 import unittest
 
-from eigen_mode_analyze import cpw
+from microwave_package.design import cpw
 
 
 class TestEllipticIntegral(unittest.TestCase):

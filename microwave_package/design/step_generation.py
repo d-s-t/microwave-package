@@ -13,7 +13,7 @@ from typing import Callable, Dict, Optional, Tuple
 
 from . import altium_generation, equations as eq
 
-logger = logging.getLogger("eigen_mode_analyze")
+logger = logging.getLogger("microwave_package")
 
 
 def connect_solidworks() -> Tuple[Optional[object], Optional[str]]:

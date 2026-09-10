@@ -46,9 +46,38 @@ import logging
 import math
 from typing import Any, Dict, List
 
-from . import solve_types
+from ...design import smp
+from ..registry import PortPlacementError
 
-logger = logging.getLogger("eigen_mode_analyze")
+
+logger = logging.getLogger("microwave_package")
+
+# The two reference planes, as the run's `reference_plane` setting spells
+# them and as the form offers them. They live here rather than with the
+# solver's other settings because the help text is a description of what
+# this module builds, and the two should not be able to drift apart.
+REFERENCE_PLANE_CONNECTOR = "connector"
+REFERENCE_PLANE_LAUNCH = "launch"
+
+REFERENCE_PLANES = [
+    {
+        "value": REFERENCE_PLANE_CONNECTOR,
+        "label": "Connector -- wave port in the SMP bead",
+        "help": "Includes the connector transition and the launch. The port "
+                "sits on the coax cross-section through the vendor bead, "
+                "which is the connector's own 50 ohm section. Closest to "
+                "what a VNA sees at the connector.",
+    },
+    {
+        "value": REFERENCE_PLANE_LAUNCH,
+        "label": "Launch -- lumped port at the CPW",
+        "help": "Board only: excludes the connector and its land pattern. "
+                "The port sits under the CPW trace, through the substrate to "
+                "the backing ground plane, just inboard of the launch.",
+    },
+]
+
+DEFAULT_REFERENCE_PLANE = REFERENCE_PLANE_CONNECTOR
 
 # The up axis in assembly coordinates. The SolidWorks assembly has Y
 # normal to the board (copper_geometry.Frame maps Altium's w to Y), and
@@ -68,16 +97,6 @@ _EXPECTED_INNER_RADIUS = 0.45
 _RADIUS_TOLERANCE = 0.25
 
 
-class PortPlacementError(RuntimeError):
-    """The run's ports could not be built.
-
-    Its own type because a driven model without ports is worthless --
-    there is nothing to excite and no S-matrix to read -- so this must
-    stop the combination being saved and queued, unlike the warnings
-    `place_connectors` raises for cosmetic trouble.
-    """
-
-
 def place_ports(hfss, layout, analysis_settings: Dict[str, Any], log=logger.info) -> List[str]:
     """Create the driven run's ports and return their names, port 1 first.
 
@@ -85,13 +104,9 @@ def place_ports(hfss, layout, analysis_settings: Dict[str, Any], log=logger.info
     the combination has no copper file, which also means no connectors
     were placed and there is nothing to attach a port to either way.
 
-    A no-op returning `[]` for an eigenmode run, so the caller does not
-    have to know which kind of run it is building.
+    Only a driven run has ports at all: a solver without them leaves
+    `place_ports` at the registry's default, which builds nothing.
     """
-    solution_type = solve_types.solution_type_of(analysis_settings)
-    if not solve_types.is_driven(solution_type):
-        return []
-
     if layout is None:
         raise PortPlacementError(
             "A driven run needs ports, and this combination has no layout to put "
@@ -100,17 +115,17 @@ def place_ports(hfss, layout, analysis_settings: Dict[str, Any], log=logger.info
             "use an Eigenmode run."
         )
 
-    plane = analysis_settings.get("reference_plane", solve_types.DEFAULT_REFERENCE_PLANE)
+    plane = analysis_settings.get("reference_plane", DEFAULT_REFERENCE_PLANE)
     impedance = float(analysis_settings.get("port_impedance_ohm", 50.0))
 
-    if plane == solve_types.REFERENCE_PLANE_CONNECTOR:
+    if plane == REFERENCE_PLANE_CONNECTOR:
         names = _connector_wave_ports(hfss, impedance, log=log)
-    elif plane == solve_types.REFERENCE_PLANE_LAUNCH:
+    elif plane == REFERENCE_PLANE_LAUNCH:
         names = _launch_lumped_ports(hfss, layout, impedance, log=log)
     else:
         raise PortPlacementError(
             f"Unknown reference plane {plane!r}. Known: "
-            f"{[p['value'] for p in solve_types.REFERENCE_PLANES]}."
+            f"{[p['value'] for p in REFERENCE_PLANES]}."
         )
 
     if len(names) != 2:
@@ -283,7 +298,6 @@ def _launch_lumped_ports(hfss, layout, impedance: float, log) -> List[str]:
     underside of the board, not just the coplanar grounds -- so the mode
     this excites is the one the line actually carries.
     """
-    from . import smp
 
     frame, stack = layout.frame, layout.stack
     trace_width = layout.values.get("cpw_trace_width", 0.2)

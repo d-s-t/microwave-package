@@ -15,7 +15,7 @@ Run: python -m unittest discover -s tests
 import os
 import unittest
 
-from eigen_mode_analyze import copper_geometry as cg
+from microwave_package.design import copper_geometry as cg
 
 # A trimmed copy of real output from base_parts/altium/ExportCopper.pas.
 SAMPLE = """# copper geometry, millimetres, relative to board centre
@@ -266,7 +266,7 @@ class TestBuildingCopper(unittest.TestCase):
         return modeler, created
 
     def test_names_match_what_the_material_rules_expect(self):
-        from eigen_mode_analyze import model_builder
+        from microwave_package.hfss import model_builder
 
         _, created = self._build()
         self.assertIn("pcb_copper_top", created)
@@ -365,7 +365,7 @@ class TestBondWires(unittest.TestCase):
     so a wire cannot land beside its pad."""
 
     def _bonds(self):
-        from eigen_mode_analyze.bonds import Bond
+        from microwave_package.design.bonds import Bond
 
         return [
             Bond("signal", -4.15, -0.05, -2.85, -0.05),
@@ -391,7 +391,7 @@ class TestBondWires(unittest.TestCase):
         self.assertTrue(modeler.unites)
 
     def test_a_wire_starts_and_ends_on_its_pads(self):
-        from eigen_mode_analyze.bonds import Bond
+        from microwave_package.design.bonds import Bond
 
         bond = Bond("signal", -4.15, -0.05, -2.85, -0.05)
         path = cg.wire_path(bond, FRAME, 1.381, 1.381, 0.2)
@@ -417,20 +417,20 @@ class TestBondWires(unittest.TestCase):
         self.assertGreater(lowest, pcb_top, "the tube must not dip to the bare pad surface")
 
     def test_the_loop_rises_above_both_ends(self):
-        from eigen_mode_analyze.bonds import Bond
+        from microwave_package.design.bonds import Bond
 
         path = cg.wire_path(Bond("signal", -4.15, 0, -2.85, 0), FRAME, 1.381, 1.381, 0.2)
         self.assertGreater(max(p[1] for p in path), 1.381)
 
     def test_the_apex_follows_bond_height(self):
-        from eigen_mode_analyze.bonds import Bond
+        from microwave_package.design.bonds import Bond
 
         low = cg.wire_path(Bond("signal", -4, 0, -3, 0), FRAME, 1.381, 1.381, 0.1)
         high = cg.wire_path(Bond("signal", -4, 0, -3, 0), FRAME, 1.381, 1.381, 0.4)
         self.assertGreater(max(p[1] for p in high), max(p[1] for p in low))
 
     def test_the_loop_rises_in_height_not_sideways(self):
-        from eigen_mode_analyze.bonds import Bond
+        from microwave_package.design.bonds import Bond
 
         path = cg.wire_path(Bond("ground", -4.15, 0.6, -2.85, 0.6), FRAME, 1.381, 1.381, 0.2)
         self.assertEqual(len({round(p[2], 9) for p in path}), 1)
@@ -522,7 +522,7 @@ class TestWireBondNaming(unittest.TestCase):
     lands in the model as vacuum."""
 
     def test_the_name_is_used(self):
-        from eigen_mode_analyze.bonds import Bond
+        from microwave_package.design.bonds import Bond
 
         modeler = FakeModeler()
         made = cg.build_bond_wires(modeler, [Bond("ground", -4, 0.6, -3, 0.6)],
@@ -531,7 +531,7 @@ class TestWireBondNaming(unittest.TestCase):
         self.assertEqual(made, ["wirebond_a"])
 
     def test_the_default_name_matches_the_material_rule(self):
-        from eigen_mode_analyze import model_builder
+        from microwave_package.hfss import model_builder
 
         patterns = [rule[0] for rule in model_builder.MATERIAL_RULES]
         self.assertTrue(any(p in "wirebond" for p in patterns))
@@ -677,7 +677,8 @@ class TestExportedLayoutIsSane(unittest.TestCase):
     def setUp(self):
         if not os.path.isfile(self.PATH):
             self.skipTest("copper.txt not present -- run the Altium generator first")
-        from eigen_mode_analyze import altium_generation as ag, equations as eq, paths, smp
+        from microwave_package import paths
+        from microwave_package.design import altium_generation as ag, equations as eq, smp
 
         self.smp = smp
         self.v = eq.get_numeric_parameters(eq.read_file(str(paths.DEFAULT_EQUATIONS_FILE)))
@@ -760,7 +761,7 @@ class TestExportedLayoutIsSane(unittest.TestCase):
     def test_two_signal_wires_land_at_each_end(self):
         """Two wires in parallel rather than one, to halve the series
         inductance at the launch."""
-        from eigen_mode_analyze import bonds
+        from microwave_package.design import bonds
 
         layout = bonds.layout(self.v, self.gap_edge - self.trace / 2)
         for sign in (-1, 1):
@@ -823,7 +824,7 @@ class TestExportedLayoutIsSane(unittest.TestCase):
         """How far out signal copper extends -- the trace plus the
         rounded cap the model adds, and the connector's own signal land,
         which reaches further still."""
-        from eigen_mode_analyze import smp
+        from microwave_package.design import smp
 
         track = self.pkg.tracks[0]
         trace_end = abs(track.x2) + self.trace / 2.0
@@ -860,7 +861,7 @@ class TestExportedLayoutIsSane(unittest.TestCase):
         the die, with the signal land inside the opening. That interior
         is the launch itself and is the vendor's shape, not ours to fill
         in -- the fill belongs BEHIND the outermost ground land."""
-        from eigen_mode_analyze import smp
+        from microwave_package.design import smp
 
         origin = smp.launch_origin(self.half_l, self.v["port_space"])
         strap_inner = origin - smp.GROUND_STRAP[1] - smp.GROUND_STRAP[3] / 2.0
@@ -877,7 +878,7 @@ class TestExportedLayoutIsSane(unittest.TestCase):
         where the ground otherwise stops short of the board edge. Moving
         it out to clear the signal must not move it out of existence: it
         still has to meet the strap and still reach the edge."""
-        from eigen_mode_analyze import smp
+        from microwave_package.design import smp
 
         origin = smp.launch_origin(self.half_l, self.v["port_space"])
         strap_outer = origin - smp.GROUND_STRAP[1] + smp.GROUND_STRAP[3] / 2.0
@@ -895,7 +896,7 @@ class TestExportedLayoutIsSane(unittest.TestCase):
         meeting at that line is exactly what an interference check
         flags. Both are now pulled in by CHIP_COPPER_INSET, so there is
         a real, non-zero gap between them."""
-        from eigen_mode_analyze import constraints
+        from microwave_package.design import constraints
 
         die_half = self.v["chip_length"] / 2
         inset = constraints.CHIP_COPPER_INSET

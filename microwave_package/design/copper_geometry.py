@@ -28,7 +28,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Sequence, Tuple
 
-logger = logging.getLogger("eigen_mode_analyze")
+logger = logging.getLogger("microwave_package")
 
 TOP = "top"
 BOTTOM = "bottom"

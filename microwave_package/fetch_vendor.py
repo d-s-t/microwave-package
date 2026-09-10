@@ -1,9 +1,9 @@
 """
 Download the third-party JS/WASM the in-browser STEP viewer needs into
-`eigen_mode_analyze/vendor/` (git-ignored). Run once, with internet:
+`microwave_package/vendor/` (git-ignored). Run once, with internet:
 
-    python -m eigen_mode_analyze.fetch_vendor          # skip files already there
-    python -m eigen_mode_analyze.fetch_vendor --force  # re-download everything
+    python -m microwave_package.fetch_vendor          # skip files already there
+    python -m microwave_package.fetch_vendor --force  # re-download everything
 
 Nothing else in the package imports this. The web UI checks whether these
 files exist and simply hides the "3D view" button when they do not, so

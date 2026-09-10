@@ -12,8 +12,10 @@ import logging
 import math
 import unittest
 
-from eigen_mode_analyze import copper_geometry as cg
-from eigen_mode_analyze import ports, smp, solve_types
+from microwave_package.design import copper_geometry as cg
+from microwave_package.design import smp
+from microwave_package.hfss import registry
+from microwave_package.hfss.driven import DRIVEN_MODAL, ports
 
 
 def setUpModule():
@@ -119,27 +121,31 @@ class FakeLayout:
         }
 
 
-DRIVEN = {"solution_type": solve_types.DRIVEN_MODAL, "port_impedance_ohm": 50.0}
+DRIVEN = {"solution_type": DRIVEN_MODAL, "port_impedance_ohm": 50.0}
 
 
 # --- an eigenmode run has no ports ------------------------------------
 
 class TestEigenmodeRunsGetNoPorts(unittest.TestCase):
-    def test_no_ports_and_no_geometry_touched(self):
+    """Not this module's doing: the eigenmode solver simply does not fill
+    `place_ports` in, so the registry's do-nothing default stands."""
+
+    def test_the_eigenmode_solver_builds_nothing(self):
         hfss = bead_model()
-        names = ports.place_ports(hfss, FakeLayout(), {"solution_type": solve_types.EIGENMODE})
+        names = registry.get("Eigenmode").place_ports(hfss, FakeLayout(), {}, None)
         self.assertEqual(names, [])
         self.assertEqual(hfss.wave_ports, [])
         self.assertEqual(hfss.modeler.rectangles, [])
 
-    def test_a_run_with_no_solution_type_is_one_too(self):
-        self.assertEqual(ports.place_ports(bead_model(), FakeLayout(), {}), [])
+    def test_a_run_with_no_solution_type_is_an_eigenmode_run(self):
+        solver = registry.for_settings({})
+        self.assertEqual(solver.place_ports(bead_model(), FakeLayout(), {}, None), [])
 
 
 # --- the connector reference plane ------------------------------------
 
 class TestConnectorWavePorts(unittest.TestCase):
-    SETTINGS = {**DRIVEN, "reference_plane": solve_types.REFERENCE_PLANE_CONNECTOR}
+    SETTINGS = {**DRIVEN, "reference_plane": ports.REFERENCE_PLANE_CONNECTOR}
 
     def test_one_wave_port_per_bead_numbered_from_the_minus_x_end(self):
         """place_connectors calls the -x end connector 1, so port 1 is
@@ -208,7 +214,7 @@ class TestConnectorWavePorts(unittest.TestCase):
 # --- the launch reference plane ---------------------------------------
 
 class TestLaunchLumpedPorts(unittest.TestCase):
-    SETTINGS = {**DRIVEN, "reference_plane": solve_types.REFERENCE_PLANE_LAUNCH}
+    SETTINGS = {**DRIVEN, "reference_plane": ports.REFERENCE_PLANE_LAUNCH}
 
     def test_one_sheet_and_one_port_per_end(self):
         hfss = bead_model()

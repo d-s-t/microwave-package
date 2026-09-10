@@ -6,7 +6,7 @@ STEP generation, AEDT build+queue, worker analysis, and the final plot
 -- without touching a terminal.
 
 Run with:
-    python -m eigen_mode_analyze.webapp
+    python -m microwave_package.webapp
 then open http://127.0.0.1:5000/
 
 Each run's pipeline executes in a background thread inside this process
@@ -36,16 +36,23 @@ from markupsafe import Markup
 
 from ansys_analyze_common import queue_common
 
-from . import equations as eq
-from . import (constraints, model_builder, parameter_meta, paths, pipeline,
-               plotting, post_processing, run_manager, solve_types)
-from . import resilient_io
+from . import paths, pipeline
+from .design import constraints, parameter_meta
+from .design import equations as eq
+from .design.sweep import SweepParameter, expand_values, split_swept_and_fixed
+from .hfss import model_builder, registry
+from .hfss.driven import ports
+# The chip |E| heatmap is an eigenmode picture end to end -- the export,
+# the .fld files and the plot -- so the one route that shows it reaches
+# into that solver directly rather than the registry pretending every
+# solver has a view like it.
+from .hfss.eigenmode import fields as eigenmode_fields
 from .pipeline import run_pipeline
-from .run_manager import Run
-from .sweep import SweepParameter, expand_values, split_swept_and_fixed
+from .workflow import plotting, resilient_io, run_manager
+from .workflow.run_manager import Run
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s: %(message)s", stream=sys.stdout)
-logger = logging.getLogger("eigen_mode_analyze")
+logger = logging.getLogger("microwave_package")
 
 app = Flask(__name__)
 
@@ -328,18 +335,18 @@ def _solve_settings_from_form(form) -> dict:
     recoverable from a wrong number and not from a form that will not
     submit.
     """
-    solution_type = form.get("solution_type") or solve_types.DEFAULT_SOLUTION_TYPE
-    if solution_type not in [t["value"] for t in solve_types.SOLUTION_TYPES]:
+    solution_type = form.get("solution_type") or registry.default_solution_type()
+    if not registry.is_known(solution_type):
         logger.warning("Unknown solution type %r from the form; using the default.", solution_type)
-        solution_type = solve_types.DEFAULT_SOLUTION_TYPE
+        solution_type = registry.default_solution_type()
 
-    settings = {"solution_type": solution_type, **solve_types.all_defaults()}
-    for field in solve_types.fields_for(solution_type):
+    settings = {"solution_type": solution_type, **registry.all_defaults()}
+    for field in registry.get(solution_type).all_fields:
         raw = form.get(field["name"])
         if raw is None or raw == "":
             continue
         try:
-            settings[field["name"]] = solve_types.coerce(field, raw)
+            settings[field["name"]] = registry.coerce(field, raw)
         except (TypeError, ValueError):
             logger.warning(
                 "Ignoring %s=%r from the form: not a valid %s. Using %r.",
@@ -399,16 +406,16 @@ def index():
         distortion_group=_distortion_group(parameters),
         distortion_limits=_distortion_limits(parameters, values),
         constraint_payload=constraints.client_payload(),
-        solution_types=solve_types.SOLUTION_TYPES,
+        solution_types=registry.solution_types(),
         # Both types' controls are rendered and the form hides the one
         # that does not apply, so switching solution type is instant
         # rather than a round-trip. Only the chosen type's values are read
         # back -- see _solve_settings_from_form.
         solve_fields={
-            t["value"]: solve_types.specific_fields(t["value"]) for t in solve_types.SOLUTION_TYPES
+            t["value"]: registry.get(t["value"]).fields for t in registry.solution_types()
         },
-        shared_solve_fields=solve_types.SHARED,
-        current_solution_type=solve_types.solution_type_of(settings),
+        shared_solve_fields=registry.SHARED,
+        current_solution_type=registry.solution_type_of(settings),
     )
 
 
@@ -480,9 +487,8 @@ def new_run():
     # checked here, before a sweep's worth of STEP files get built for
     # models that could never be given ports.
     swept_values = {p.name: p.values for p in sweep_params}
-    complaint = solve_types.validate(
-        solve_settings["solution_type"],
-        swept_values.get("port_count") or [parameter_defaults.get("port_count", 0)],
+    complaint = registry.get(solve_settings["solution_type"]).validate(
+        swept_values.get("port_count") or [parameter_defaults.get("port_count", 0)]
     )
     if complaint:
         return redirect(url_for("index", error=complaint))
@@ -572,7 +578,8 @@ def run_status(run_id):
     # an eigenmode sweep and an S-parameter band are read along different
     # axes. plotting decides; this only passes the answer to the page.
     axes = plotting.default_axes(
-        df if df is not None else pd.DataFrame(), run.sweep_param_names
+        df if df is not None else pd.DataFrame(), run.sweep_param_names,
+        registry.solution_type_of(run.config.get("analysis_settings", {})),
     )
 
     stage = run.state.get("stage")
@@ -805,6 +812,7 @@ def run_plot(run_id):
         x=request.args.get("x"),
         y=request.args.get("y"),
         color=request.args.get("color") or None,
+        solution_type=registry.solution_type_of(run.config.get("analysis_settings", {})),
         dark=request.args.get("theme") == "dark",
         plotlyjs_src=url_for("plotly_js"),
     )
@@ -843,13 +851,13 @@ def _chip_field_entries(run, combo_ids) -> list:
         if not path:
             continue
         try:
-            points = post_processing.read_field_points(path)
+            points = eigenmode_fields.read_field_points(path)
         except OSError:
             logger.warning("Could not read %s", path)
             continue
         if not points:
             continue
-        axis = post_processing.thin_axis(points)
+        axis = eigenmode_fields.thin_axis(points)
         highest = max(c[axis] for c, _ in points)
         extent = highest - min(c[axis] for c, _ in points)
         band = extent * 0.02
@@ -875,7 +883,7 @@ def run_heatmap(run_id):
                 f"pick one from the list above to see it on its own.")
         combos = combos[:plotting.MAX_HEATMAP_PANELS]
 
-    html = plotting.chip_heatmap_html(
+    html = eigenmode_fields.chip_heatmap_html(
         _chip_field_entries(run, combos),
         dark=request.args.get("theme") == "dark",
         plotlyjs_src=url_for("plotly_js"),
@@ -901,7 +909,7 @@ def plotly_js():
     return response
 
 
-# The STEP viewer's third-party files, served from eigen_mode_analyze/vendor/
+# The STEP viewer's third-party files, served from microwave_package/vendor/
 # (see fetch_vendor.py). Only these names are servable, and the .wasm has
 # to go out as application/wasm or the browser refuses to stream-compile it.
 _VENDOR_MIME = {

@@ -16,7 +16,7 @@ import os
 import tempfile
 import unittest
 
-from eigen_mode_analyze import model_builder
+from microwave_package.hfss import model_builder
 
 
 class FakeRun:

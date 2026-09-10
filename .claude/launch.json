@@ -6,7 +6,7 @@
       "runtimeExecutable": "C:\\Users\\david\\Documents\\uni\\lab\\.venv\\Scripts\\python.exe",
       "runtimeArgs": [
         "-m",
-        "eigen_mode_analyze.webapp"
+        "microwave_package.webapp"
       ],
       "port": 5000,
       "autoPort": true

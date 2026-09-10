@@ -16,9 +16,9 @@ import pandas as pd
 
 from ansys_analyze_common import queue_common
 
-from . import parameter_meta
+from ..design import parameter_meta
 
-logger = logging.getLogger("eigen_mode_analyze")
+logger = logging.getLogger("microwave_package")
 
 
 def build_combined_results(run, queue: "queue_common.QueuePaths", log: Callable[[str], None] = logger.info) -> pd.DataFrame:
@@ -75,6 +75,12 @@ def build_combined_results(run, queue: "queue_common.QueuePaths", log: Callable[
             continue
 
         df = pd.DataFrame(rows)
+        # Which solver produced these, carried per row so a table built
+        # from several combinations still says what it holds. Older
+        # results have no solution type recorded and read back as the
+        # default one, which is what they were.
+        if result.get("solution_type"):
+            df["solution_type"] = result["solution_type"]
         # Swept parameters are reported in the unit they were entered in,
         # with the column named accordingly (`chip_width_um`), so the CSV
         # says what its numbers mean. The run's own state stays in mm.

@@ -1,7 +1,7 @@
 # pedestal_experiment
 
 The client pipeline for the pedestal experiment, in
-[`eigen_mode_analyze/`](eigen_mode_analyze/): one script (or a web UI on
+[`microwave_package/`](microwave_package/): one script (or a web UI on
 top of it) that, end to end, builds a SolidWorks STEP file per point in a
 parameter sweep, builds an AEDT model from each, queues them for
 analysis, waits for and monitors the worker's progress, and plots the
@@ -16,11 +16,31 @@ A run asks HFSS one of two questions, chosen per run:
   the band, plus a Touchstone file per combination.
 
 They share the same geometry and differ only in what is solved on it.
-See [`solve_types.py`](eigen_mode_analyze/solve_types.py) for which
-settings belong to which, and
-[`ports.py`](eigen_mode_analyze/ports.py) for where a driven run's ports
-go -- that choice fixes the reference plane, so it is asked rather than
-assumed.
+Each is a solver plugged into [`hfss/registry.py`](microwave_package/hfss/registry.py),
+which is where the contract between a solution type and the rest of the
+pipeline lives. See
+[`hfss/driven/ports.py`](microwave_package/hfss/driven/ports.py) for
+where a driven run's ports go -- that choice fixes the reference plane,
+so it is asked rather than assumed.
+
+## Layout
+
+```
+microwave_package/
+  design/     parameters -> physical design -> STEP and layout files
+  hfss/       STEP -> HFSS model, and the solvers that run on it
+    registry.py   what a solver is; nothing here knows the solvers
+    eigenmode/    resonant frequencies and Q, and the chip |E| pictures
+    driven/       S-parameters: the sweep, the ports, the Touchstone
+  workflow/   running a sweep: state, queue, results, plots
+  pipeline.py, webapp.py    the two entry points
+runs/         every run's output (git-ignored)
+base_parts/   the SolidWorks part library and the Altium generator
+```
+
+`design/` and `workflow/` know nothing about solution types. Where a step
+needs to -- which setup to make, where the ports go, how to read the
+results back -- it asks the run's solver rather than branching.
 
 The worker -- the generic background service that actually runs the
 AEDT analyses -- lives in its own repo,
@@ -40,7 +60,7 @@ automation), `pyaedt`, `pandas`, `plotly`, and `Flask`.
 
 SolidWorks and AEDT (student version is enough for the model-building
 steps) both need to be installed and licensed on the machine that runs
-`eigen_mode_analyze`.
+`microwave_package`.
 
 ## Set the queue location
 
@@ -56,7 +76,7 @@ machine) need this pointed at the same shared location.
 ### Web UI
 
 ```
-python -m eigen_mode_analyze.webapp
+python -m microwave_package.webapp
 ```
 
 Open <http://127.0.0.1:5000/> (or set `PORT` to serve somewhere else).
@@ -78,7 +98,7 @@ external program. Those assets (three.js + occt-import-js, ~8 MB, not
 committed) are fetched once with:
 
 ```
-python -m eigen_mode_analyze.fetch_vendor
+python -m microwave_package.fetch_vendor
 ```
 
 Skip it and everything else still works; the 3D view button just stays
@@ -87,7 +107,7 @@ hidden.
 ### Command line
 
 ```
-python -m eigen_mode_analyze.pipeline --sweep pedestal_depth=0:10:2
+python -m microwave_package.pipeline --sweep pedestal_depth=0:10:2
 ```
 
 `--sweep` is repeatable -- sweeping more than one parameter runs every
@@ -96,13 +116,13 @@ count: each one is a full model build + analysis. To resume an
 interrupted run instead of starting a new one:
 
 ```
-python -m eigen_mode_analyze.pipeline --resume run_20260819_140102
+python -m microwave_package.pipeline --resume run_20260819_140102
 ```
 
 A run is Eigenmode unless told otherwise. For S-parameters:
 
 ```
-python -m eigen_mode_analyze.pipeline --solution-type DrivenModal --f-start-ghz 1 --f-stop-ghz 15 --sweep pedestal_depth=0:10:2
+python -m microwave_package.pipeline --solution-type DrivenModal --f-start-ghz 1 --f-stop-ghz 15 --sweep pedestal_depth=0:10:2
 ```
 
 `--reference-plane connector` (the default) puts a wave port on the SMP
@@ -110,7 +130,7 @@ bead's coax cross-section, so the connector transition is inside the
 measurement; `--reference-plane launch` puts a lumped port under the CPW
 trace instead and measures the board alone.
 
-Run `python -m eigen_mode_analyze.pipeline --help` for every analysis
+Run `python -m microwave_package.pipeline --help` for every analysis
 setting -- they are grouped by which solution type they apply to.
 
 ### If the queue share is unreachable
@@ -125,7 +145,8 @@ already built or queued is lost.
 
 ## Output
 
-Every run gets its own folder under `eigen_mode_analyze/runs/<run_id>/`:
+Every run gets its own folder under `runs/<run_id>/` at the repo root
+(set `MICROWAVE_RUNS_PATH` to put them on another disk entirely):
 the generated STEP/AEDT files per combination (`models/<combo_id>/`),
 the run's resumable state (`state.json`, `run_config.json`), and the
 final combined CSV + interactive plot (`plots/`). A driven run also
@@ -150,26 +171,27 @@ reference for how it was reconstructed and how to regenerate it.
 
 ## Extending
 
-- **New scripts for this experiment**: add them under `eigen_mode_analyze/`
-  alongside the existing modules (`equations.py`, `sweep.py`,
-  `step_generation.py`, `model_builder.py`, `monitor.py`,
-  `post_processing.py`, `postprocess.py`, `ports.py`, `results.py`,
-  `plotting.py`, `run_manager.py`, `solve_types.py`) and wire them into
-  `pipeline.py` / `webapp.py` as needed.
-- **New solution types**: usually no worker change at all. Every task
-  this repo queues is a `"run_setups"` task -- "open the project and run
-  the setup(s) already in it" -- and the kind of solve is carried
-  separately in the task's `solution_type`. So a new solution type means
-  a new entry in `solve_types.py`, a setup builder in
-  `model_builder.create_analysis_setup`, and a results reader in
-  `postprocess.py`. A new handler in `ansys-analyze-worker`
+- **New scripts for this experiment**: add them to whichever of
+  `design/`, `hfss/` or `workflow/` matches what they do, and wire them
+  into `pipeline.py` / `webapp.py` as needed.
+- **New solution types**: a new folder under `hfss/`, and a
+  `register(Solver(...))` call in its `__init__.py` saying what its
+  settings are, how to make its setup, where its ports go if it has any,
+  how to read its results, and how to plot them. Nothing upstream
+  changes: `hfss/registry.py` does not know its solvers, and `design/`
+  and `workflow/` do not know solution types exist.
+
+  Usually no worker change either. Every task this repo queues is a
+  `"run_setups"` task -- "open the project and run the setup(s) already
+  in it" -- and the kind of solve is carried separately in the task's
+  `solution_type`. A new handler in `ansys-analyze-worker`
   (`docs/ARCHITECTURE.md` section 6) is only for a genuinely different
   *workflow* -- one where the worker has to do something other than run
   what it was given. Remember it only ever runs a setup this repo
   already created (§8.1/§12 of that doc) -- it never creates one, and it
-  never post-processes the result either (that's `postprocess.py`, run
-  sequentially, one project at a time, right after the worker finishes
-  each task).
+  never post-processes the result either (that's
+  `workflow/postprocess.py`, run sequentially, one project at a time,
+  right after the worker finishes each task).
 - **New sweepable parameters**: anything in `base_parts/default.txt`
   with a plain numeric value (not a formula) is automatically offered in
   the web UI and usable via `--sweep NAME=...` -- no code changes needed.
