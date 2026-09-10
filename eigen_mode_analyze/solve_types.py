@@ -29,7 +29,7 @@ read these, so nothing else needs to be told about it.
 """
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterable, List, Optional
 
 EIGENMODE = "Eigenmode"
 DRIVEN_MODAL = "DrivenModal"
@@ -145,10 +145,21 @@ NON_SOLVE_SETTINGS = (
 )
 
 
+def specific_fields(solution_type: str) -> List[Dict[str, Any]]:
+    """Only the settings this solution type does not share with the other.
+
+    What the form puts in the panel it shows and hides. The shared
+    settings must NOT go in there: the form renders a panel per solution
+    type, and a field appearing in both would submit its name twice, so
+    the value read back would be whichever panel came first in the
+    document rather than the one being looked at.
+    """
+    return list(DRIVEN_ONLY if is_driven(solution_type) else EIGENMODE_ONLY)
+
+
 def fields_for(solution_type: str) -> List[Dict[str, Any]]:
     """Every setting a run of this solution type actually uses, in form order."""
-    specific = DRIVEN_ONLY if is_driven(solution_type) else EIGENMODE_ONLY
-    return list(specific) + list(SHARED)
+    return specific_fields(solution_type) + list(SHARED)
 
 
 def defaults_for(solution_type: str) -> Dict[str, Any]:
@@ -201,21 +212,25 @@ def coerce(field: Dict[str, Any], raw: Any) -> Any:
     raise ValueError(f"Unknown field kind {kind!r} for {field['name']!r}")
 
 
-def validate(solution_type: str, parameter_values: Dict[str, float]) -> Optional[str]:
-    """Why this solution type cannot run against these geometry values, or None.
+def validate(solution_type: str, port_counts: Iterable[float]) -> Optional[str]:
+    """Why this solution type cannot run against this geometry, or None.
 
     Geometry, not settings: the driven solve needs two real ports to have
-    an S21 at all, and `port_count` is a swept-parameter-file value rather
-    than an analysis setting. Returning a string rather than raising lets
-    the web form show it next to the control that caused it.
+    an S21 at all, and `port_count` is an equation-file value rather than
+    an analysis setting. Returning a string rather than raising lets the
+    web form show it instead of failing the request.
+
+    Takes every port count the run would build, not one, because
+    `port_count` can itself be swept -- and a sweep where only some
+    combinations have two ports is still a run that cannot finish.
     """
     if not is_driven(solution_type):
         return None
-    port_count = int(parameter_values.get("port_count", 0))
-    if port_count != 2:
+    wrong = sorted({int(count) for count in port_counts if int(count) != 2})
+    if wrong:
         return (
-            f"A driven run needs exactly 2 ports to report S21; this geometry "
-            f"has port_count = {port_count}. Change it in the parameters, or "
-            f"use an Eigenmode run."
+            f"A driven run needs exactly 2 ports to report S21, but this run would "
+            f"build combinations with port_count = {', '.join(str(c) for c in wrong)}. "
+            f"Set port_count to 2, or use an Eigenmode run."
         )
     return None

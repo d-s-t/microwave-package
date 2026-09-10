@@ -38,7 +38,7 @@ from ansys_analyze_common import queue_common
 
 from . import equations as eq
 from . import (constraints, model_builder, parameter_meta, paths, pipeline,
-               plotting, post_processing, run_manager)
+               plotting, post_processing, run_manager, solve_types)
 from . import resilient_io
 from .pipeline import run_pipeline
 from .run_manager import Run
@@ -313,6 +313,41 @@ def _form_starting_point(from_run: Optional[str], combo_id: Optional[str]):
     return settings, values, run_id, _distortion_mode_for(run, combo_id)
 
 
+def _solve_settings_from_form(form) -> dict:
+    """The solution type the form picked, and that type's own settings.
+
+    The form renders BOTH types' controls and hides the one that does not
+    apply, so a submission always carries values for settings this run
+    will never use. Only the chosen type's fields are read back -- the
+    others keep whatever the defaults say, which is what makes switching
+    an existing run's solution type land on real numbers rather than on
+    whatever was last left in a hidden box.
+
+    A field the form did not send, or sent unparseably, falls back to its
+    default rather than failing the whole submission: the run is
+    recoverable from a wrong number and not from a form that will not
+    submit.
+    """
+    solution_type = form.get("solution_type") or solve_types.DEFAULT_SOLUTION_TYPE
+    if solution_type not in [t["value"] for t in solve_types.SOLUTION_TYPES]:
+        logger.warning("Unknown solution type %r from the form; using the default.", solution_type)
+        solution_type = solve_types.DEFAULT_SOLUTION_TYPE
+
+    settings = {"solution_type": solution_type, **solve_types.all_defaults()}
+    for field in solve_types.fields_for(solution_type):
+        raw = form.get(field["name"])
+        if raw is None or raw == "":
+            continue
+        try:
+            settings[field["name"]] = solve_types.coerce(field, raw)
+        except (TypeError, ValueError):
+            logger.warning(
+                "Ignoring %s=%r from the form: not a valid %s. Using %r.",
+                field["name"], raw, field["kind"], field["default"],
+            )
+    return settings
+
+
 def _runs_for_display(runs: list) -> list:
     """`Run.list_runs()` rows with the run-list's presentation fields added:
     a friendly name, a relative time, a humanised stage, and the one-line
@@ -364,6 +399,16 @@ def index():
         distortion_group=_distortion_group(parameters),
         distortion_limits=_distortion_limits(parameters, values),
         constraint_payload=constraints.client_payload(),
+        solution_types=solve_types.SOLUTION_TYPES,
+        # Both types' controls are rendered and the form hides the one
+        # that does not apply, so switching solution type is instant
+        # rather than a round-trip. Only the chosen type's values are read
+        # back -- see _solve_settings_from_form.
+        solve_fields={
+            t["value"]: solve_types.specific_fields(t["value"]) for t in solve_types.SOLUTION_TYPES
+        },
+        shared_solve_fields=solve_types.SHARED,
+        current_solution_type=solve_types.solution_type_of(settings),
     )
 
 
@@ -429,13 +474,21 @@ def new_run():
             )
             logger.info("Ignoring distortion-geometry sweep (%s) -- this run has no distorted combination.", names)
 
+    solve_settings = _solve_settings_from_form(request.form)
+    # A driven run needs two real ports to have an S21 at all, and
+    # port_count is geometry rather than an analysis setting -- so it is
+    # checked here, before a sweep's worth of STEP files get built for
+    # models that could never be given ports.
+    swept_values = {p.name: p.values for p in sweep_params}
+    complaint = solve_types.validate(
+        solve_settings["solution_type"],
+        swept_values.get("port_count") or [parameter_defaults.get("port_count", 0)],
+    )
+    if complaint:
+        return redirect(url_for("index", error=complaint))
+
     settings = {
-        "modes": int(request.form.get("modes", 20)),
-        "max_passes": int(request.form.get("max_passes", 99)),
-        "min_passes": int(request.form.get("min_passes", 5)),
-        "min_converged": int(request.form.get("min_converged", 3)),
-        "max_delta_f": float(request.form.get("max_delta_f", 1.0)),
-        "min_freq_safety_factor": float(request.form.get("min_freq_safety_factor", 0.4)),
+        **solve_settings,
         "aedt_version": request.form.get("aedt_version") or None,
         "student_version": "student_version" in request.form,
         "graphical": "graphical" in request.form,
@@ -964,7 +1017,9 @@ def run_results_csv(run_id):
 
 
 def main() -> None:
-    app.run(host="127.0.0.1", port=5000, debug=False)
+    # 5000 unless PORT says otherwise, so a second instance can be run
+    # beside one that is already serving without having to stop it.
+    app.run(host="127.0.0.1", port=int(os.environ.get("PORT", 5000)), debug=False)
 
 
 if __name__ == "__main__":
