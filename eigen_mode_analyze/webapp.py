@@ -511,11 +511,16 @@ def _combo_rows(run) -> dict:
 @app.route("/runs/<run_id>")
 def run_status(run_id):
     run = Run.load(run_id)
-    plot_exists = os.path.exists(os.path.join(run.plots_dir, "modes_scatter_plot.html"))
+    plot_exists = os.path.exists(os.path.join(run.plots_dir, plotting.PLOT_FILENAME))
     df = _results_frame(run)
     options = plotting.axis_options(df, run.sweep_param_names) if df is not None else []
     filters = plotting.filter_options(df, run.sweep_param_names) if df is not None else []
-    swept = [parameter_meta.column_name(n) for n in run.sweep_param_names]
+    # Which columns the plot opens on depends on what the run solved --
+    # an eigenmode sweep and an S-parameter band are read along different
+    # axes. plotting decides; this only passes the answer to the page.
+    axes = plotting.default_axes(
+        df if df is not None else pd.DataFrame(), run.sweep_param_names
+    )
 
     stage = run.state.get("stage")
     progress = run_manager.progress_of(run.state)
@@ -543,8 +548,9 @@ def run_status(run_id):
         meta=parameter_meta,
         has_common_dimensions=os.path.exists(os.path.join(run.run_dir, "common_dimensions.txt")),
         axis_options=options,
-        default_x=(swept[0] if swept else "combo_id"),
-        default_y=plotting.DEFAULT_Y,
+        default_x=axes["x"],
+        default_y=axes["y"],
+        default_color=axes["color"] or "",
         disk_usage_mb=_run_disk_usage(run) / (1024 * 1024),
         heatmap_combos=_chip_field_combos(run),
         step_viewer_available=_step_viewer_available(),
@@ -677,7 +683,7 @@ def run_status_json(run_id):
         "error": run.state.get("error"),
         "is_running": _is_running(run_id),
         # so the page can reload itself once, when the plot first appears
-        "plot_ready": os.path.exists(os.path.join(run.plots_dir, "modes_scatter_plot.html")),
+        "plot_ready": os.path.exists(os.path.join(run.plots_dir, plotting.PLOT_FILENAME)),
         "combos": {
             combo_id: {
                 "step_status": combo.get("step_status"),
@@ -729,7 +735,7 @@ def run_plot(run_id):
     run = Run.load(run_id)
     df = _results_frame(run)
     if df is None:
-        return send_from_directory(run.plots_dir, "modes_scatter_plot.html")
+        return send_from_directory(run.plots_dir, plotting.PLOT_FILENAME)
 
     df = plotting.apply_filters(df, _plot_filters(request.args))
     if df.empty:

@@ -286,9 +286,9 @@
   </select>
   <label for="axis-color">Colour</label>
   <select id="axis-color">
-    <option value="">(none)</option>
+    <option value="" {% if not default_color %}selected{% endif %}>(none)</option>
     {% for option in axis_options %}
-    <option value="{{ option.value }}">{{ option.label }}</option>
+    <option value="{{ option.value }}" {% if option.value == default_color %}selected{% endif %}>{{ option.label }}</option>
     {% endfor %}
   </select>
   <button type="button" id="swap-axes" title="Swap the X and Y axes">&#8646; swap</button>

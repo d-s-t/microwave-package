@@ -30,11 +30,64 @@ RESULT_FIELDS: Dict[str, str] = {
     "chip_mag_E_mean": "Chip mean |E| (V/m)",
     "vacuum_mag_E_max": "Vacuum max |E| (V/m)",
     "vacuum_mag_E_mean": "Vacuum mean |E| (V/m)",
+    # Driven runs. Magnitudes first: they are what the run is read for,
+    # and the axis picker shows these in this order.
+    "s11_db": "S11 (dB)",
+    "s21_db": "S21 (dB)",
+    "s22_db": "S22 (dB)",
+    "s12_db": "S12 (dB)",
+    "s11_deg": "S11 phase (deg)",
+    "s21_deg": "S21 phase (deg)",
+    "s22_deg": "S22 phase (deg)",
+    "s12_deg": "S12 phase (deg)",
 }
 
 # The sweep reads most naturally with the parameter you varied along the
 # bottom and the frequency it produced up the side.
 DEFAULT_Y = "freq_ghz"
+
+# Where a run's plot is saved inside its plots/ folder. The name is
+# historical -- a driven run's plot is neither modes nor a scatter -- and
+# is kept because runs plotted before driven runs existed look for a file
+# with exactly this name.
+PLOT_FILENAME = "modes_scatter_plot.html"
+
+
+def has_sparameters(df: pd.DataFrame) -> bool:
+    """Whether this results table came from a driven run.
+
+    Asked of the data rather than of the run's settings because the plot
+    can only draw what the table actually holds: a driven run whose
+    post-processing has not finished yet has a solution type and no
+    S-parameters, and it should render as whatever it does have rather
+    than as an empty S11 axis.
+    """
+    return any(column in df.columns for column in ("s11_db", "s21_db"))
+
+
+def default_axes(df: pd.DataFrame, sweep_param_names: List[str]) -> Dict[str, Optional[str]]:
+    """Which columns a run's plot should open on.
+
+    The two solution types want opposite things. An eigenmode sweep is
+    read across combinations -- the parameter you varied along the
+    bottom, the frequency it produced up the side, one point per mode. A
+    driven run is read along the band: frequency across the bottom, S11
+    up the side, and one curve per combination, because the shape of the
+    curve IS the result and comparing combinations means overlaying them.
+    """
+    swept = [parameter_meta.column_name(name) for name in sweep_param_names]
+    if has_sparameters(df):
+        return {
+            "x": "freq_ghz",
+            "y": "s11_db" if "s11_db" in df.columns else "s21_db",
+            "color": "combo_id" if "combo_id" in df.columns else None,
+        }
+    return {
+        "x": swept[0] if swept else "combo_id",
+        "y": DEFAULT_Y,
+        "color": "chip_mag_E_max" if "chip_mag_E_max" in df.columns else (
+            swept[1] if len(swept) > 1 else None),
+    }
 
 
 def axis_options(df: pd.DataFrame, sweep_param_names: List[str]) -> List[Dict[str, str]]:
@@ -151,8 +204,19 @@ def figure_html(
 
     labels = {column: label_for_column(column, sweep_param_names) for column in df.columns}
 
-    figure = px.scatter(
-        df, x=x, y=y, color=color,
+    # A driven run against frequency is a curve, not a cloud: several
+    # hundred points per combination drawn as markers is unreadable, and
+    # the shape between the points is the whole result. Anything else --
+    # including a driven run plotted against a swept parameter rather
+    # than frequency -- stays a scatter, where each point is its own
+    # measurement and joining them would invent a trend.
+    as_curve = has_sparameters(df) and x == "freq_ghz"
+    draw = px.line if as_curve else px.scatter
+    extra = {"line_group": "combo_id"} if as_curve and "combo_id" in df.columns else {}
+
+    figure = draw(
+        df.sort_values(x) if as_curve else df,
+        x=x, y=y, color=color,
         hover_data=[c for c in ("combo_id", "mode", *options) if c in df.columns and c not in (x, y)],
         # always first in each point's customdata, whatever hover_data
         # holds -- the run page reads it back to tell which combination
@@ -160,6 +224,7 @@ def figure_html(
         custom_data=["combo_id"] if "combo_id" in df.columns else None,
         labels=labels,
         template="plotly_dark" if dark else "plotly_white",
+        **extra,
     )
     # let the page behind the plot show through, so the embedded figure
     # matches whichever theme the run page is being viewed in
@@ -327,15 +392,9 @@ def plot_results(df: pd.DataFrame, run, sweep_param_names: List[str], log=logger
     df.to_csv(combined_csv, index=False)
     log(f"Combined {len(df)} rows into {combined_csv}")
 
-    swept = [parameter_meta.column_name(n) for n in sweep_param_names]
-    html = figure_html(
-        df, sweep_param_names,
-        x=swept[0] if swept else "combo_id",
-        y=DEFAULT_Y,
-        color="chip_mag_E_max" if "chip_mag_E_max" in df.columns else (swept[1] if len(swept) > 1 else None),
-    )
+    html = figure_html(df, sweep_param_names, **default_axes(df, sweep_param_names))
 
-    plot_path = os.path.join(run.plots_dir, "modes_scatter_plot.html")
+    plot_path = os.path.join(run.plots_dir, PLOT_FILENAME)
     with open(plot_path, "w", encoding="utf-8") as handle:
         handle.write(html)
     log(f"Plot saved to {plot_path}")
