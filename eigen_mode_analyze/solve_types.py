@@ -136,15 +136,6 @@ DRIVEN_ONLY: List[Dict[str, Any]] = [
     },
 ]
 
-# Settings that are neither solution-type-specific nor shown in the
-# solution-type section of the form -- machine and workflow settings.
-# Listed here only so `all_setting_names()` can be complete.
-NON_SOLVE_SETTINGS = (
-    "aedt_version", "student_version", "graphical", "poll_seconds",
-    "use_altium", "materials", "solution_type",
-)
-
-
 def specific_fields(solution_type: str) -> List[Dict[str, Any]]:
     """Only the settings this solution type does not share with the other.
 
@@ -160,11 +151,6 @@ def specific_fields(solution_type: str) -> List[Dict[str, Any]]:
 def fields_for(solution_type: str) -> List[Dict[str, Any]]:
     """Every setting a run of this solution type actually uses, in form order."""
     return specific_fields(solution_type) + list(SHARED)
-
-
-def defaults_for(solution_type: str) -> Dict[str, Any]:
-    """`{name: default}` for one solution type's own settings."""
-    return {field["name"]: field["default"] for field in fields_for(solution_type)}
 
 
 def all_defaults() -> Dict[str, Any]:
