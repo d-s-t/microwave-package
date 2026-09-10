@@ -1,10 +1,15 @@
 """
-AEDT model-building step: for each STEP file, build an HFSS Eigenmode
-model (geometry, materials, boundaries, and its single analysis setup --
-everything the student license covers), then queue it with the worker for
-analysis. Never calls Analyze/analyze_setup itself -- that's the worker's
-job, on the full license, in a different process entirely (see
-ansys-analyze-worker's ARCHITECTURE.md section 8).
+AEDT model-building step: for each STEP file, build an HFSS model
+(geometry, materials, boundaries, ports if the run has any, and its
+single analysis setup -- everything the student license covers), then
+queue it with the worker for analysis. Never calls Analyze/analyze_setup
+itself -- that's the worker's job, on the full license, in a different
+process entirely (see ansys-analyze-worker's ARCHITECTURE.md section 8).
+
+The run's `solution_type` decides what gets built: an Eigenmode project
+has no ports and no frequency sweep, a DrivenModal one has both. See
+solve_types.py for what else each of them carries, and ports.py for
+where a driven run's ports go.
 """
 from __future__ import annotations
 
@@ -12,11 +17,13 @@ import logging
 import os
 import re
 import time
+from dataclasses import dataclass
 from typing import Callable, Dict, List, Optional
 
 from ansys_analyze_common import queue_common
 
 from . import equations as eq
+from . import ports, solve_types
 
 logger = logging.getLogger("eigen_mode_analyze")
 
@@ -418,19 +425,35 @@ def cavity_frame(hfss, fallback_x: float, fallback_z: float, log=logger.info):
     return cg.Frame(x_offset=fallback_x, z_offset=fallback_z)
 
 
-def build_layout(hfss, combo_dir: str, dimensions_txt_content: str, log=logger.info) -> None:
+@dataclass(frozen=True)
+class LayoutContext:
+    """Where the layout put things, for whoever needs it after the fact.
+
+    `build_layout` works all of this out to place copper, and a driven
+    run's ports need the same numbers to sit under the trace or against
+    the launch. Recomputing them from the equation file a second time
+    would be two places to get the stack-up wrong, so the one that
+    already did it hands its answer back instead.
+    """
+    frame: "copper_geometry.Frame"
+    stack: "copper_geometry.Stack"
+    values: Dict[str, float]
+
+
+def build_layout(hfss, combo_dir: str, dimensions_txt_content: str,
+                 log=logger.info) -> Optional["LayoutContext"]:
     """Rebuild the boards from the layout: substrates, copper and bonds.
 
-    Silently does nothing when there is no copper file. A run built from
-    a SolidWorks-only assembly is still perfectly valid, and was the only
-    kind of run until the Altium stage existed.
+    Returns where it put them, or None when there is no copper file --
+    a run built from a SolidWorks-only assembly is still perfectly valid,
+    and was the only kind of run until the Altium stage existed.
     """
     from . import copper_geometry as cg, equations as eq
 
     copper_path = os.path.join(combo_dir, "copper.txt")
     if not os.path.isfile(copper_path):
         log("No copper.txt for this combination -- building the model without a layout.")
-        return
+        return None
 
     v = eq.get_numeric_parameters(dimensions_txt_content)
     boards = cg.read_file(copper_path)
@@ -569,6 +592,8 @@ def build_layout(hfss, combo_dir: str, dimensions_txt_content: str, log=logger.i
         )
     else:
         log("No bonds.txt for this combination -- the die is not bonded.")
+
+    return LayoutContext(frame=frame, stack=stack, values=v)
 
 
 # Tried in turn when the preferred material will not stick. The last
@@ -750,14 +775,30 @@ def carve_vacuum(hfss, objects_dict, log=logger.info) -> None:
 
 
 SETUP_NAME = "Setup_1"
+# A driven setup's frequency sweep. Eigenmode has no sweep at all, so
+# this name only ever exists in a driven project -- which is what
+# postprocess.py keys on to tell the two apart in a solved project.
+SWEEP_NAME = "Sweep_1"
+
+
+def create_analysis_setup(hfss, dimensions_txt_content: str, analysis_settings: dict,
+                          log=logger.info):
+    """Create the project's single analysis setup, of whichever kind the
+    run asked for.
+
+    The student license covers `create_setup` -- it's only
+    `analyze`/`analyze_setup` that needs the full license, which is why
+    this still runs here (client side, student version) and the worker
+    only ever runs the setup this produces, never creates one itself (see
+    ansys-analyze-worker's ARCHITECTURE.md section 8).
+    """
+    if solve_types.is_driven(solve_types.solution_type_of(analysis_settings)):
+        return create_driven_setup(hfss, analysis_settings, log=log)
+    return create_eigenmode_setup(hfss, dimensions_txt_content, analysis_settings)
 
 
 def create_eigenmode_setup(hfss, dimensions_txt_content: str, analysis_settings: dict):
-    """Create the project's single Eigenmode setup. The student license
-    covers `create_setup` -- it's only `analyze`/`analyze_setup` that needs
-    the full license, which is why this still runs here (client side,
-    student version) and the worker only ever runs the setup this
-    produces, never creates one itself (see ARCHITECTURE.md section 8)."""
+    """Create the project's single Eigenmode setup."""
     min_freq_ghz = calculate_min_freq(
         dimensions_txt_content, safety_factor=analysis_settings["min_freq_safety_factor"]
     )
@@ -768,6 +809,69 @@ def create_eigenmode_setup(hfss, dimensions_txt_content: str, analysis_settings:
     setup.props["MinimumPasses"] = analysis_settings["min_passes"]
     setup.props["MinimumConvergedPasses"] = analysis_settings["min_converged"]
     setup.props["MaxDeltaFreq"] = analysis_settings["max_delta_f"]
+    return setup
+
+
+def create_driven_setup(hfss, analysis_settings: dict, log=logger.info):
+    """Create the project's single DrivenModal setup and its frequency sweep.
+
+    Two objects, not one: the setup does the adaptive meshing at a single
+    frequency, and the sweep reuses that mesh across the band. Both have
+    to exist before the project is queued, because the worker runs
+    whatever setups it finds and never creates or configures anything
+    itself.
+
+    The adaptive pass is meshed at the TOP of the band. The mesh a
+    solution frequency produces has to resolve the shortest wavelength
+    the sweep will ask about, and a mesh refined at 1 GHz does not
+    describe 15 GHz -- while one refined at 15 GHz is merely finer than
+    1 GHz needs.
+
+    The sweep is interpolating: it solves a handful of frequencies and
+    fits a rational model through them, rather than solving all
+    `sweep_points` of them. That is what makes a few hundred reported
+    points cost about the same as a few dozen, and it is the right choice
+    for an S-parameter curve, which is smooth apart from its resonances.
+    """
+    f_start = float(analysis_settings["f_start_ghz"])
+    f_stop = float(analysis_settings["f_stop_ghz"])
+    if f_stop <= f_start:
+        raise ValueError(
+            f"The frequency sweep needs f_stop > f_start; got {f_start} -> {f_stop} GHz."
+        )
+
+    setup = hfss.create_setup(name=SETUP_NAME)
+    setup.props["Frequency"] = f"{f_stop}GHz"
+    setup.props["MaxDeltaS"] = analysis_settings["max_delta_s"]
+    setup.props["MaximumPasses"] = analysis_settings["max_passes"]
+    setup.props["MinimumPasses"] = analysis_settings["min_passes"]
+    setup.props["MinimumConvergedPasses"] = analysis_settings["min_converged"]
+    setup.update()
+
+    sweep = hfss.create_linear_count_sweep(
+        setup=SETUP_NAME,
+        unit="GHz",
+        start_frequency=f_start,
+        stop_frequency=f_stop,
+        num_of_freq_points=int(analysis_settings["sweep_points"]),
+        name=SWEEP_NAME,
+        sweep_type="Interpolating",
+        # The S-matrix is what this run is for, and an interpolating
+        # sweep cannot save fields at its interpolated points anyway.
+        # Not saving them keeps the solved project small enough to copy
+        # back over the queue share.
+        save_fields=False,
+    )
+    if not sweep:
+        raise RuntimeError(
+            f"Could not add the {SWEEP_NAME} frequency sweep to {SETUP_NAME}. Without "
+            "it the setup solves one frequency and there is no S-parameter curve."
+        )
+    log(
+        f"Driven setup: adaptive at {f_stop} GHz (MaxDeltaS "
+        f"{analysis_settings['max_delta_s']}), interpolating sweep "
+        f"{f_start}-{f_stop} GHz over {analysis_settings['sweep_points']} points."
+    )
     return setup
 
 
@@ -919,10 +1023,12 @@ def build_model(
     combo_dir = run.combo_dir(combo_id)
     project_path = project_file_for(run, combo_id)
 
+    solution_type = solve_types.solution_type_of(analysis_settings)
+
     hfss = Hfss(
         project=project_path,
         version=aedt_version,
-        solution_type="Eigenmode",
+        solution_type=solution_type,
         new_desktop=False,
         student_version=student_version,
         non_graphical=not graphical,
@@ -952,13 +1058,24 @@ def build_model(
         # die can be pocketed into the board and everything shares one
         # frame. Must happen BEFORE materials are assigned, or the new
         # bodies exist without any.
-        build_layout(hfss, combo_dir, dimensions_txt_content, log=log)
+        layout = build_layout(hfss, combo_dir, dimensions_txt_content, log=log)
 
         objects_dict = assign_materials_and_boundaries(hfss, analysis_settings["materials"], log=log)
         carve_vacuum(hfss, objects_dict, log=log)
         object_names = {key: obj.name for key, obj in objects_dict.items()}
 
-        create_eigenmode_setup(hfss, dimensions_txt_content, analysis_settings)
+        # After the carve, not before: a boolean renumbers the faces of
+        # everything it touches, and a port is attached to a face id.
+        try:
+            port_names = ports.place_ports(hfss, layout, analysis_settings, log=log)
+        except ports.PortPlacementError as exc:
+            log(
+                f"{combo_id}: {exc} Not saving or queueing this combination -- a driven "
+                "model with no ports has nothing to excite and no S-matrix to read."
+            )
+            return
+
+        create_analysis_setup(hfss, dimensions_txt_content, analysis_settings, log=log)
 
         hfss.save_project(project_path)
         closed = close_project_safely(hfss, log=log)
@@ -976,7 +1093,9 @@ def build_model(
         if not closed:
             log(f"{combo_id}'s project unlocked despite that close error -- queueing it anyway.")
 
-        object_names = _remember_built_model(run, combo_id, project_path, object_names, log)
+        object_names = _remember_built_model(
+            run, combo_id, project_path, object_names, port_names, log
+        )
         return object_names
 
     finally:
@@ -1010,22 +1129,60 @@ def build_and_queue(
     queue_model(combo_id, step_path, run, queue, object_names, log=log)
 
 
-def _remember_built_model(run, combo_id, project_path, object_names, log) -> Dict[str, str]:
+def _remember_built_model(run, combo_id, project_path, object_names,
+                          port_names, log) -> Dict[str, str]:
     """Record that this combination's model exists and is ready to hand over.
 
     The body names are stored with it because the task needs them and
     they are only known while the model is being built. Without this, a
     handoff deferred to a later session would have to reopen the project
     just to rediscover them.
+
+    The port names go in beside them for the same reason, minus the need:
+    nothing downstream addresses a port by name -- S-parameters are
+    indexed by port number -- but a run that came out wrong is much
+    easier to read back when its record says which ports were built and
+    which were not.
     """
     run.update_combo(
         combo_id,
         model_status="built",
         project_path=project_path,
         object_names=object_names,
+        ports=port_names,
     )
     log(f"{combo_id}: model built and saved to {os.path.basename(project_path)}.")
     return object_names
+
+
+def _post_processing_for(solution_type: str) -> List[Dict]:
+    """Which generic post-processing ops this run's results want.
+
+    Field statistics and field plots are per-MODE quantities: they answer
+    "where is the energy in this resonance", which is a question an
+    eigenmode run asks and a driven run does not. A driven run's results
+    are the S-matrix, and that is read straight off the solved sweep in
+    postprocess.py rather than through an op -- there is one of it per
+    setup, not one per result row, so it does not fit the per-row shape
+    these ops have.
+    """
+    if solve_types.is_driven(solution_type):
+        return []
+    return [
+        # The four numbers the run page plots. The chip's are taken
+        # on its top face only -- the surface the circuit is on --
+        # while the vacuum's cover the whole cavity volume.
+        {"op": "field_statistics", "params": {
+            "object_key": "chip", "quantity": "Mag_E",
+            "region": "top_surface", "key": "chip_mag_E",
+        }},
+        {"op": "field_statistics", "params": {
+            "object_key": "vacuum", "quantity": "Mag_E",
+            "region": "volume", "key": "vacuum_mag_E",
+        }},
+        # Best-effort picture of that same chip face.
+        {"op": "field_plot_surface", "params": {"object_key": "chip", "quantity": "Mag_E"}},
+    ]
 
 
 def queue_model(
@@ -1048,12 +1205,21 @@ def queue_model(
 
     combo_dir = run.combo_dir(combo_id)
     project_path = project_file_for(run, combo_id)
-    task_id = queue_common.new_task_id("eigenmode_analyze")
+    solution_type = solve_types.solution_type_of(run.config["analysis_settings"])
+    # The task id prefixes the queue folder this combination's project is
+    # copied into, so it says which kind of run it came from even though
+    # `task_type` no longer does -- every task is a "run_setups" task now.
+    task_id = queue_common.new_task_id("driven" if solve_types.is_driven(solution_type) else "eigenmode")
     relative_project_file = queue_common.copy_project_to_queue(queue, task_id, combo_dir)
     relative_output_dir = queue_common.project_dir_for_task(task_id)
 
     task = queue_common.build_task(
-        task_type="eigenmode_analyze",
+        # What the worker should DO, which is the same whatever kind of
+        # setup this is: open the project and run the setup(s) already in
+        # it. `solution_type` below is what says which kind they are.
+        # (The worker still answers to the old "eigenmode_analyze" name as
+        # a legacy alias, but nothing here should send it any more.)
+        task_type="run_setups",
         project_file=relative_project_file,
         output_dir=relative_output_dir,
         task_id=task_id,
@@ -1061,23 +1227,9 @@ def queue_model(
         # passing it through lets the worker skip auto-detecting it
         # from the AEDT session when it reopens the project. See
         # queue_common.build_task()'s docstring for why that matters.
-        solution_type="Eigenmode",
+        solution_type=solution_type,
         objects=object_names,
-        post_processing=[
-            # The four numbers the run page plots. The chip's are taken
-            # on its top face only -- the surface the circuit is on --
-            # while the vacuum's cover the whole cavity volume.
-            {"op": "field_statistics", "params": {
-                "object_key": "chip", "quantity": "Mag_E",
-                "region": "top_surface", "key": "chip_mag_E",
-            }},
-            {"op": "field_statistics", "params": {
-                "object_key": "vacuum", "quantity": "Mag_E",
-                "region": "volume", "key": "vacuum_mag_E",
-            }},
-            # Best-effort picture of that same chip face.
-            {"op": "field_plot_surface", "params": {"object_key": "chip", "quantity": "Mag_E"}},
-        ],
+        post_processing=_post_processing_for(solution_type),
         metadata={
             "combo_id": combo_id,
             "params": run.state["combos"][combo_id]["params"],
