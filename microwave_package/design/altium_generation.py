@@ -265,8 +265,13 @@ def build_params(
     on its own substrate with its own metal thickness. Both are recorded
     rather than recomputed downstream, so the run keeps a record of the
     geometry it actually built.
+
+    Adds the die's opening too -- its size, its depth, and whether it
+    goes through. Decided here rather than in the DelphiScript so that
+    the script only draws, and so that HFSS, which asks `cavity.plan`
+    the same question, cannot get a different answer.
     """
-    from . import cpw, smp
+    from . import cavity, cpw, smp
 
     out = dict(values)
     # The connector land pattern travels with the parameters so the
@@ -290,7 +295,79 @@ def build_params(
         conductor_thickness=values.get("chip_metal_thickness", 0.0),
     )
     out["target_z0"] = target_z0
+    out.update(cavity.as_parameters(cavity.plan(values)))
     return out
+
+
+# --- measuring the connector footprint --------------------------------
+
+
+def measure_footprint(
+    footprint: Optional[str] = None,
+    library: Optional[str] = None,
+    out: Optional[str] = None,
+    log: Callable[[str], None] = logger.info,
+) -> Tuple[bool, str]:
+    """Read the connector footprint out of its library and record it.
+
+    Run this when the connector changes, not on every sweep: it opens
+    Altium, and its output is a source file that is committed. `design.smp`
+    reads that file and derives everything the board around the launch is
+    drawn from -- the envelope, the anti-pad, the escape slot.
+
+    It exists because a PcbLib is a compiled compound document that only
+    Altium can open. The alternative was reading numbers off a vendor
+    drawing and retyping them, which is how this project ended up with a
+    launch missing its anti-pad the first time.
+
+    `footprint`, `library` and `out` default to the ones `design.smp`
+    and `paths` name, which is what you want for a re-measure. Give
+    `out` to size up a candidate connector without overwriting the one
+    the boards are currently built from.
+
+    Bootstrapping a connector that has never been measured means passing
+    `footprint` explicitly: `design.smp` cannot be imported at all until
+    the file this produces exists, which is the price of it having no
+    second copy of the numbers to fall back on.
+    """
+    from .. import paths
+
+    source = library or str(paths.ALTIUM_SMP_LIBRARY)
+    if footprint is None:
+        from . import smp
+
+        footprint = smp.FOOTPRINT
+    target = footprint
+    if not os.path.isfile(source):
+        return False, f"no connector library at {source}"
+
+    # The measurer reads its inputs from the same parameter file as
+    # everything else, so there is one wire format across this boundary
+    # rather than a second one for this script alone.
+    write_params(
+        str(paths.ALTIUM_PARAMS_FILE), {},
+        extra={
+            "smp_library": source,
+            "smp_footprint": target,
+            "smp_measured": out or str(paths.ALTIUM_SMP_FOOTPRINT_FILE),
+        },
+    )
+
+    log(f"Measuring {target} in {os.path.basename(source)}...")
+    ok, report = run_script(
+        str(paths.ALTIUM_FOOTPRINT_MEASURER), "MeasureFootprint",
+        str(paths.ALTIUM_MEASURE_REPORT), log=log,
+    )
+    if not ok:
+        return False, _describe(report, "Altium footprint measurement")
+
+    log(
+        f"Measured {report.get('pads', '?')} pads, "
+        f"{report.get('copper_regions', '?')} copper shapes and "
+        f"{report.get('bodies', '?')} 3D bodies into "
+        f"{out or paths.ALTIUM_SMP_FOOTPRINT_FILE}."
+    )
+    return True, ""
 
 
 # --- the per-combination stage ----------------------------------------
@@ -329,9 +406,18 @@ def generate_for_combo(
         mat_pcb=materials.get("mat_pcb", "Rogers TMM 10i (tm)"),
         mat_chip=materials.get("mat_chip", "silicon"),
     )
+    from . import smp
+
     write_params(
         str(paths.ALTIUM_PARAMS_FILE), params,
-        extra={"out_dir": str(paths.ALTIUM_OUT_DIR)},
+        extra={
+            "out_dir": str(paths.ALTIUM_OUT_DIR),
+            # The launch is placed from the vendor library rather than
+            # drawn, so the generator needs to be told where that library
+            # is and which of its nine footprints this part is.
+            "smp_library": str(paths.ALTIUM_SMP_LIBRARY),
+            "smp_footprint": smp.FOOTPRINT,
+        },
     )
 
     # The bond layout is computed once and shared: Altium places the pads
@@ -351,6 +437,10 @@ def generate_for_combo(
     )
     if not ok:
         return False, _describe(report, "Altium layout generation")
+
+    incomplete = _missing_features(report)
+    if incomplete:
+        return False, f"Altium built an incomplete board: {incomplete}"
 
     ok, report = run_script(
         str(paths.ALTIUM_COPPER_EXPORTER), "ExportCopper",
@@ -378,6 +468,54 @@ def generate_for_combo(
     # the next combination.
     log(f"Copper for this combination written to {destination}")
     return True, ""
+
+
+def _missing_features(report: Dict[str, str]) -> str:
+    """What the generator said it could not build, or "" if it built it all.
+
+    `run_script` only answers "did the script reach its end", and the
+    generator is written to reach its end whatever happens -- every
+    feature is guarded separately precisely so that one failure does not
+    take the rest of the board with it. That is the right behaviour for
+    the script and the wrong place to stop reading.
+
+    Written after a run where the parameter file, produced by a stale
+    process, named no connector library. The generator said so --
+    `smp_library=NOT_CONFIGURED`, `package_ports=NO_LAUNCH_PLACED` --
+    saved a board with no launch on it, and the sweep carried that board
+    forward without a word. It only surfaced two stages later, as a
+    parse error with nothing to do with connectors.
+
+    So: a board missing a feature is a failed combination, recorded and
+    skipped like any other, rather than a model of something nobody
+    meant to simulate.
+    """
+    problems = []
+
+    if report.get("package_ports") == "NO_LAUNCH_PLACED":
+        why = report.get("smp_library") or report.get("smp_footprint") or "unknown"
+        problems.append(f"no connector was placed ({why})")
+
+    for key, feature in (
+        ("package_body", "the package's copper"),
+        ("chip_body", "the die's copper"),
+        ("package_cavity", "the die's opening"),
+        ("package_bond_pads", "the board's bond fingers"),
+        ("chip_bond_pads", "the die's bond pads"),
+    ):
+        value = report.get(key)
+        if value is None:
+            problems.append(f"{feature} was never reported on")
+        elif value in ("FAIL", "0"):
+            problems.append(f"{feature} failed")
+
+    # The cavity is only a cutout if Altium agreed it was one. A Kind
+    # that did not take leaves a plain copper region on the keep-out
+    # layer, which looks like a cutout in the tree and is not one.
+    if report.get("cavity_kind_readback") in ("WRONG", "unreadable"):
+        problems.append("the die's opening is not the kind of region it was set to")
+
+    return "; ".join(problems)
 
 
 def _describe(report: Dict[str, str], what: str) -> str:

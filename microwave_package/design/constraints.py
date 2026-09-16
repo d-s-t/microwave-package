@@ -267,6 +267,38 @@ def check_layout(values: Dict[str, float]) -> Optional[str]:
             f"via_gnd_clearance or cpw_trace_width, or widen pcb_side"
         )
 
+    # The die's opening, which everything below has to keep out of. It
+    # is cut larger than the die by cavity_clearance, so "clears the
+    # die" and "clears the hole the die sits in" are no longer the same
+    # statement -- and the second is the one that matters.
+    from . import cavity as cavity_plan
+
+    opening = cavity_plan.plan(values)
+
+    if get("cavity_clearance") < 0:
+        return (
+            "cavity_clearance is negative, which would cut the opening SMALLER than "
+            "the die -- there would be nowhere for it to go. Use 0 for an exact fit, "
+            "or a positive value for the wiggle room a milled edge actually needs"
+        )
+
+    # The coplanar ground planes are each drawn as one region with the
+    # opening stepped out of their inner edge. An opening reaching the
+    # copper edge would cut a plane in two, which one region cannot be,
+    # so the generator would fall back to leaving copper across the hole.
+    if opening.half_side >= half_side:
+        return (
+            f"the die's opening reaches {_fmt(opening.half_side)} mm across the feedline "
+            f"but the PCB only offers {_fmt(half_side)} mm -- reduce chip_side or "
+            f"cavity_clearance, or widen pcb_side"
+        )
+    if opening.half_length >= half_length:
+        return (
+            f"the die's opening reaches {_fmt(opening.half_length)} mm along the feedline "
+            f"but the PCB only offers {_fmt(half_length)} mm -- reduce chip_length or "
+            f"cavity_clearance, or lengthen pcb_length"
+        )
+
     # The shield ring surrounds the chip pocket and must stay on the board.
     ring_x = get("chip_length") / 2.0 + get("shield_ring_inset") + via_dia / 2.0
     ring_y = get("chip_side") / 2.0 + get("shield_ring_inset") + via_dia / 2.0
@@ -283,9 +315,31 @@ def check_layout(values: Dict[str, float]) -> Optional[str]:
             f"chip_side, or widen pcb_side"
         )
 
+    # The bond fingers sit on the board, so they have to be clear of the
+    # opening -- not merely clear of the die. `bonding_clearence` is
+    # measured from the die edge, and the opening is cut past that edge
+    # by cavity_clearance, so a finger can be comfortably clear of the
+    # die and still half over the hole. Each row is checked on the axis
+    # it runs along, because a pad is bond_pad_length across at the
+    # feedline ends and bond_pad_width across along the sides.
+    for span, pad, extent, axis, pad_name in (
+        (get("chip_length") / 2.0, get("bond_pad_length"),
+         opening.half_length, "along the feedline", "bond_pad_length"),
+        (get("chip_side") / 2.0, get("bond_pad_width"),
+         opening.half_side, "across the feedline", "bond_pad_width"),
+    ):
+        finger_inner = span + get("bonding_clearence") - pad / 2.0
+        if finger_inner <= extent:
+            return (
+                f"the bond fingers reach in to {_fmt(finger_inner)} mm {axis}, but the "
+                f"die's opening already extends to {_fmt(extent)} mm, so they would hang "
+                f"over it -- increase bonding_clearence, or reduce cavity_clearance or "
+                f"{pad_name}"
+            )
+
     # The shield ring goes OUTSIDE the bond fingers. Working inward from
-    # the die the order is: die, bond fingers, shield ring. Get that
-    # backwards and the ring's vias land on the fingers -- which the
+    # the die the order is: die, opening, bond fingers, shield ring. Get
+    # that backwards and the ring's vias land on the fingers -- which the
     # generator would build without complaint.
     finger_outer = get("chip_length") / 2.0 + get("bonding_clearence") + get("bond_pad_length") / 2.0
     ring_inner = get("chip_length") / 2.0 + get("shield_ring_inset") - via_dia / 2.0

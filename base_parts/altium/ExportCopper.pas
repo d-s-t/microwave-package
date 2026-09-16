@@ -22,8 +22,23 @@
 
       track|layer|x1|y1|x2|y2|width
       via|x|y|diameter|holesize
-      pad|layer|x|y|xsize|ysize
+      pad|layer|x|y|xsize|ysize|rotation
       region|layer|x1,y1,x2,y2,...
+
+  Only copper layers are written. Everything else a board carries --
+  the outline, the die's cutout or cavity, and now a placed component's
+  silkscreen, courtyard and assembly drawing -- comes through the same
+  iterator and is dropped here rather than downstream. It is not copper,
+  nothing reading this file wants it, and a track on the silkscreen is
+  indistinguishable from a track on the top layer once the layer tag
+  has been thrown away.
+
+  A pad's rotation is written because it cannot be recovered from
+  anything else in the record. TopXSize and TopYSize are the pad's own
+  dimensions in the PAD's frame, not the board's, so a 1.4 x 0.48
+  connector land placed on its side still reports 0.48 x 1.4 -- and a
+  reader that takes those as board extents builds the launch across the
+  line instead of along it.
 
   Note: Pascal block comments do not nest.
 }
@@ -39,6 +54,13 @@ Procedure Say(S : String);
 Begin
     Rpt.Add(S);
     Rpt.SaveToFile(OutPath);
+End;
+
+{ Copper only. A placed footprint brings silkscreen, courtyard and
+  assembly outlines with it, all of which reach this iterator. }
+Function IsCopper(L : TLayer) : Boolean;
+Begin
+    Result := (L = eTopLayer) Or (L = eBottomLayer);
 End;
 
 Function LayerTag(L : TLayer) : String;
@@ -109,9 +131,10 @@ Begin
             eTrackObject :
                 Begin
                     Trk := Prim;
-                    Line := 'track|' + LayerTag(Trk.Layer) + '|' +
-                            MM(Trk.X1) + '|' + MM(Trk.Y1) + '|' +
-                            MM(Trk.X2) + '|' + MM(Trk.Y2) + '|' + MM(Trk.Width);
+                    If IsCopper(Trk.Layer) Then
+                        Line := 'track|' + LayerTag(Trk.Layer) + '|' +
+                                MM(Trk.X1) + '|' + MM(Trk.Y1) + '|' +
+                                MM(Trk.X2) + '|' + MM(Trk.Y2) + '|' + MM(Trk.Width);
                 End;
             eViaObject :
                 Begin
@@ -122,9 +145,11 @@ Begin
             ePadObject :
                 Begin
                     Pad := Prim;
-                    Line := 'pad|' + LayerTag(Pad.Layer) + '|' +
-                            MM(Pad.X) + '|' + MM(Pad.Y) + '|' +
-                            MM(Pad.TopXSize) + '|' + MM(Pad.TopYSize);
+                    If IsCopper(Pad.Layer) Then
+                        Line := 'pad|' + LayerTag(Pad.Layer) + '|' +
+                                MM(Pad.X) + '|' + MM(Pad.Y) + '|' +
+                                MM(Pad.TopXSize) + '|' + MM(Pad.TopYSize) + '|' +
+                                FloatToStr(Pad.Rotation);
                 End;
             eRegionObject :
                 Begin
@@ -137,7 +162,7 @@ Begin
                       one already has. LayerTag returns 'other' for
                       anything that is not eTopLayer/eBottomLayer. }
                     Rgn := Prim;
-                    If (Rgn.Layer = eTopLayer) Or (Rgn.Layer = eBottomLayer) Then
+                    If IsCopper(Rgn.Layer) Then
                     Begin
                         Contour := Rgn.GetMainContour;
                         If Contour <> Nil Then

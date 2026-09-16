@@ -26,6 +26,8 @@
 
 "chip_width"= 0.381	' thickness of the chip (381 um)
 
+"cavity_clearance"= 0.1	' per-side wiggle room between the die and the PCB opening it drops into
+
 "pedestal_depth"= 0.0	' depth of the pedestal under the chip
 
 "chip_leg"= 0.8 	' size of the legs the chip lay on in case there is pedestal

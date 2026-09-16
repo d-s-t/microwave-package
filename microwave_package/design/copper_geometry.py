@@ -25,8 +25,11 @@ nonsense. See `Frame`.
 from __future__ import annotations
 
 import logging
+import math
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Sequence, Tuple
+
+from .cavity import Cavity
 
 logger = logging.getLogger("microwave_package")
 
@@ -54,11 +57,35 @@ class Via:
 
 @dataclass(frozen=True)
 class Pad:
+    """One land, with its own rotation about its centre.
+
+    `xsize` and `ysize` are the pad's dimensions in the PAD's frame, not
+    the board's -- which is how Altium holds them, and why `rotation`
+    cannot be dropped. A placed connector's 1.4 x 0.48 signal land sits
+    on the board along the feedline but still reports 0.48 x 1.4, so a
+    reader that takes those as board extents builds the launch across
+    the line instead of along it.
+
+    Defaults to 0, so a copper.txt written before rotation was exported
+    still reads -- every pad the generator drew itself was axis-aligned.
+    """
     layer: str
     x: float
     y: float
     xsize: float
     ysize: float
+    rotation: float = 0.0
+
+    def corners(self) -> Tuple[Tuple[float, float], ...]:
+        """The pad's four corners in BOARD coordinates."""
+        angle = math.radians(self.rotation)
+        cos, sin = math.cos(angle), math.sin(angle)
+        half_x, half_y = self.xsize / 2.0, self.ysize / 2.0
+        return tuple(
+            (self.x + u * cos - v * sin, self.y + u * sin + v * cos)
+            for u, v in ((-half_x, -half_y), (half_x, -half_y),
+                         (half_x, half_y), (-half_x, half_y))
+        )
 
 
 @dataclass(frozen=True)
@@ -125,8 +152,17 @@ def parse(text: str) -> Dict[str, BoardCopper]:
                 x, y, dia, hole = fields
                 current.vias.append(Via(float(x), float(y), float(dia), float(hole)))
             elif kind == "pad":
-                layer, x, y, xs, ys = fields
-                current.pads.append(Pad(layer, float(x), float(y), float(xs), float(ys)))
+                # The rotation is optional: a copper.txt written before
+                # it was exported has six fields, and every pad in one
+                # of those was axis-aligned anyway.
+                if len(fields) == 5:
+                    layer, x, y, xs, ys = fields
+                    rot = 0.0
+                else:
+                    layer, x, y, xs, ys, rot = fields
+                current.pads.append(
+                    Pad(layer, float(x), float(y), float(xs), float(ys), float(rot))
+                )
             elif kind == "region":
                 layer, coords = fields
                 numbers = [float(v) for v in coords.split(",") if v != ""]
@@ -234,18 +270,26 @@ def build_substrates(
     pcb_half_side: float,
     chip_half_length: float,
     chip_half_side: float,
+    cavity: Cavity,
     log=logger.info,
 ) -> List[str]:
-    """Create the PCB and die dielectrics, with the die in its pocket.
+    """Create the PCB and die dielectrics, with the die in its opening.
 
     Named `pcb_substrate` and `chip_substrate` so the material rules give
     them the board and die permittivities.
 
     Altium would have been the natural place to build these, but its
     solid export is precisely the call that cannot be reached from a
-    script. Building them here is the better answer anyway: the pocket
-    can be cut exactly, and substrate and copper share one frame, so
-    they cannot drift apart.
+    script. Building them here is the better answer anyway: substrate
+    and copper share one frame, so they cannot drift apart.
+
+    What is NOT decided here is the opening. Its size, its depth and
+    whether it goes through are `cavity`'s, computed once by
+    `cavity.plan` and handed to the Altium generator in the same breath,
+    so the volume taken out of the board in the model is the feature
+    drawn on the board. That includes the wiggle room: the opening is
+    wider than the die by `cavity_clearance`, which leaves a ring of air
+    around it here exactly as it does on the bench.
     """
     origin, sizes = frame.box(
         -pcb_half_length, -pcb_half_side, pcb_half_length, pcb_half_side,
@@ -254,9 +298,19 @@ def build_substrates(
     pcb = modeler.create_box(origin=origin, sizes=sizes)
     pcb.name = "pcb_substrate"
 
+    # A through cutout takes the whole thickness; a blind pocket is
+    # milled from the top face down by its own depth, leaving a floor.
+    if cavity.through:
+        pocket_base = stack.pcb_bottom
+        pocket_height = stack.pcb_top - stack.pcb_bottom
+    else:
+        pocket_base = stack.pcb_top - cavity.depth
+        pocket_height = cavity.depth
+
     pocket_origin, pocket_sizes = frame.box(
-        -chip_half_length, -chip_half_side, chip_half_length, chip_half_side,
-        stack.chip_bottom, stack.chip_top - stack.chip_bottom,
+        -cavity.half_length, -cavity.half_side,
+        cavity.half_length, cavity.half_side,
+        pocket_base, pocket_height,
     )
     pocket = modeler.create_box(origin=pocket_origin, sizes=pocket_sizes)
     modeler.subtract("pcb_substrate", [pocket.name], keep_originals=False)
@@ -269,8 +323,8 @@ def build_substrates(
     chip.name = "chip_substrate"
 
     log(
-        "Built pcb_substrate (pocketed for the die) and chip_substrate, "
-        f"top faces flush at {stack.chip_top:g} mm."
+        f"Built pcb_substrate (a {cavity.kind} {cavity.length:g} x {cavity.side:g} mm "
+        f"for the die) and chip_substrate, top faces flush at {stack.chip_top:g} mm."
     )
     return ["pcb_substrate", "chip_substrate"]
 
@@ -308,12 +362,15 @@ def build(
         for track in tracks:
             parts.extend(_extrude_track(modeler, track, base, height, frame, log=log))
         for pad in pads:
-            origin, sizes = frame.box(
-                pad.x - pad.xsize / 2, pad.y - pad.ysize / 2,
-                pad.x + pad.xsize / 2, pad.y + pad.ysize / 2,
-                base, height,
+            # Built from its corners rather than its extents, so a
+            # rotated land comes out at its real angle. _extrude_polygon
+            # still makes a plain box of anything axis-aligned, which is
+            # every pad the generator draws itself and every connector
+            # land at a quarter turn -- the sweep is only reached by a
+            # pad at some other angle.
+            parts.append(
+                _extrude_polygon(modeler, pad.corners(), base, height, frame)
             )
-            parts.append(modeler.create_box(origin=origin, sizes=sizes).name)
 
         name = f"{prefix}_copper_{layer}"
         created[name] = _unite_as(modeler, parts, name)
@@ -372,6 +429,40 @@ def _via_barrel(modeler, via: Via, frame: Frame, bottom_face: float,
     return outer.name
 
 
+# Two vertices closer than this are the same vertex. 0.1 um is orders
+# below anything a board is made or meshed to, and four orders above
+# Altium's own coordinate quantum of 1/10000 mil (2.54 nm).
+COINCIDENT_MM = 1e-4
+
+
+def _distinct(points):
+    """`points` with consecutive duplicates dropped, treating the outline
+    as closed.
+
+    AEDT refuses a polyline containing a zero-length segment -- it comes
+    back as `GrpcApiError: Failed to execute gRPC AEDT command:
+    CreatePolyline`, which says nothing about which shape or why.
+
+    Not hypothetical, and not something the generator can avoid: the
+    vendor's own connector land arrives with three of them, where the
+    anti-pad arc meets the escape slot. Altium holds coordinates in
+    1/10000 mil, so a vertex the vendor drew once lands on a neighbour
+    when the arc is flattened -- one pair is exactly coincident and two
+    more are 10 and 30 nm apart. Every shape this project draws itself
+    is far too coarse to hit it, which is why it only appeared once a
+    real footprint was placed.
+    """
+    out: List[Tuple[float, float]] = []
+    for point in points:
+        if not out or math.dist(out[-1], point) > COINCIDENT_MM:
+            out.append(point)
+    # The outline closes, so the last vertex has to differ from the first
+    # as well -- otherwise the closing segment is the zero-length one.
+    while len(out) > 3 and math.dist(out[0], out[-1]) <= COINCIDENT_MM:
+        out.pop()
+    return out
+
+
 def _is_rectangle(points) -> bool:
     """Whether a region is an axis-aligned rectangle."""
     if len(points) != 4:
@@ -402,6 +493,16 @@ def _extrude_polygon(modeler, points, base, height, frame: Frame) -> str:
     the layer is united into one body afterwards and the result looks
     exactly like a correctly-built plane.
     """
+    # Before anything else: a duplicate vertex makes a four-cornered
+    # rectangle look like a five-sided polygon to the check below, as
+    # well as being what AEDT chokes on.
+    points = _distinct(points)
+    if len(points) < 3:
+        raise RuntimeError(
+            f"a region collapsed to {len(points)} distinct vertices and cannot be "
+            f"built as a solid -- it carries no area"
+        )
+
     if _is_rectangle(points):
         us = [u for u, _v in points]
         vs = [v for _u, v in points]
@@ -573,47 +674,49 @@ def build_bond_wires(modeler, bond_list, frame: Frame, pcb_top: float,
     return [name]
 
 
-def clear_chip_area(
+def clear_cavity_area(
     modeler,
     frame: Frame,
     stack: Stack,
-    chip_half_length: float,
-    chip_half_side: float,
+    cavity: Cavity,
     targets: Sequence[str],
     log=logger.info,
 ) -> None:
-    """Cut the die's footprint out of the board's copper.
+    """Cut the die's opening out of the board's copper.
 
-    The board is pocketed for the die, so copper crossing that footprint
-    would be hanging over a hole -- or, where the pocket is blind because
-    the board is thicker than the die, sitting under the die with no gap.
-    Either way it is copper that is not there on the real board, and a
-    stray conductor is exactly the sort of thing that moves a mode.
+    The generator already keeps copper out of the opening -- the trace
+    stops either side of it and both ground planes are drawn round it --
+    so on a board built by the current generator this cuts nothing. It
+    stays because it costs one boolean and it is the only thing standing
+    between a copper.txt written by an older generator and a model with
+    a ground plane spanning the hole in its own board. A stray conductor
+    across the cavity is exactly the sort of thing that moves a mode,
+    and it would not look wrong in a tree.
 
     The cut spans the full stack plus a copper thickness at each end, so
-    it takes the top and bottom layers together however the pocket
-    turned out. It is also a shade WIDER in plane than the die itself,
-    for the same reason a real cutout carries a fab keep-out: the die's
-    own copper (its trace and pads) runs exactly to the die edge, and an
-    exactly-coincident cut boundary shares a face with it -- which reads
-    as an intersection even though nothing actually overlaps.
+    it takes the top and bottom layers together whether the opening is
+    blind or through. In plane it is the opening exactly, with no added
+    margin: the opening already stands `cavity_clearance` clear of the
+    die's own copper, so there is no coincident face here to work around
+    -- which is what the margin that used to be here was for, back when
+    this cut was made at the die's own edge.
     """
     if not targets:
         return
 
     margin = max(stack.copper_thickness, stack.chip_metal_thickness) * 2.0
     origin, sizes = frame.box(
-        -chip_half_length - margin, -chip_half_side - margin,
-        chip_half_length + margin, chip_half_side + margin,
+        -cavity.half_length, -cavity.half_side,
+        cavity.half_length, cavity.half_side,
         stack.pcb_bottom - margin,
         (stack.pcb_top - stack.pcb_bottom) + 2 * margin,
     )
     tool = modeler.create_box(origin=origin, sizes=sizes)
     # Named rather than left as NewObject_*, so an operation that fails
     # to consume it is obvious in the tree instead of anonymous.
-    tool.name = "chip_area_cut"
-    modeler.subtract(list(targets), ["chip_area_cut"], keep_originals=False)
-    log(f"Cleared the die footprint out of {', '.join(targets)}.")
+    tool.name = "cavity_area_cut"
+    modeler.subtract(list(targets), ["cavity_area_cut"], keep_originals=False)
+    log(f"Cleared the die's opening out of {', '.join(targets)}.")
 
 
 def drill_vias(modeler, substrate: str, vias: Sequence[Via], frame: Frame,

@@ -23,6 +23,16 @@
     bonds.txt, which HFSS also reads to build the wires, so a wire
     cannot land beside its pad.
 
+  * The die's opening in the board is drawn HERE, as a real Altium
+    feature -- a Board Cutout region where it goes through, an embedded
+    Cavity region carrying its own depth where it does not. Its size,
+    its depth and which of the two it is all arrive in the parameter
+    file already decided (eigen_mode_analyze/cavity.py); this file only
+    draws. Copper that used to run straight across that footprint is
+    cut back here too, rather than downstream: a board document with a
+    ground plane spanning its own cutout is wrong on its own terms,
+    whatever a later reader does about it.
+
   * Every feature is guarded and counted separately, because Altium
     leaves no stack trace, no exit code and no dialog for a runtime
     error. The report file is the only diagnostic there is.
@@ -47,6 +57,14 @@
       PCBServer.PCBObjectFactory(kind, eNoDimension, eCreate_Default)
       PCBServer.PCBContourFactory for region outlines
       Doc.SetFileName then Doc.DoFileSave
+      Region.Kind takes eRegionKind_Copper / _Cutout / _NamedRegion /
+          _BoardCutout / _Cavity. The published API types list stops at
+          three of those, so the five were read out of AD26's own
+          Advpcb.dll rather than trusted from the documentation -- which
+          matters, because an identifier that does not exist is not a
+          catchable error here, it is a modal dialog.
+      Region.CavityHeight is a TCoord, and is only meaningful on a
+          region whose Kind is eRegionKind_Cavity.
 
   Altium internal units are 1/10000 mil; MMsToCoord converts.
 }
@@ -78,7 +96,7 @@ Const
       cross-reference as the reminder. }
     ChipCopperInset = 0.15;
 
-    { Facets per launch anti-pad arc. At r = 2.25 mm and roughly 145
+    { Facets per launch anti-pad arc. At r = 2.3 mm and roughly 145
       degrees of arc, 32 puts the chord 0.002 mm off the true circle --
       far below anything the mesh resolves. }
     VoidSteps = 32;
@@ -89,6 +107,19 @@ Const
 
 Var
     Rpt : TStringList;
+
+    { The connector library, held open across both launches.
+
+      Globals rather than passed around because the footprint is a LIVE
+      interface into the library document: it stays valid only while
+      that document is open, so it cannot be fetched, closed and reused.
+      Opening it once per launch would work too, but each open steals
+      the front document, and the fewer times that happens the fewer
+      chances there are of a primitive landing in the library. }
+    SmpDoc  : IServerDocument;
+    SmpLib  : IPCB_Library;
+    SmpIter : IPCB_LibraryIterator;
+    SmpComp : IPCB_LibComponent;
 
 Procedure Say(S : String);
 Begin
@@ -197,31 +228,52 @@ End;
   at LandHalf. That is wider than the CPW gap, so the plane steps out to
   it and back.
 
+  The die's opening is bitten out of the same inner edge, between the
+  two launches, for a different reason: there is no board there at all
+  (or, for a blind pocket, no board at this level), so a plane running
+  across it is copper over a hole. It is a plain rectangular step rather
+  than an arc, and like the anti-pad it has to be part of THIS contour
+  -- a region with a genuine interior hole would lose the hole on
+  export, since ExportCopper reads GetMainContour.
+
   Side is +1 for the plane above the line and -1 for the one below.
   LaunchX <= 0 means this board has no connector -- the die -- and the
-  plane is then a plain rectangle. }
+  plane then has no anti-pads. CavHalfL <= 0 means no opening, which is
+  again the die: it is the part that goes IN the pocket. }
 Procedure AddGroundPlane(Board : IPCB_Board;
                          Side, CopperHalfL, CopperHalfS, GndInner,
-                         LaunchX, VoidR, SlotHalf, LandHalf : Double);
+                         LaunchX, VoidR, SlotHalf, LandHalf,
+                         CavHalfL, CavHalfS : Double);
 Var
     Rgn        : IPCB_Region;
     C          : IPCB_Contour;
     XOut, XSlot : Double;
     A1, A2, Ang : Double;
     i          : Integer;
+    HasLaunch, HasCavity : Boolean;
 Begin
     Rgn := PCBServer.PCBObjectFactory(eRegionObject, eNoDimension, eCreate_Default);
     C := PCBServer.PCBContourFactory;
 
-    If (LaunchX <= 0.0) Or (VoidR <= GndInner) Or (VoidR >= CopperHalfS)
-       Or (VoidR <= SlotHalf) Or (LandHalf >= LaunchX) Then
-    Begin
-        C.AddPoint(MMsToCoord(-CopperHalfL), MMsToCoord(Side * GndInner));
-        C.AddPoint(MMsToCoord( CopperHalfL), MMsToCoord(Side * GndInner));
-        C.AddPoint(MMsToCoord( CopperHalfL), MMsToCoord(Side * CopperHalfS));
-        C.AddPoint(MMsToCoord(-CopperHalfL), MMsToCoord(Side * CopperHalfS));
-    End
-    Else
+    HasLaunch := (LaunchX > 0.0) And (VoidR > GndInner) And (VoidR < CopperHalfS)
+                 And (VoidR > SlotHalf) And (LandHalf < LaunchX);
+
+    { The step is only drawn where it is a step. An opening narrower
+      than the CPW gap does not reach the plane at all; one as wide as
+      the plane would cut it in two, which a single contour cannot
+      express; and one reaching past where the launch bites in would run
+      back on itself, which is worse than either -- a self-intersecting
+      contour has no defined shape at all. All three are refused up
+      front by constraints.check_layout; this is the guard that stops a
+      slip there from becoming a board nobody can account for. }
+    HasCavity := (CavHalfL > 0.0) And (CavHalfS > GndInner)
+                 And (CavHalfS < CopperHalfS) And (CavHalfL < CopperHalfL);
+    If HasLaunch And (CavHalfL >= LaunchX - LandHalf) Then
+        HasCavity := False;
+
+    C.AddPoint(MMsToCoord(-CopperHalfL), MMsToCoord(Side * GndInner));
+
+    If HasLaunch Then
     Begin
         { Where the void meets the gap edge, and where it meets the
           slot. Both ends of the arc have y > 0, so the angles need only
@@ -230,8 +282,6 @@ Begin
         XSlot := Sqrt(VoidR * VoidR - SlotHalf * SlotHalf);
         A1 := PiVal / 2.0 - ArcTan(-XOut / GndInner);
         A2 := PiVal / 2.0 - ArcTan(XSlot / SlotHalf);
-
-        C.AddPoint(MMsToCoord(-CopperHalfL), MMsToCoord(Side * GndInner));
 
         { the launch nearer -x: along the gap, over the void, out
           through the slot. The arc runs from A1 down to A2, which
@@ -244,7 +294,19 @@ Begin
         End;
         C.AddPoint(MMsToCoord(-LaunchX + LandHalf), MMsToCoord(Side * SlotHalf));
         C.AddPoint(MMsToCoord(-LaunchX + LandHalf), MMsToCoord(Side * GndInner));
+    End;
 
+    { the die's opening, out and back along the inner edge }
+    If HasCavity Then
+    Begin
+        C.AddPoint(MMsToCoord(-CavHalfL), MMsToCoord(Side * GndInner));
+        C.AddPoint(MMsToCoord(-CavHalfL), MMsToCoord(Side * CavHalfS));
+        C.AddPoint(MMsToCoord( CavHalfL), MMsToCoord(Side * CavHalfS));
+        C.AddPoint(MMsToCoord( CavHalfL), MMsToCoord(Side * GndInner));
+    End;
+
+    If HasLaunch Then
+    Begin
         { and the launch nearer +x, the same shape mirrored }
         C.AddPoint(MMsToCoord(LaunchX - LandHalf), MMsToCoord(Side * GndInner));
         C.AddPoint(MMsToCoord(LaunchX - LandHalf), MMsToCoord(Side * SlotHalf));
@@ -254,16 +316,165 @@ Begin
             C.AddPoint(MMsToCoord(LaunchX + VoidR * Cos(Ang)),
                        MMsToCoord(Side * VoidR * Sin(Ang)));
         End;
-
-        C.AddPoint(MMsToCoord(CopperHalfL),  MMsToCoord(Side * GndInner));
-        C.AddPoint(MMsToCoord(CopperHalfL),  MMsToCoord(Side * CopperHalfS));
-        C.AddPoint(MMsToCoord(-CopperHalfL), MMsToCoord(Side * CopperHalfS));
     End;
+
+    C.AddPoint(MMsToCoord( CopperHalfL), MMsToCoord(Side * GndInner));
+    C.AddPoint(MMsToCoord( CopperHalfL), MMsToCoord(Side * CopperHalfS));
+    C.AddPoint(MMsToCoord(-CopperHalfL), MMsToCoord(Side * CopperHalfS));
 
     Rgn.SetOutlineContour(C);
     Rgn.Layer := eTopLayer;
     Board.AddPCBObject(Rgn);
     Announce(Board, Rgn);
+End;
+
+{ The plane on the far face of the board.
+
+  A single rectangle where the die's opening is blind -- the pocket
+  takes metal off the TOP of the board and the floor underneath is still
+  there -- and four rectangles around the opening where it goes right
+  through, because there the far face is missing too.
+
+  Four rectangles rather than one with a hole in it, for the same reason
+  the coplanar planes bite the opening out of their own outline: a
+  region's interior holes do not survive ExportCopper, which reads
+  GetMainContour. Four simply-connected pieces do. They meet along their
+  shared edges and Altium unites them into one plane, so this is a
+  drafting split, not an electrical one. }
+Procedure AddBackPlane(Board : IPCB_Board;
+                       CopperHalfL, CopperHalfS, CavHalfL, CavHalfS : Double);
+Var
+    StripHalfL : Double;
+Begin
+    If CavHalfL <= 0.0 Then
+    Begin
+        AddRect(Board, -CopperHalfL, -CopperHalfS, CopperHalfL, CopperHalfS, eBottomLayer);
+        Exit;
+    End;
+
+    { Each piece is drawn only if it has any area, so an opening that
+      reaches an edge simply loses the pieces beyond it instead of
+      producing a rectangle drawn back to front -- which AddRect would
+      have built quite happily, as copper, over the hole. }
+    If CavHalfL < CopperHalfL Then
+    Begin
+        AddRect(Board, -CopperHalfL, -CopperHalfS, -CavHalfL, CopperHalfS, eBottomLayer);
+        AddRect(Board,  CavHalfL,    -CopperHalfS,  CopperHalfL, CopperHalfS, eBottomLayer);
+    End;
+
+    If CavHalfS < CopperHalfS Then
+    Begin
+        StripHalfL := CavHalfL;
+        If StripHalfL > CopperHalfL Then StripHalfL := CopperHalfL;
+        AddRect(Board, -StripHalfL, -CopperHalfS, StripHalfL, -CavHalfS,    eBottomLayer);
+        AddRect(Board, -StripHalfL,  CavHalfS,    StripHalfL,  CopperHalfS, eBottomLayer);
+    End;
+End;
+
+{ The die's opening in the board, as an Altium feature rather than a
+  note for somebody to act on later.
+
+  Two shapes, one decision, made in Python and arriving already made:
+
+  * THROUGH -- a Board Cutout region on the keep-out layer. Altium
+    treats it as a hole in the board shape, so the 3D view, the DRC and
+    the fabrication outputs all agree that there is no board there.
+
+  * BLIND -- a Cavity region on a mechanical layer, carrying the milled
+    depth in CavityHeight. This is the mechanism Altium provides for a
+    component that sits inside the board, and it is what a fabricator
+    reads a depth-milled pocket off.
+
+  Every call that could be missing from this build of the API is wrapped
+  and reported separately, because the difference between "the region is
+  there but is still plain copper" and "the region was never made" is
+  invisible in the saved file and total in what it means. What is NOT
+  wrapped is the identifiers: eRegionKind_BoardCutout, eRegionKind_Cavity
+  and eKeepOutLayer are named directly, because an undeclared identifier
+  in DelphiScript is a parse error -- a modal dialog, not an exception --
+  and no Try around it would ever run. They were confirmed present in
+  AD26 before being written here; see the header. }
+Procedure AddCavity(Board : IPCB_Board; HalfL, HalfS, Depth : Double;
+                    Through : Boolean);
+Var
+    Rgn : IPCB_Region;
+    C   : IPCB_Contour;
+Begin
+    Rgn := PCBServer.PCBObjectFactory(eRegionObject, eNoDimension, eCreate_Default);
+    C := PCBServer.PCBContourFactory;
+    C.AddPoint(MMsToCoord(-HalfL), MMsToCoord(-HalfS));
+    C.AddPoint(MMsToCoord( HalfL), MMsToCoord(-HalfS));
+    C.AddPoint(MMsToCoord( HalfL), MMsToCoord( HalfS));
+    C.AddPoint(MMsToCoord(-HalfL), MMsToCoord( HalfS));
+    Rgn.SetOutlineContour(C);
+
+    If Through Then
+    Begin
+        Rgn.Layer := eKeepOutLayer;
+        Try
+            Rgn.Kind := eRegionKind_BoardCutout;
+            Say('cavity_kind_set=ok');
+        Except
+            Say('cavity_kind_set=FAIL');
+        End;
+    End
+    Else
+    Begin
+        { Mechanical 1 is where a cavity has to live -- the Kind is only
+          offered on a mechanical layer. Enabling and naming it is best
+          effort: a cavity on a disabled layer is still in the file, it
+          just is not drawn, and losing the whole feature over a
+          cosmetic call would be the wrong trade.
+
+          Written as chained member access with no intermediate
+          variable, deliberately. A Var needs a type name, and a type
+          name that this build does not know is a PARSE error -- the
+          modal-dialog kind, which no Try around it would ever catch.
+          Member access is resolved at run time and does land in the
+          Except. LayerStack_V7 rather than LayerStack: spikes/s2_probe
+          found the latter raises. }
+        Rgn.Layer := eMechanical1;
+        Try
+            Board.LayerStack_V7.LayerObject[eMechanical1].MechanicalLayerEnabled := True;
+            Say('cavity_layer=ok');
+        Except
+            Say('cavity_layer=not_enabled');
+        End;
+        Try
+            Board.LayerStack_V7.LayerObject[eMechanical1].Name := 'Chip Cavity';
+        Except
+        End;
+        Try
+            Rgn.Kind := eRegionKind_Cavity;
+            Say('cavity_kind_set=ok');
+        Except
+            Say('cavity_kind_set=FAIL');
+        End;
+        Try
+            Rgn.CavityHeight := MMsToCoord(Depth);
+            Say('cavity_height_set=ok');
+        Except
+            Say('cavity_height_set=FAIL');
+        End;
+    End;
+
+    Board.AddPCBObject(Rgn);
+    Announce(Board, Rgn);
+
+    { Read back what the region actually is, not what it was told to be.
+      A Kind that did not take leaves a plain copper region sitting on
+      the keep-out layer, which looks like a cutout in the tree and is
+      not one. }
+    Try
+        If Rgn.Kind = eRegionKind_BoardCutout Then
+            Say('cavity_kind_readback=board_cutout')
+        Else If Rgn.Kind = eRegionKind_Cavity Then
+            Say('cavity_kind_readback=cavity')
+        Else
+            Say('cavity_kind_readback=WRONG');
+    Except
+        Say('cavity_kind_readback=unreadable');
+    End;
 End;
 
 Procedure AddVia(Board : IPCB_Board; X, Y, Dia, Hole : Double);
@@ -297,41 +508,239 @@ Begin
     Announce(Board, Pd);
 End;
 
-{ One land of the SMP connector, mapped from the connector frame onto
-  the board. A pad's extent along board x is its size along v, and along
-  y its size along u -- the two frames are rotated a quarter turn.
+{ The vendor's own footprint, out of the vendor's own library.
 
-  Top level on purpose: DelphiScript has no closures. }
-Procedure AddLand(Board : IPCB_Board; Sign, Origin, U, V, SizeU, SizeV : Double);
+  Wuerth WR-SMP 60124102122403, placed as a real component rather than
+  drawn as four pads standing where the lands are. That distinction is
+  the difference between a board that describes the fields correctly and
+  a board somebody can have made: a component brings its designator, its
+  paste and mask layers, its silkscreen and courtyard, its 3D body, and
+  a link back to the library for DRC and the bill of materials. Loose
+  pads bring none of it, and no output job can invent them.
+
+  The library is the PcbLib extracted from the shipped IntLib -- an
+  IntLib is compiled and cannot be opened as a library. Its path and the
+  footprint name arrive through the parameter file, so this script never
+  has to know which vendor part it is placing.
+
+  Rotation. The library draws the part with its centre pin exiting
+  toward -y; the board wants it exiting INBOARD at each end. For the
+  launch at -x that is +90 degrees, and at +x it is 270. Getting this
+  wrong does not look wrong -- the footprint is symmetric across the
+  signal axis, so a half-turn error leaves a launch that looks perfect
+  and faces the board edge.
+
+  Returns the number of primitives copied in, which is the only way to
+  tell a placed footprint from an empty component that reports success. }
+Function OpenSmpLibrary(LibPath, Pattern : String) : Boolean;
+Var
+    LibComp : IPCB_LibComponent;
+    nSeen   : Integer;
 Begin
-    AddPad(Board, Sign * (Origin - V), U, SizeV, SizeU, eTopLayer);
+    Result := False;
+    SmpDoc := Nil; SmpLib := Nil; SmpIter := Nil; SmpComp := Nil;
+
+    If (LibPath = '') Or (Pattern = '') Then
+    Begin
+        Say('smp_library=NOT_CONFIGURED');
+        Exit;
+    End;
+
+    SmpDoc := Client.OpenDocument('PCBLIB', LibPath);
+    If SmpDoc = Nil Then
+    Begin
+        Say('smp_library=COULD_NOT_OPEN');
+        Exit;
+    End;
+    Client.ShowDocument(SmpDoc);
+
+    Try
+        SmpLib := PCBServer.GetCurrentPCBLibrary;
+    Except
+    End;
+    If SmpLib = Nil Then
+    Begin
+        Say('smp_library=NO_LIBRARY');
+        Exit;
+    End;
+
+    Try
+        SmpIter := SmpLib.LibraryIterator_Create;
+    Except
+    End;
+    If SmpIter = Nil Then
+    Begin
+        Say('smp_library=NO_ITERATOR');
+        Exit;
+    End;
+    Try
+        SmpIter.SetState_FilterAll;
+    Except
+    End;
+
+    nSeen := 0;
+    LibComp := SmpIter.FirstPCBObject;
+    While LibComp <> Nil Do
+    Begin
+        nSeen := nSeen + 1;
+        If LibComp.Name = Pattern Then SmpComp := LibComp;
+        LibComp := SmpIter.NextPCBObject;
+    End;
+    Say('smp_library_footprints=' + IntToStr(nSeen));
+
+    If SmpComp = Nil Then
+    Begin
+        Say('smp_footprint=NOT_IN_LIBRARY');
+        Exit;
+    End;
+    Say('smp_footprint=' + Pattern);
+    Result := True;
 End;
 
-{ The SMP launch, from the vendor land pattern.
-
-  Wuerth WR-SMP 60124102122403, read out of the KiCad footprint that
-  ships with the part and passed in through the parameter file, so the
-  vendor's numbers are not retyped here.
-
-  The three ground pads form a U open toward +v, and its closed end --
-  the strap -- joins the two sides of the ground. On a coplanar board
-  those two sides are the CPW's own grounds, so the strap deliberately
-  shorts them behind the launch. That is why the centre conductor stops
-  at the signal pad and never reaches the strap. }
-Procedure AddSmpLaunch(Board : IPCB_Board; P : TStringList; Sign, Origin : Double);
+Procedure CloseSmpLibrary;
 Begin
-    AddLand(Board, Sign, Origin,
-            ParamOf(P, 'smp_sig_u', 0.0),   ParamOf(P, 'smp_sig_v', 2.9),
-            ParamOf(P, 'smp_sig_su', 0.48), ParamOf(P, 'smp_sig_sv', 1.4));
-    AddLand(Board, Sign, Origin,
-            ParamOf(P, 'smp_arml_u', -2.45), ParamOf(P, 'smp_arml_v', -0.1),
-            ParamOf(P, 'smp_arml_su', 0.3),  ParamOf(P, 'smp_arml_sv', 4.0));
-    AddLand(Board, Sign, Origin,
-            ParamOf(P, 'smp_armr_u', 2.45),  ParamOf(P, 'smp_armr_v', -0.2),
-            ParamOf(P, 'smp_armr_su', 0.3),  ParamOf(P, 'smp_armr_sv', 4.0));
-    AddLand(Board, Sign, Origin,
-            ParamOf(P, 'smp_strap_u', 0.0),  ParamOf(P, 'smp_strap_v', -2.45),
-            ParamOf(P, 'smp_strap_su', 4.0), ParamOf(P, 'smp_strap_sv', 0.3));
+    If SmpIter <> Nil Then
+    Begin
+        Try
+            SmpLib.LibraryIterator_Destroy(SmpIter);
+        Except
+        End;
+        SmpIter := Nil;
+    End;
+    If SmpDoc <> Nil Then
+    Begin
+        Try
+            Client.CloseDocument(SmpDoc);
+        Except
+        End;
+        SmpDoc := Nil;
+    End;
+    SmpLib := Nil;
+    SmpComp := Nil;
+End;
+
+{ One launch: the vendor's own footprint, placed as a real component.
+
+  Placed rather than drawn as four pads standing where the lands are,
+  and that distinction is the difference between a board that describes
+  the fields correctly and a board somebody can have made. A component
+  brings its designator, its paste and mask layers, its silkscreen and
+  courtyard, its 3D body and a link back to the library, so DRC, the
+  bill of materials, the assembly drawing and the 3D export all have
+  something to work from. Loose pads bring none of it, and no output job
+  can invent them.
+
+  Nothing here knows which vendor part it is placing: the library and
+  the footprint name arrive through the parameter file, and the board
+  around the launch is drawn from the envelope and anti-pad numbers that
+  come with them. Swapping to another manufacturer's SMP is meant to be
+  a new library and a new name, not an edit here.
+
+  Rotation. The library draws the part with its centre pin exiting
+  toward -y; the board wants it exiting INBOARD at each end -- +90
+  degrees at the -x end, 270 at the +x end. Getting this wrong does not
+  look wrong: the footprint is symmetric across the signal axis, so a
+  half-turn error leaves a launch that looks perfect and faces the board
+  edge. That is why the caller checks where the signal pad landed rather
+  than trusting the angle.
+
+  BoardDoc is taken rather than looked up. The board has no file name
+  yet -- it is saved at the end of the run -- so there is nothing to
+  look it up BY, and a primitive created while the library is the front
+  document is a primitive added to the library.
+
+  Returns how many primitives were copied in, which is the only way to
+  tell a placed footprint from an empty component reporting success. }
+Function AddSmpLaunch(Board : IPCB_Board; BoardDoc : IServerDocument;
+                      Designator : String; Sign, Origin : Double) : Integer;
+Var
+    GIter   : IPCB_GroupIterator;
+    Comp    : IPCB_Component;
+    Prim    : IPCB_Primitive;
+    NewPrim : IPCB_Primitive;
+    dx, dy  : TCoord;
+Begin
+    Result := 0;
+    If SmpComp = Nil Then Exit;
+
+    Client.ShowDocument(BoardDoc);
+
+    Comp := PCBServer.PCBObjectFactory(eComponentObject, eNoDimension, eCreate_Default);
+    Comp.Layer := eTopLayer;
+    Comp.X := MMsToCoord(Sign * Origin);
+    Comp.Y := MMsToCoord(0.0);
+    Try
+        Comp.Pattern := SmpComp.Name;
+        Comp.Name.Text := Designator;
+        Comp.Comment.Text := SmpComp.Name;
+        Comp.NameOn := True;
+        Comp.CommentOn := False;
+    Except
+        Say('smp_component_fields=partial');
+    End;
+    Board.AddPCBObject(Comp);
+    Announce(Board, Comp);
+
+    { Copy the library's primitives in, shifted from the library origin
+      to where the component sits. The shift is applied per primitive
+      rather than left to the component: a replicated primitive carries
+      its LIBRARY coordinates, and adding it to a component does not
+      move it. }
+    dx := Comp.X - SmpComp.X;
+    dy := Comp.Y - SmpComp.Y;
+
+    GIter := Nil;
+    Try
+        GIter := SmpComp.GroupIterator_Create;
+    Except
+    End;
+    If GIter <> Nil Then
+    Begin
+        Prim := GIter.FirstPCBObject;
+        While Prim <> Nil Do
+        Begin
+            NewPrim := Nil;
+            Try
+                NewPrim := Prim.Replicate;
+            Except
+            End;
+            If NewPrim <> Nil Then
+            Begin
+                Try
+                    NewPrim.MoveByXY(dx, dy);
+                    { BOTH. AddPCBObject on the component puts the
+                      primitive in the component's group; on the board
+                      it registers it with the board itself. With only
+                      the first, the footprint is placed, looks right,
+                      and is invisible to every board iterator -- which
+                      means it never reaches copper.txt and so never
+                      reaches the field solve. The in-memory pad count
+                      is what caught it: 54, when 54 bond pads plus two
+                      five-pad launches is 64. }
+                    Comp.AddPCBObject(NewPrim);
+                    Board.AddPCBObject(NewPrim);
+                    Announce(Board, NewPrim);
+                    Result := Result + 1;
+                Except
+                End;
+            End;
+            Prim := GIter.NextPCBObject;
+        End;
+        Try
+            SmpComp.GroupIterator_Destroy(GIter);
+        Except
+        End;
+    End;
+
+    { Rotated only once its children are in, so they turn with it. }
+    Try
+        If Sign < 0.0 Then
+            Comp.Rotation := 90.0
+        Else
+            Comp.Rotation := 270.0;
+    Except
+        Say('smp_rotation=FAIL');
+    End;
 End;
 
 { Bond pads, placed from the shared layout file.
@@ -485,11 +894,16 @@ End;
   On the package they are the same (the ground plane runs to the real
   board edge, which is correct); on the die they are pulled in by
   ChipCopperInset, so the die's own copper does not reach the edge --
-  see ChipCopperInset's comment for why. }
+  see ChipCopperInset's comment for why.
+
+  CavHalfL/CavHalfS are the die's opening, and CavThrough says whether
+  it goes right through -- which decides only whether the plane on the
+  far face has to go round it. Both zero on the die itself. }
 Procedure BuildBoard(Board : IPCB_Board; HalfL, HalfS, CopperHalfL, CopperHalfS,
                      Trace, Gap, ViaDia, ViaPitch, ViaClear, TraceHalfL,
                      FenceHalfL, FenceInnerL, FillHalfL,
-                     LaunchX, VoidR, SlotHalf, LandHalf : Double;
+                     LaunchX, VoidR, SlotHalf, LandHalf,
+                     CavHalfL, CavHalfS : Double; CavThrough : Boolean;
                      WantVias : Boolean; WantBackPlane : Boolean;
                      Var nVias : Integer);
 Var
@@ -501,17 +915,31 @@ Begin
       copper inset) rather than running to the physical edge. Running it
       to the edge is what let the connector land bridge the signal into
       both coplanar grounds, and separately let the die's trace meet the
-      PCB's copper with no gap between them. }
-    AddTrack(Board, -TraceHalfL, 0.0, TraceHalfL, 0.0, Trace, eTopLayer);
+      PCB's copper with no gap between them.
+
+      It also stops at the die's opening and picks up again on the far
+      side: the line does not cross the pocket, the bond wires do. A
+      track drawn straight through would be a strip of copper spanning a
+      hole on the real board, and in the model it would short the two
+      ends together in parallel with the wires it is there to represent
+      -- which reads as a perfectly good line right up until you notice
+      the bonds make no difference to the result. }
+    If (CavHalfL > 0.0) And (CavHalfL < TraceHalfL) Then
+    Begin
+        AddTrack(Board, -TraceHalfL, 0.0, -CavHalfL, 0.0, Trace, eTopLayer);
+        AddTrack(Board,  CavHalfL,   0.0,  TraceHalfL, 0.0, Trace, eTopLayer);
+    End
+    Else
+        AddTrack(Board, -TraceHalfL, 0.0, TraceHalfL, 0.0, Trace, eTopLayer);
 
     { The coplanar grounds. Not plain rectangles on the package: each
       carries the connector's circular anti-pad cut out of its inner
-      edge. See AddGroundPlane. }
+      edge, and the die's opening out of its middle. See AddGroundPlane. }
     GndInner := Trace / 2.0 + Gap;
     AddGroundPlane(Board,  1.0, CopperHalfL, CopperHalfS, GndInner,
-                   LaunchX, VoidR, SlotHalf, LandHalf);
+                   LaunchX, VoidR, SlotHalf, LandHalf, CavHalfL, CavHalfS);
     AddGroundPlane(Board, -1.0, CopperHalfL, CopperHalfS, GndInner,
-                   LaunchX, VoidR, SlotHalf, LandHalf);
+                   LaunchX, VoidR, SlotHalf, LandHalf, CavHalfL, CavHalfS);
 
     { Ground BEHIND each launch -- between the connector's outermost
       ground land and the board edge, and nowhere else.
@@ -542,9 +970,19 @@ Begin
 
     { The die carries metal on ONE face. Giving it a back plane would
       put a conductor between the die and the board that the real part
-      does not have, right where the fields are strongest. }
+      does not have, right where the fields are strongest.
+
+      A through cutout takes the far face with it, so the plane there
+      has to go round the opening. A blind pocket does not: it is milled
+      from the top and the floor underneath is still board, so the plane
+      stays whole -- which is also what makes that floor worth leaving. }
     If WantBackPlane Then
-        AddRect(Board, -CopperHalfL, -CopperHalfS, CopperHalfL, CopperHalfS, eBottomLayer);
+    Begin
+        If CavThrough Then
+            AddBackPlane(Board, CopperHalfL, CopperHalfS, CavHalfL, CavHalfS)
+        Else
+            AddBackPlane(Board, CopperHalfL, CopperHalfS, 0.0, 0.0);
+    End;
 
     nVias := 0;
     If WantVias Then
@@ -625,7 +1063,9 @@ Var
     PadW, PadH : Double;
     PortCount, PortSpace : Double;
     ShieldInset, SmpOrigin, BondSpan : Double;
-    nVias, nRing, nBonds, i : Integer;
+    CavHalfL, CavHalfS, CavDepth : Double;
+    CavThrough : Boolean;
+    nVias, nRing, nBonds, nLaunch, i : Integer;
 Begin
     Rpt := TStringList.Create;
     Rpt.Add('stage=start');
@@ -660,11 +1100,30 @@ Begin
     OutDir    := P.Values['out_dir'];
     BondPath  := OutDir + '\bonds.txt';
 
+    { The die's opening. Already decided in Python -- size, depth and
+      through-or-blind -- so nothing here re-derives it from the chip
+      and board thicknesses. The defaults are the die's own size with no
+      clearance at all and a through cut, which is the safe reading of a
+      parameter file too old to carry these: a cut that is certainly big
+      enough for the die and certainly manufacturable. }
+    CavHalfL   := ParamOf(P, 'cavity_length', ChipHalfL * 2.0) / 2.0;
+    CavHalfS   := ParamOf(P, 'cavity_side', ChipHalfS * 2.0) / 2.0;
+    CavDepth   := ParamOf(P, 'cavity_depth', ParamOf(P, 'pcb_width', 0.381));
+    CavThrough := ParamOf(P, 'cavity_through', 1.0) > 0.5;
+
     { Placed so the outermost land sits port_space from the board edge. }
     SmpOrigin := HalfL - PortSpace + ParamOf(P, 'smp_outer_v', -2.6);
 
     Say('pcb_gap_um=' + FloatToStr(Gap * 1000));
     Say('chip_gap_um=' + FloatToStr(ChipGap * 1000));
+    If CavThrough Then
+        Say('cavity_kind=through')
+    Else
+        Say('cavity_kind=pocket');
+    Say('cavity_length_mm=' + FloatToStr(CavHalfL * 2.0));
+    Say('cavity_side_mm=' + FloatToStr(CavHalfS * 2.0));
+    Say('cavity_depth_mm=' + FloatToStr(CavDepth));
+    Say('cavity_clearance_um=' + FloatToStr((CavHalfL - ChipHalfL) * 1000));
 
     Doc := Client.OpenNewDocument('PCB', 'package', 'package', False);
     If Doc = Nil Then
@@ -696,16 +1155,23 @@ Begin
                    SmpOrigin - ParamOf(P, 'smp_inner_v', 3.6),
                    { clear of the bond fingers at the die }
                    ChipHalfL + BondSpan + PadW / 2.0 + ViaDia,
-                   { ground fill starts at the strap's inner edge, so it
-                     merges with the strap -- both are ground -- and
-                     leaves the whole footprint interior alone }
-                   SmpOrigin - ParamOf(P, 'smp_strap_v', -2.45)
-                             - ParamOf(P, 'smp_strap_sv', 0.3) / 2.0,
+                   { ground fill starts at the OUTER edge of the
+                     connector's own ground land, so it butts against
+                     that land -- both are ground -- and leaves the
+                     whole footprint interior alone. It used to be taken
+                     from the ground strap's inner edge, which the KiCad
+                     land pattern had and the vendor's Altium one does
+                     not; the land's outer edge is the same place and
+                     exists on both. }
+                   SmpOrigin - ParamOf(P, 'smp_outer_v', -2.6),
                    { the launch axis, and the vendor's anti-pad around it }
                    SmpOrigin,
                    ParamOf(P, 'smp_void_r', 2.25),
                    ParamOf(P, 'smp_slot_half', 0.95),
                    ParamOf(P, 'smp_land_half', 2.65),
+                   { the die's opening, which the trace and both planes
+                     have to keep out of }
+                   CavHalfL, CavHalfS, CavThrough,
                    True, True, nVias);
         Say('package_vias=' + IntToStr(nVias));
         Say('package_body=ok');
@@ -714,21 +1180,48 @@ Begin
     End;
     PCBServer.PostProcess;
 
+    { The opening itself, after the copper: the copper is what has to
+      make room for it, so a failure here leaves a board whose planes
+      already stand clear rather than one with copper across a hole. }
     PCBServer.PreProcess;
     Try
-        For i := 0 To Round(PortCount) - 1 Do
-        Begin
-            If i = 0 Then
-                AddSmpLaunch(Board, P, -1.0, SmpOrigin)
-            Else
-                AddSmpLaunch(Board, P,  1.0, SmpOrigin);
-        End;
-        Say('package_ports=' + IntToStr(Round(PortCount)));
-        Say('signal_pad_mm=' + FloatToStr(SmpOrigin - ParamOf(P, 'smp_sig_v', 2.9)));
+        AddCavity(Board, CavHalfL, CavHalfS, CavDepth, CavThrough);
+        Say('package_cavity=ok');
     Except
-        Say('package_ports=FAIL');
+        Say('package_cavity=FAIL');
     End;
     PCBServer.PostProcess;
+
+    { The library is opened OUTSIDE the edit batch. PreProcess and
+      PostProcess bracket edits to one board, and opening a second
+      document in the middle of that -- which is what reading the
+      library is -- is not what the pair is there to describe. }
+    Say('trying=open the connector library');
+    If OpenSmpLibrary(P.Values['smp_library'], P.Values['smp_footprint']) Then
+    Begin
+        PCBServer.PreProcess;
+        Try
+            nLaunch := 0;
+            For i := 0 To Round(PortCount) - 1 Do
+            Begin
+                If i = 0 Then
+                    nLaunch := nLaunch + AddSmpLaunch(Board, Doc, 'J1', -1.0, SmpOrigin)
+                Else
+                    nLaunch := nLaunch + AddSmpLaunch(Board, Doc, 'J2',  1.0, SmpOrigin);
+            End;
+            Say('package_ports=' + IntToStr(Round(PortCount)));
+            Say('package_launch_primitives=' + IntToStr(nLaunch));
+        Except
+            Say('package_ports=FAIL');
+        End;
+        PCBServer.PostProcess;
+    End
+    Else
+        Say('package_ports=NO_LAUNCH_PLACED');
+
+    CloseSmpLibrary;
+    Client.ShowDocument(Doc);
+    Say('signal_pad_mm=' + FloatToStr(SmpOrigin - ParamOf(P, 'smp_sig_v', 2.9)));
 
     PCBServer.PreProcess;
     Try
@@ -798,6 +1291,8 @@ Begin
                        { no connector on the die, so no anti-pad either --
                          its ground planes stay plain rectangles }
                        0.0, 0.0, 0.0, 0.0,
+                       { and no opening: the die is what goes IN one }
+                       0.0, 0.0, False,
                        False, False, nVias);
             Say('chip_body=ok');
         Except

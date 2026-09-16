@@ -27,6 +27,30 @@ ALTIUM_COPPER_EXPORTER = ALTIUM_DIR / "ExportCopper.pas"
 ALTIUM_PARAMS_FILE = ALTIUM_DIR / "params.txt"
 ALTIUM_GENERATE_REPORT = ALTIUM_DIR / "generate_report.txt"
 ALTIUM_OUT_DIR = ALTIUM_DIR / "generated"
+
+# The vendor's own PCB library for the SMP launch, so the generator can
+# place the real footprint -- lands, silkscreen, courtyard and 3D body --
+# rather than drawing four pads that merely stand where the lands are.
+#
+# Extracted from the shipped `.IntLib` with `vendor/extract_intlib.py`,
+# because an IntLib is a compiled compound file and Altium cannot open
+# one as a library directly. Checked in as an artifact, the same way the
+# split connector STEP is: it is a vendor deliverable, not something a
+# run regenerates.
+ALTIUM_SMP_LIBRARY = ALTIUM_DIR / "vendor" / "Altium_WR-SMP (rev22a).PcbLib"
+
+# What that footprint actually measures, read out of the library by
+# MeasureFootprint.pas and committed. SOURCE, not per-run output: a
+# sweep never runs the measurement, it only reads the result.
+#
+# It exists because only Altium can open a PcbLib, and `design.smp`
+# needs the numbers in Python. Measuring once and committing beats
+# either retyping them off a drawing or opening Altium on every import.
+# Re-measure when the library or the footprint name changes --
+# `altium_generation.measure_footprint()` does it.
+ALTIUM_SMP_FOOTPRINT_FILE = ALTIUM_DIR / "vendor" / "footprint.txt"
+ALTIUM_FOOTPRINT_MEASURER = ALTIUM_DIR / "MeasureFootprint.pas"
+ALTIUM_MEASURE_REPORT = ALTIUM_DIR / "measure_report.txt"
 ALTIUM_COPPER_REPORT = ALTIUM_OUT_DIR / "copper_report.txt"
 # The bond layout, computed in Python and read by both Altium (for
 # the pads) and HFSS (for the wires), so the two agree.

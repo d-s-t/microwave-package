@@ -15,7 +15,7 @@ Run: python -m unittest discover -s tests
 import os
 import unittest
 
-from microwave_package.design import copper_geometry as cg
+from microwave_package.design import cavity as cav, copper_geometry as cg
 
 # A trimmed copy of real output from base_parts/altium/ExportCopper.pas.
 SAMPLE = """# copper geometry, millimetres, relative to board centre
@@ -155,6 +155,7 @@ class FakeModeler:
         self.cylinders = []
         self.polylines = []
         self.thickened = []
+        self.swept = []
         self.unites = []
         self.subtractions = []
         self._n = 0
@@ -181,6 +182,13 @@ class FakeModeler:
     def thicken_sheet(self, sheet, height, **kw):
         self.thickened.append((sheet.name, height))
 
+    def sweep_along_vector(self, name, vector, **kw):
+        # Returns truthy like the real one: the builder treats a falsy
+        # result as "the sheet never became a solid" and raises, because
+        # a sheet carries no copper.
+        self.swept.append((name, list(vector)))
+        return True
+
     def unite(self, parts):
         self.unites.append(list(parts))
 
@@ -197,6 +205,12 @@ STACK = cg.Stack(
     chip_bottom=1.0, chip_top=1.381,
     copper_thickness=0.035, chip_metal_thickness=0.0002,
 )
+
+# A 6.3 mm die with 0.1 mm of wiggle room each side, as the shipped
+# defaults give it. THROUGH matches STACK, where the die is as thick as
+# the board; POCKET is the same opening milled part way down.
+THROUGH = cav.Cavity(half_length=3.25, half_side=3.25, depth=0.381, through=True)
+POCKET = cav.Cavity(half_length=3.25, half_side=3.25, depth=0.2, through=False)
 
 
 class TestStackCopperTop(unittest.TestCase):
@@ -222,7 +236,7 @@ class TestStackCopperTop(unittest.TestCase):
 class TestSubstrates(unittest.TestCase):
     def test_names_are_the_ones_the_material_rules_expect(self):
         modeler = FakeModeler()
-        made = cg.build_substrates(modeler, FRAME, STACK, 13, 5, 3.15, 3.15,
+        made = cg.build_substrates(modeler, FRAME, STACK, 13, 5, 3.15, 3.15, THROUGH,
                                    log=lambda _m: None)
         self.assertEqual(made, ["pcb_substrate", "chip_substrate"])
 
@@ -230,7 +244,7 @@ class TestSubstrates(unittest.TestCase):
         """The die sits IN the board, not on it -- so the pocket has to
         be cut, and cut for keeps."""
         modeler = FakeModeler()
-        cg.build_substrates(modeler, FRAME, STACK, 13, 5, 3.15, 3.15,
+        cg.build_substrates(modeler, FRAME, STACK, 13, 5, 3.15, 3.15, THROUGH,
                             log=lambda _m: None)
         self.assertEqual(len(modeler.subtractions), 1)
         target, _tools, keep = modeler.subtractions[0]
@@ -239,7 +253,7 @@ class TestSubstrates(unittest.TestCase):
 
     def test_die_and_board_finish_flush(self):
         modeler = FakeModeler()
-        cg.build_substrates(modeler, FRAME, STACK, 13, 5, 3.15, 3.15,
+        cg.build_substrates(modeler, FRAME, STACK, 13, 5, 3.15, 3.15, THROUGH,
                             log=lambda _m: None)
         tops = [o[1] + s[1] for o, s in modeler.boxes]
         self.assertTrue(all(abs(t - STACK.pcb_top) < 1e-9 for t in tops),
@@ -247,7 +261,7 @@ class TestSubstrates(unittest.TestCase):
 
     def test_substrate_is_the_right_size_on_the_right_axes(self):
         modeler = FakeModeler()
-        cg.build_substrates(modeler, FRAME, STACK, 13, 5, 3.15, 3.15,
+        cg.build_substrates(modeler, FRAME, STACK, 13, 5, 3.15, 3.15, THROUGH,
                             log=lambda _m: None)
         _, sizes = modeler.boxes[0]
         self.assertAlmostEqual(sizes[0], 26.0)
@@ -463,29 +477,121 @@ if __name__ == "__main__":
     unittest.main()
 
 
-class TestClearChipArea(unittest.TestCase):
-    """The board is pocketed for the die, so copper must not cross that
-    footprint -- it would be hanging over a hole, or trapped under the
-    die where the real board has none. Either way it is a stray
-    conductor exactly where the fields are strongest."""
+class TestCoincidentVertices(unittest.TestCase):
+    """A vertex drawn twice is a zero-length segment, and AEDT refuses a
+    polyline containing one.
+
+    It refuses it as `GrpcApiError: Failed to execute gRPC AEDT command:
+    CreatePolyline`, which names neither the shape nor the reason, so
+    this is worth catching here rather than four stages downstream.
+
+    The case is real: the vendor's own connector land arrives with three
+    of them where the anti-pad arc meets the escape slot -- one pair
+    exactly coincident, two more 10 and 30 nm apart. Altium holds
+    coordinates in 1/10000 mil, so a vertex the vendor drew once lands
+    on its neighbour when the arc is flattened. Nothing this project
+    draws itself is fine enough to hit it, which is why it only
+    appeared once a real footprint was placed.
+    """
+
+    def test_an_exactly_repeated_vertex_is_dropped(self):
+        pts = [(0, 0), (1, 0), (1, 0), (1, 1), (0, 1)]
+        self.assertEqual(cg._distinct(pts), [(0, 0), (1, 0), (1, 1), (0, 1)])
+
+    def test_a_vertex_a_few_nanometres_away_is_dropped_too(self):
+        """Exact equality is not the test -- the vendor's worst pair is
+        10 nm apart, which is just as unbuildable and does not compare
+        equal."""
+        pts = [(0, 0), (1, 0), (1 + 1e-8, 0), (1, 1), (0, 1)]
+        self.assertEqual(len(cg._distinct(pts)), 4)
+
+    def test_a_real_vertex_is_kept(self):
+        """The tolerance has to stay far below any feature on the board.
+        0.1 um is four orders above Altium's coordinate quantum and
+        orders below anything that is made or meshed."""
+        pts = [(0, 0), (1, 0), (1.001, 0), (1, 1), (0, 1)]
+        self.assertEqual(len(cg._distinct(pts)), 5)
+
+    def test_the_outline_is_treated_as_closed(self):
+        """The closing segment runs from the last vertex back to the
+        first, so a last vertex sitting on the first is a zero-length
+        segment as surely as any other."""
+        pts = [(0, 0), (1, 0), (1, 1), (0, 1), (0, 0)]
+        self.assertEqual(cg._distinct(pts), [(0, 0), (1, 0), (1, 1), (0, 1)])
+
+    def test_a_clean_outline_is_left_alone(self):
+        pts = [(0, 0), (1, 0), (1, 1), (0, 1)]
+        self.assertEqual(cg._distinct(pts), pts)
+
+    def test_a_rectangle_with_a_repeated_corner_still_builds_as_a_box(self):
+        """Otherwise the duplicate makes a four-cornered rectangle look
+        like a five-sided polygon, and it is swept instead -- which is
+        the slower path, and the one that fails."""
+        modeler = FakeModeler()
+        board = cg.BoardCopper(name="package", regions=[
+            cg.Region(cg.TOP, ((-1, -1), (1, -1), (1, -1), (1, 1), (-1, 1))),
+        ])
+        cg.build(modeler, board, FRAME, top_face=STACK.pcb_top,
+                 bottom_face=STACK.pcb_bottom, thickness=STACK.copper_thickness,
+                 prefix="pcb", log=lambda _m: None)
+        self.assertEqual(len(modeler.boxes), 1, "should have taken the box path")
+        self.assertEqual(modeler.polylines, [])
+
+    def test_a_shaped_region_is_swept_without_a_zero_length_segment(self):
+        """The case that actually failed: a shape that genuinely has to
+        be swept, carrying a duplicate vertex into the modeller."""
+        import math
+
+        modeler = FakeModeler()
+        pts = ((-1, -1), (1, -1), (1, 0), (1, 0), (0.5, 0.5), (-1, 1))
+        board = cg.BoardCopper(name="package", regions=[cg.Region(cg.TOP, pts)])
+        cg.build(modeler, board, FRAME, top_face=STACK.pcb_top,
+                 bottom_face=STACK.pcb_bottom, thickness=STACK.copper_thickness,
+                 prefix="pcb", log=lambda _m: None)
+        self.assertEqual(len(modeler.polylines), 1)
+        handed = modeler.polylines[0]
+        for i, point in enumerate(handed):
+            nxt = handed[(i + 1) % len(handed)]
+            self.assertGreater(
+                math.dist(point, nxt), cg.COINCIDENT_MM,
+                "a zero-length segment reached the modeller",
+            )
+
+    def test_a_region_with_no_area_is_refused_rather_than_built(self):
+        """Everything collapsing to one point is not a solid, and a
+        silent empty body is worse than a named failure."""
+        modeler = FakeModeler()
+        board = cg.BoardCopper(name="package", regions=[
+            cg.Region(cg.TOP, ((1, 1), (1, 1), (1, 1), (1, 1))),
+        ])
+        with self.assertRaises(RuntimeError):
+            cg.build(modeler, board, FRAME, top_face=STACK.pcb_top,
+                     bottom_face=STACK.pcb_bottom,
+                     thickness=STACK.copper_thickness, prefix="pcb",
+                     log=lambda _m: None)
+
+
+class TestClearCavityArea(unittest.TestCase):
+    """The board has an opening cut in it for the die, so copper must
+    not cross that footprint -- it would be hanging over a hole, or
+    trapped under the die where the real board has none. Either way it
+    is a stray conductor exactly where the fields are strongest."""
 
     def _clear(self, targets=("pcb_copper_top", "pcb_copper_bottom")):
         modeler = FakeModeler()
-        cg.clear_chip_area(modeler, FRAME, STACK, 3.15, 3.15, targets,
-                           log=lambda _m: None)
+        cg.clear_cavity_area(modeler, FRAME, STACK, THROUGH, targets,
+                             log=lambda _m: None)
         return modeler
 
-    def test_the_cut_is_wider_than_the_die_footprint(self):
-        """A shade wider on purpose, the way a real cutout carries a fab
-        keep-out: the die's own copper runs exactly to the die edge, and
-        an exactly-coincident cut boundary shares a face with it, which
-        an interference check flags even though nothing overlaps."""
+    def test_the_cut_follows_the_opening_not_the_die(self):
+        """The opening is what the copper has to clear, and it is wider
+        than the die by the assembly clearance. Cutting at the die's own
+        edge would leave a 0.1 mm lip of copper overhanging the hole."""
         modeler = self._clear()
         _origin, sizes = modeler.boxes[0]
-        margin = max(STACK.copper_thickness, STACK.chip_metal_thickness) * 2.0
-        self.assertAlmostEqual(sizes[0], 6.3 + 2 * margin)
-        self.assertAlmostEqual(sizes[2], 6.3 + 2 * margin)
-        self.assertGreater(sizes[0], 6.3)
+        self.assertAlmostEqual(sizes[0], THROUGH.length)
+        self.assertAlmostEqual(sizes[2], THROUGH.side)
+        self.assertGreater(sizes[0], 6.3, "wider than the 6.3 mm die")
 
     def test_the_cut_spans_past_both_copper_layers(self):
         """It has to reach above the top copper and below the bottom
@@ -496,24 +602,79 @@ class TestClearChipArea(unittest.TestCase):
         self.assertLess(low, STACK.pcb_bottom - STACK.copper_thickness)
         self.assertGreater(high, STACK.pcb_top + STACK.copper_thickness)
 
+    def test_a_blind_pocket_is_cut_through_both_layers_too(self):
+        """The opening only reaches part way into the board, but the
+        copper that must go is on both faces of it: the top layer is
+        inside the pocket, and the bottom layer is under the die with no
+        gap. Cutting only as deep as the pocket would leave the second."""
+        modeler = FakeModeler()
+        cg.clear_cavity_area(modeler, FRAME, STACK, POCKET,
+                             ["pcb_copper_top", "pcb_copper_bottom"],
+                             log=lambda _m: None)
+        origin, sizes = modeler.boxes[0]
+        self.assertLess(origin[1], STACK.pcb_bottom - STACK.copper_thickness)
+        self.assertGreater(origin[1] + sizes[1], STACK.pcb_top + STACK.copper_thickness)
+
     def test_both_layers_are_cut_together(self):
         modeler = self._clear()
         target, tools, keep = modeler.subtractions[0]
         self.assertEqual(target, ["pcb_copper_top", "pcb_copper_bottom"])
-        self.assertEqual(tools, ["chip_area_cut"])
+        self.assertEqual(tools, ["cavity_area_cut"])
         self.assertFalse(keep, "the cutting tool must be consumed")
 
     def test_the_tool_is_named_not_left_anonymous(self):
         """An unnamed leftover shows up in the tree as NewObject_* with
         no material, which is how a stray body hides in plain sight."""
         modeler = self._clear()
-        self.assertEqual(modeler[modeler.boxes and "box1"].name, "chip_area_cut")
+        self.assertEqual(modeler[modeler.boxes and "box1"].name, "cavity_area_cut")
 
     def test_nothing_to_cut_is_a_no_op(self):
         modeler = FakeModeler()
-        cg.clear_chip_area(modeler, FRAME, STACK, 3.15, 3.15, [], log=lambda _m: None)
+        cg.clear_cavity_area(modeler, FRAME, STACK, THROUGH, [], log=lambda _m: None)
         self.assertEqual(modeler.boxes, [])
         self.assertEqual(modeler.subtractions, [])
+
+
+class TestPocketedSubstrate(unittest.TestCase):
+    """What gets taken out of the board, and how deep.
+
+    The opening is Altium's feature; these pin that the model reproduces
+    it rather than re-deriving something die-shaped of its own."""
+
+    def _pocket(self, cavity):
+        modeler = FakeModeler()
+        cg.build_substrates(modeler, FRAME, STACK, 13, 5, 3.15, 3.15, cavity,
+                            log=lambda _m: None)
+        # boxes[0] is the board itself, boxes[1] the tool taken out of it.
+        return modeler.boxes[1]
+
+    def test_the_opening_is_the_size_altium_drew_not_the_die(self):
+        _origin, sizes = self._pocket(THROUGH)
+        self.assertAlmostEqual(sizes[0], THROUGH.length)
+        self.assertAlmostEqual(sizes[2], THROUGH.side)
+
+    def test_a_through_cutout_goes_all_the_way_through(self):
+        origin, sizes = self._pocket(THROUGH)
+        self.assertAlmostEqual(origin[1], STACK.pcb_bottom)
+        self.assertAlmostEqual(origin[1] + sizes[1], STACK.pcb_top)
+
+    def test_a_blind_pocket_leaves_a_floor(self):
+        """Milled down from the top face by its own depth -- so the
+        board survives underneath, which is the whole difference between
+        the two shapes."""
+        origin, sizes = self._pocket(POCKET)
+        self.assertAlmostEqual(sizes[1], POCKET.depth)
+        self.assertAlmostEqual(origin[1] + sizes[1], STACK.pcb_top)
+        self.assertGreater(origin[1], STACK.pcb_bottom, "a floor is left under it")
+
+    def test_the_die_itself_stays_its_own_size(self):
+        """The clearance is room around the die, not a bigger die."""
+        modeler = FakeModeler()
+        cg.build_substrates(modeler, FRAME, STACK, 13, 5, 3.15, 3.15, THROUGH,
+                            log=lambda _m: None)
+        _origin, sizes = modeler.boxes[2]
+        self.assertAlmostEqual(sizes[0], 6.3)
+        self.assertAlmostEqual(sizes[2], 6.3)
 
 
 class TestWireBondNaming(unittest.TestCase):
@@ -700,30 +861,93 @@ class TestExportedLayoutIsSane(unittest.TestCase):
         """
         return [p for p in self.pkg.pads if abs(p.x) >= self.launch_inner - 1e-6]
 
+    def test_no_region_carries_a_zero_length_segment(self):
+        """Against the real board, because the shape that failed came
+        out of a vendor library rather than out of this generator."""
+        import math
+
+        for r in self.pkg.regions + (self.chip.regions if self.chip else []):
+            pts = cg._distinct(r.points)
+            self.assertGreaterEqual(len(pts), 3)
+            worst = min(math.dist(pts[i], pts[(i + 1) % len(pts)])
+                        for i in range(len(pts)))
+            self.assertGreater(worst, cg.COINCIDENT_MM)
+
     def test_the_centre_conductor_stops_at_the_launch(self):
         """Running it further is what let the connector land bridge the
         signal into both grounds."""
-        track = self.pkg.tracks[0]
-        self.assertAlmostEqual(abs(track.x2), self.launch_x, places=6)
-        self.assertLess(abs(track.x2), self.half_l)
+        ends = [abs(x) for t in self.pkg.tracks for x in (t.x1, t.x2)]
+        self.assertAlmostEqual(max(ends), self.launch_x, places=6)
+        self.assertLess(max(ends), self.half_l)
 
-    def test_the_trace_stops_before_the_ground_strap(self):
-        """The strap joins the two ground sides. The signal reaching it
-        would be a dead short."""
-        track = self.pkg.tracks[0]
-        strap = max(self.pkg.pads, key=lambda p: p.x)
-        self.assertGreater(strap.x - strap.xsize / 2, track.x2)
+    def test_the_connectors_ground_keeps_the_anti_pad_clear(self):
+        """The vendor holds ground VOID_RADIUS from the centre pin, and
+        that clearance is what sets the impedance of the coax-to-
+        coplanar transition. A ground land inside it would be a short --
+        and united into one body it would leave no seam to notice.
+
+        This replaces a check against the ground strap, which the KiCad
+        land pattern had and the vendor Altium one does not. The
+        clearance is the thing that mattered; the strap was only where
+        it happened to be measured.
+        """
+        import math
+
+        from microwave_package.design import smp
+
+        origin = smp.launch_origin(self.half_l, self.v["port_space"])
+        grounds = [p for p in self._launch_pads()
+                   if abs(abs(p.x) - self.launch_x) > 1e-6]
+        self.assertTrue(grounds, "no ground lands found at the launch")
+        for pad in grounds:
+            axis = origin if pad.x > 0 else -origin
+            nearest = min(math.hypot(x - axis, y) for x, y in pad.corners())
+            self.assertGreaterEqual(
+                nearest, smp.VOID_RADIUS - 1e-6,
+                f"a ground land reaches {nearest:.4f} mm of the pin, inside the "
+                f"{smp.VOID_RADIUS} mm anti-pad",
+            )
 
     def test_the_launch_lands_port_space_from_the_board_edge(self):
-        outer = max(p.x + p.xsize / 2 for p in self.pkg.pads)
+        """Measured over ALL the launch copper, not just its pads. On
+        this footprint the outermost copper is the ground land, which
+        reaches 0.35 mm further back than any pad -- taking the pads
+        alone would call the connector correctly placed while it sat
+        that much too far out."""
+        from microwave_package.design import smp
+
+        origin = smp.launch_origin(self.half_l, self.v["port_space"])
+        # The connector's ground land: the region that straddles the
+        # launch axis and stays within the land's own half-width. The
+        # coplanar planes reach the board edge and the ground fill runs
+        # out to it deliberately, so neither may be counted here.
+        lands = [
+            r for r in self.pkg.regions
+            if max(abs(y) for _x, y in r.points) <= smp.GROUND_LAND_HALF + 1e-6
+            and min(abs(x) for x, _y in r.points) <= origin
+            <= max(abs(x) for x, _y in r.points)
+        ]
+        self.assertEqual(len(lands), 2, "expected one ground land per launch")
+        outer = max(
+            max(max(abs(x) for x, _y in r.points) for r in lands),
+            max(abs(x) for p in self.pkg.pads for x, _y in p.corners()),
+        )
         self.assertAlmostEqual(outer, self.half_l - self.v["port_space"], places=6)
 
     def test_the_signal_land_stays_inside_the_gap(self):
-        """It is wider than the trace, but must still clear the grounds."""
+        """It is wider than the trace, but must still clear the grounds.
+
+        Measured across the pad CORNERS, because the placed connector is
+        rotated a quarter turn and xsize/ysize are in the pad own frame.
+        Read as board extents they are swapped, which reports a 1.4 mm
+        land as 1.4 mm ACROSS the line -- comfortably into both grounds,
+        and comfortably passing a test that read them that way.
+        """
         lands = [p for p in self.pkg.pads if abs(abs(p.x) - self.launch_x) < 1e-6]
         self.assertTrue(lands, "no signal land at the launch centre")
         for pad in lands:
-            self.assertLess(pad.ysize / 2, self.gap_edge)
+            across = max(abs(y) for _x, y in pad.corners())
+            self.assertLess(across, self.gap_edge)
 
     def test_no_pad_inboard_of_the_launch_touches_the_ground(self):
         """The bond pads.
@@ -864,13 +1088,13 @@ class TestExportedLayoutIsSane(unittest.TestCase):
         from microwave_package.design import smp
 
         origin = smp.launch_origin(self.half_l, self.v["port_space"])
-        strap_inner = origin - smp.GROUND_STRAP[1] - smp.GROUND_STRAP[3] / 2.0
+        land_outer = origin - smp.OUTER_V
         for r in self._fills():
             inner = min(abs(p[0]) for p in r.points)
             self.assertGreaterEqual(
-                inner, strap_inner - 1e-6,
-                f"fill starts at {inner:.4f}, inboard of the strap at "
-                f"{strap_inner:.4f} -- it is filling the footprint interior",
+                inner, land_outer - 1e-6,
+                f"fill starts at {inner:.4f}, inboard of the connector ground "
+                f"land at {land_outer:.4f} -- it is filling the footprint interior",
             )
 
     def test_the_ground_fill_still_does_its_job(self):
@@ -881,12 +1105,12 @@ class TestExportedLayoutIsSane(unittest.TestCase):
         from microwave_package.design import smp
 
         origin = smp.launch_origin(self.half_l, self.v["port_space"])
-        strap_outer = origin - smp.GROUND_STRAP[1] + smp.GROUND_STRAP[3] / 2.0
+        land_outer = origin - smp.OUTER_V
         for r in self._fills():
             inner = min(abs(p[0]) for p in r.points)
             outer = max(abs(p[0]) for p in r.points)
-            self.assertLessEqual(inner, strap_outer + 1e-6,
-                                 "the fill no longer meets the connector's ground strap")
+            self.assertLessEqual(inner, land_outer + 1e-6,
+                                 "the fill no longer meets the connector ground land")
             self.assertAlmostEqual(outer, self.half_l, places=6)
 
     def test_the_dies_own_copper_stops_short_of_the_edge(self):

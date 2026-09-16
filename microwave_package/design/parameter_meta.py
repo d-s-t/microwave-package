@@ -28,6 +28,7 @@ LABELS: Dict[str, str] = {
     "chip_side": "Chip width (across feedline)",
     "pcb_width": "PCB thickness",
     "chip_width": "Chip thickness",
+    "cavity_clearance": "Cavity clearance to chip",
     "pedestal_depth": "Pedestal depth",
     # ports and clearances
     "port_count": "Number of ports",
@@ -69,7 +70,7 @@ LABELS: Dict[str, str] = {
 MICRON_PARAMETERS = {
     "pcb_width", "chip_width", "route_clearence", "chip_leg",
     "copper_thickness", "chip_metal_thickness",
-    "via_gnd_clearance", "bond_wire_diameter",
+    "via_gnd_clearance", "bond_wire_diameter", "cavity_clearance",
 }
 
 # Counts rather than lengths: no unit at all.
@@ -126,6 +127,7 @@ GROUPS: List[dict] = [
             "pcb_length", "pcb_side",
             "chip_length", "chip_side",
             "pcb_width", "chip_width",
+            "cavity_clearance",
             "pedestal_depth",
         ],
     },

@@ -422,7 +422,7 @@ def build_layout(hfss, combo_dir: str, dimensions_txt_content: str,
     a run built from a SolidWorks-only assembly is still perfectly valid,
     and was the only kind of run until the Altium stage existed.
     """
-    from ..design import copper_geometry as cg, equations as eq
+    from ..design import cavity as cavity_plan, copper_geometry as cg, equations as eq
 
     copper_path = os.path.join(combo_dir, "copper.txt")
     if not os.path.isfile(copper_path):
@@ -467,12 +467,19 @@ def build_layout(hfss, combo_dir: str, dimensions_txt_content: str,
 
     _drop_superseded_solids(hfss, log)
 
+    # The opening the die sits in. Asked for rather than worked out here,
+    # because the Altium generator asked the same function the same
+    # question when it drew the board -- so the hole in the model is the
+    # feature on the board, wiggle room and all.
+    opening = cavity_plan.plan(v)
+
     cg.build_substrates(
         hfss.modeler, frame, stack,
         pcb_half_length=pcb_length / 2.0,
         pcb_half_side=pcb_side / 2.0,
         chip_half_length=v.get("chip_length", 6.3) / 2.0,
         chip_half_side=v.get("chip_side", 6.3) / 2.0,
+        cavity=opening,
         log=log,
     )
 
@@ -483,12 +490,12 @@ def build_layout(hfss, combo_dir: str, dimensions_txt_content: str,
             top_face=stack.pcb_top, bottom_face=stack.pcb_bottom,
             thickness=stack.copper_thickness, prefix="pcb", log=log,
         )
-        # The board is pocketed for the die, so any copper crossing that
-        # footprint is copper the real board does not have.
-        cg.clear_chip_area(
-            hfss.modeler, frame, stack,
-            chip_half_length=v.get("chip_length", 6.3) / 2.0,
-            chip_half_side=v.get("chip_side", 6.3) / 2.0,
+        # The generator already draws the copper round the opening, so
+        # this normally cuts nothing. It is here for the copper.txt an
+        # older generator wrote, where it is the difference between a
+        # model and a model with a ground plane across its own cutout.
+        cg.clear_cavity_area(
+            hfss.modeler, frame, stack, opening,
             targets=[name for names in made.values() for name in names],
             log=log,
         )

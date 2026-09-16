@@ -72,6 +72,50 @@ class TestCheckLayout(unittest.TestCase):
     def test_nonpositive_trace_width_is_rejected(self):
         self.assertIsNotNone(constraints.check_layout(dict(defaults(), cpw_trace_width=0.0)))
 
+
+class TestTheDiesOpening(unittest.TestCase):
+    """The opening is cut larger than the die, so everything that used
+    to be checked against the die edge has to be checked against the
+    opening instead. A feature can be comfortably clear of the die and
+    still hanging over the hole it sits in."""
+
+    def test_a_negative_clearance_is_rejected(self):
+        """It would cut the opening smaller than the die."""
+        reason = constraints.check_layout(dict(defaults(), cavity_clearance=-0.05))
+        self.assertIsNotNone(reason)
+        self.assertIn("cavity_clearance", reason)
+
+    def test_zero_clearance_is_allowed(self):
+        """A tight fit is a choice, not a mistake -- the check is only
+        that the opening is not made smaller than the part."""
+        self.assertIsNone(constraints.check_layout(dict(defaults(), cavity_clearance=0.0)))
+
+    def test_bond_fingers_hanging_over_the_opening_are_caught(self):
+        """bonding_clearence is measured from the DIE edge, so a
+        clearance that is wide enough for the die can still put half the
+        finger over the hole once the opening is cut past it."""
+        values = dict(defaults(), bonding_clearence=0.2, cavity_clearance=0.15)
+        reason = constraints.check_layout(values)
+        self.assertIsNotNone(reason)
+        self.assertIn("bond fingers", reason)
+        self.assertIn("cavity_clearance", reason)
+
+    def test_the_same_clearance_is_fine_once_the_opening_is_tight(self):
+        """The pairing is what fails, not either number on its own."""
+        values = dict(defaults(), bonding_clearence=0.2, cavity_clearance=0.0)
+        reason = constraints.check_layout(values)
+        self.assertNotIn("bond fingers", reason or "")
+
+    def test_an_opening_wider_than_the_board_is_caught(self):
+        """The coplanar planes are each one region with the opening
+        stepped out of their inner edge. An opening reaching the copper
+        edge would cut a plane in two, which one region cannot be."""
+        values = dict(defaults(), chip_side=9.9, cavity_clearance=0.2)
+        reason = constraints.check_layout(values)
+        self.assertIsNotNone(reason)
+        self.assertIn("opening", reason)
+        self.assertIn("across the feedline", reason)
+
     def test_every_message_names_a_parameter_to_change(self):
         """A reason the reader cannot act on is barely better than none."""
         names = set(defaults())

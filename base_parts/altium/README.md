@@ -13,6 +13,7 @@ run to establish.
 | Path | What it is |
 |---|---|
 | `GenerateFromParams.pas` | The generator. Creates both boards from `params.txt`. |
+| `MeasureFootprint.pas` | Reads a connector footprint out of a PcbLib into `vendor/footprint.txt`. |
 | `VerifyGenerated.pas` | Reads the saved files back and counts what is in them. |
 | `params.txt` | Written by `eigen_mode_analyze.altium_generation`. Not source — regenerated each run. |
 | `generated/` | Output boards. Not tracked; recreated from `default.txt` every run. |
@@ -110,7 +111,34 @@ PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,
 C := PCBServer.PCBContourFactory;
 C.AddPoint(MMsToCoord(x), MMsToCoord(y));
 R.SetOutlineContour(C);
+
+{ Region kinds -- a region is only a cutout or a cavity if you say so }
+R.Kind := eRegionKind_BoardCutout;   { on eKeepOutLayer }
+R.Kind := eRegionKind_Cavity;        { on a mechanical layer }
+R.CavityHeight := MMsToCoord(depth); { only means anything on a Cavity }
 ```
+
+`TRegionKind` is `eRegionKind_Copper`, `_Cutout`, `_NamedRegion`,
+`_BoardCutout`, `_Cavity`. Altium's published *PCB API Types* page lists
+a three-value `TPolyRegionKind` and no cavity at all, so these five were
+read straight out of `AD26/System/Advpcb.dll` instead of trusted from the
+documentation:
+
+```powershell
+$a = [Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes("C:\Program Files\Altium\AD26\System\Advpcb.dll"))
+[regex]::Matches($a, 'eRegionKind_[A-Za-z0-9_]+') | % { $_.Value } | Sort-Object -Unique
+```
+
+Worth the trouble, and worth repeating for any constant you are not sure
+of: **a wrong identifier is a parse error, which is the modal-dialog
+kind.** No `Try` around it will ever run, and the run costs a full
+timeout. A wrong *member* (`R.SomeProperty`) is resolved at run time and
+does land in the `Except`, which is why `AddCavity` wraps every call and
+reports each one separately but names its constants bare.
+
+The same trick settles layer constants: `eKeepOutLayer`, `eMechanical1`
+and the rest of `TLayer` live together in `Altium.SDK.dll` and
+`Altium.Edp.Interfaces.dll`, not in `Advpcb.dll`.
 
 Wrap batches of edits in `PCBServer.PreProcess` / `PostProcess`.
 
@@ -150,6 +178,92 @@ them — change `default.txt` or the generator.
 `eigen_mode_analyze/cpw.py`, per substrate, and arrives as `pcb_cpw_gap` and
 `chip_cpw_gap`. Copper thickness matters here more than it looks: 35 µm across a
 ~112 µm gap moves the 50 Ω gap to 271 µm, so ignoring it lands you at 35 Ω.
+
+**The launch is the vendor's own footprint, placed from the vendor's own
+library.** Not four pads standing where the lands are — a real component, with
+its designator (`J1`/`J2`), paste and mask layers, silkscreen, courtyard and 3D
+body. That is the difference between a board that describes the fields correctly
+and a board somebody can have made: DRC, the BOM, the assembly drawing and the
+3D/STEP export all need a component, and no output job can invent one from loose
+pads.
+
+The library is `vendor/Altium_WR-SMP (rev22a).PcbLib`, extracted from the shipped
+IntLib by `vendor/extract_intlib.py` — an IntLib is a compiled compound document
+(and its embedded PcbLib is zlib-wrapped inside it), so Altium cannot open one as
+a library directly.
+
+Worth knowing: **Würth ship different land patterns for this part in their Altium
+and KiCad libraries.** Four 0.5 mm square ground pads in a ±2.6 land with an
+r=2.30 anti-pad, against a U of 0.3 × 4.0 bars in a ±2.65 land with r=2.25. The
+signal pad is identical in both, and both come to the same −2.60 outermost
+copper, which is why moving to the Altium one left the launch position, the via
+fence and the HFSS connector placement untouched. The Altium one is
+authoritative here because it is the one being placed.
+
+**Nothing in this script names a manufacturer,** and neither does Python. The
+library path and footprint name arrive in `params.txt`; the board around the
+launch is drawn from six values, and those are *measured*, not typed.
+
+`MeasureFootprint.pas` reads the named footprint inside Altium and writes
+`vendor/footprint.txt` — every pad, the ground land's vertices, the 3D body.
+`eigen_mode_analyze/smp.py` derives the rest from that file: the envelope, the
+anti-pad radius, the escape slot. Run it with
+`altium_generation.measure_footprint()`; a sweep never does, because its output
+is a committed source file that only changes when the connector does.
+
+**Which way the vendor drew it is not assumed.** The frame is taken from pin 1 —
+the centre conductor, the one convention every coax launch shares — and the
+pattern rotated until that pad lies on +v. A rotation, never a reflection. Würth
+point the pin at −y; the next manufacturer need not.
+
+A footprint this board cannot build a launch around is refused by name, which is
+the point: three of the nine footprints in this library are, each for a real
+reason. `60124002122502` is through-hole (pads on the multi-layer with a 1.3 mm
+drill, which nothing here drills for) and `60114202122305` is an edge-mount
+variant with three copper shapes instead of one.
+
+That last pair cost a bug worth recording: `IsCopper` originally accepted only
+the top and bottom layers, so **a through-hole footprint measured as having no
+pads at all** and passed silently. Through-hole pads live on `eMultiLayer`.
+
+Two traps the placement cost:
+
+- A replicated primitive must be added to **both** the component and the board.
+  With only `Comp.AddPCBObject`, the footprint is placed, looks perfectly right,
+  and is invisible to every board iterator — so it never reaches `copper.txt`
+  and never reaches the field solve. The in-memory pad count is what caught it.
+- `TopXSize`/`TopYSize` are in the **pad's** frame, not the board's. A rotated
+  1.4 × 0.48 signal land still reports 0.48 × 1.4, so `ExportCopper` now writes
+  `Pad.Rotation` and the builder works from the pad's corners. Without it the
+  launch is built across the line instead of along it, at full width into both
+  grounds.
+
+**The die's opening is a real Altium feature, not a note for later.** A
+**Board Cutout** region on the keep-out layer where the die is as thick as the
+board or thicker, and an **embedded Cavity** region on Mechanical 1 carrying the
+milled depth in `CavityHeight` where it is thinner. It used to be cut only in
+HFSS, which left the `.PcbDoc` claiming a board that was never going to be made:
+ground plane, trace and back plane all ran straight across the hole.
+
+Everything that used to cross it now stops at it — the centre conductor picks up
+again on the far side, both coplanar planes step out around it, and the back
+plane is split into four pieces where the cut goes through. (Four, not one with a
+hole in it: `ExportCopper` reads `GetMainContour`, so a region's interior holes
+do not survive the export.)
+
+The opening is **larger than the die by `cavity_clearance` on every side** — a
+die and a milled pocket of equal size do not assemble. Depth gets no matching
+allowance: cutting deeper does not help the die fit, it drops the die below the
+board's top face and lengthens every bond wire.
+
+Which of the two shapes, how big and how deep are all decided in
+`eigen_mode_analyze/cavity.py` and arrive in `params.txt` already decided, so
+this script only draws. HFSS asks that same module the same question when it
+builds the model, which is the only reason the hole in the model is the feature
+on the board. The rule is *not* `chip_width >= pcb_width`: a pocket leaving less
+than `MIN_FLOOR` of laminate under the die cannot be milled, so it becomes a
+cutout instead — and with the shipped defaults the two thicknesses are the same
+number, sitting exactly on that knife edge.
 
 ## What the spikes settled
 
