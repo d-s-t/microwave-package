@@ -91,10 +91,11 @@ class TestTheDiesOpening(unittest.TestCase):
         self.assertIsNone(constraints.check_layout(dict(defaults(), cavity_clearance=0.0)))
 
     def test_bond_fingers_hanging_over_the_opening_are_caught(self):
-        """bonding_clearence is measured from the DIE edge, so a
-        clearance that is wide enough for the die can still put half the
-        finger over the hole once the opening is cut past it."""
-        values = dict(defaults(), bonding_clearence=0.2, cavity_clearance=0.15)
+        """The finger sits between the PCB's opening and the lid's
+        limit, so what has to be checked is whether that strip of board
+        was ever as wide as the pad. Cutting the opening further out
+        eats into it from the inside."""
+        values = dict(defaults(), bonding_clearence=0.35, cavity_clearance=0.15)
         reason = constraints.check_layout(values)
         self.assertIsNotNone(reason)
         self.assertIn("bond fingers", reason)
@@ -102,9 +103,19 @@ class TestTheDiesOpening(unittest.TestCase):
 
     def test_the_same_clearance_is_fine_once_the_opening_is_tight(self):
         """The pairing is what fails, not either number on its own."""
-        values = dict(defaults(), bonding_clearence=0.2, cavity_clearance=0.0)
+        values = dict(defaults(), bonding_clearence=0.35, cavity_clearance=0.0)
         reason = constraints.check_layout(values)
         self.assertNotIn("bond fingers", reason or "")
+
+    def test_the_clearance_the_finger_needs_is_named_in_the_message(self):
+        """The message says the number outright rather than leaving it
+        to be worked back out of the geometry -- this check is the one
+        that turned a working run into a failed one, so the way out of
+        it should not need deriving."""
+        values = dict(defaults(), bonding_clearence=0.35, cavity_clearance=0.15)
+        reason = constraints.check_layout(values)
+        # bond_pad_length + cavity_clearance = 0.3 + 0.15
+        self.assertIn("0.45", reason)
 
     def test_an_opening_wider_than_the_board_is_caught(self):
         """The coplanar planes are each one region with the opening

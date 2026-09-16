@@ -1153,8 +1153,14 @@ Begin
                    ViaDia, ViaPitch, ViaClear,
                    SmpOrigin - ParamOf(P, 'smp_sig_v', 2.9),
                    SmpOrigin - ParamOf(P, 'smp_inner_v', 3.6),
-                   { clear of the bond fingers at the die }
-                   ChipHalfL + BondSpan + PadW / 2.0 + ViaDia,
+                   { clear of the bond fingers at the die. The finger
+                     sits midway between the opening (CavHalfL) and the
+                     limit bonding_clearence sets for the lid, because
+                     that limit is the lid's and not the finger's --
+                     MUST MATCH finger_offset in microwave_package/
+                     design/constraints.py, which places the bonds.txt
+                     this reads its pad positions from. }
+                   (CavHalfL + ChipHalfL + BondSpan) / 2.0 + PadW / 2.0 + ViaDia,
                    { ground fill starts at the OUTER edge of the
                      connector's own ground land, so it butts against
                      that land -- both are ground -- and leaves the

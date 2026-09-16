@@ -10,7 +10,9 @@ import tempfile
 import unittest
 
 from microwave_package import paths
-from microwave_package.design import altium_generation as ag, bonds, equations as eq
+from microwave_package.design import (
+    altium_generation as ag, bonds, constraints, equations as eq,
+)
 
 
 def defaults():
@@ -178,6 +180,70 @@ class TestPadsStayOnTheDiesCopper(unittest.TestCase):
         xs = sorted({round(b.chip_x, 9) for b in side})
         self.assertAlmostEqual(xs[0], -xs[-1], places=9,
                                msg="the row is off centre, so one end runs long")
+
+    def test_the_finger_sits_midway_between_the_opening_and_the_lid(self):
+        """bonding_clearence is how far out the LID has to stay clear,
+        not where the finger goes. The finger splits the difference
+        between that limit and the edge of the PCB's opening.
+
+        Both ends of that span matter. Put it on the lid's limit -- as
+        this did first -- and every wire ends up against the surface the
+        clearance was reserved to hold away from it. Centre it on the
+        DIE's edge instead, as the first fix did, and you are aiming at
+        the middle of a span whose inner part is over the hole, so the
+        pad lands half off the board."""
+        band = self.v["bonding_clearence"]
+        cav = self.v["cavity_clearance"]
+        for half, coords in (
+            (self.v["chip_length"] / 2.0, [abs(b.pcb_x) for b in self.bonds
+                                           if abs(b.pcb_x) > self.v["chip_length"] / 2.0]),
+            (self.v["chip_side"] / 2.0, [abs(b.pcb_y) for b in self.bonds
+                                         if abs(b.pcb_y) > self.v["chip_side"] / 2.0]),
+        ):
+            self.assertTrue(coords)
+            finger = max(coords)
+            opening, lid = half + cav, half + band
+            self.assertAlmostEqual(finger, (opening + lid) / 2.0, places=9)
+            self.assertAlmostEqual(finger - opening, lid - finger, places=9,
+                                   msg="not centred between the opening and the lid")
+            self.assertGreater(finger, opening, "the finger is over the hole")
+
+    def test_the_finger_leaves_room_on_both_sides_of_itself(self):
+        """The point of the middling, stated as the two gaps it buys:
+        room between the pad and the die's opening on the inside, and
+        room between the pad and the lid's limit on the outside. They
+        come out equal, which is what makes it the middle."""
+        band = self.v["bonding_clearence"]
+        half = self.v["chip_length"] / 2.0
+        pad = self.v["bond_pad_length"]
+        cav = self.v["cavity_clearance"]
+        finger = half + constraints.finger_offset(band, cav)
+        opening = half + cav
+
+        inside = (finger - pad / 2.0) - opening
+        outside = (half + band) - (finger + pad / 2.0)
+        self.assertGreater(inside, 0.0, "the pad hangs over the die's opening")
+        self.assertGreater(outside, 0.0, "the pad reaches the lid's limit")
+        self.assertAlmostEqual(inside, outside, places=9)
+
+    def test_the_clearance_the_run_that_caught_this_used_still_builds(self):
+        """A run pinned at 0.5 mm built fine, then stopped building when
+        the finger was first moved inward -- the offset was measured from
+        the die's edge, so half of it was spent over the opening. It is
+        measured from the opening now, and 0.5 has to keep working."""
+        values = dict(self.v, bonding_clearence=0.5)
+        self.assertIsNone(constraints.check_layout(values))
+
+    def test_widening_the_band_moves_the_finger_out_by_half_as_much(self):
+        """The band is the lid's, so growing it has to buy clearance at
+        BOTH ends -- not hand all of it to the wire."""
+        wider = bonds.layout(dict(self.v, bonding_clearence=self.v["bonding_clearence"] + 1.0),
+                             self.gap)
+        half = self.v["chip_length"] / 2.0
+        before = max(abs(b.pcb_x) for b in self.bonds)
+        after = max(abs(b.pcb_x) for b in wider)
+        self.assertAlmostEqual(after - before, 0.5, places=9)
+        self.assertGreater(after, half)
 
     def test_the_die_is_still_bonded_all_the_way_round(self):
         """Bounding the rows must not bound them out of existence."""

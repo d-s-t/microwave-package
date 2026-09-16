@@ -36,7 +36,7 @@
 
 "wing_width"= 1	' mounting wing width
 
-"bonding_clearence"= 0.4	' gap from the die edge to the bond fingers
+"bonding_clearence"= 0.6	' how far out from the die the lid must stay clear; the bond fingers sit midway between the PCB opening and this
 
 "no_distortion" = 1 ' (boolean) when set to 1, no distortions are present. when set to 0, distortions are added to the box and holes to the PCB.
 

@@ -23,6 +23,11 @@ The arrangement:
     same setback the via fence uses. Landing them at the gap edge puts
     metal where the field between line and ground is strongest.
 
+  * The board-side fingers sit midway between the edge of the PCB's
+    opening and the limit `bonding_clearence` sets for the lid -- not
+    on that limit, and not measured from the die's own edge, which is
+    inside the hole. See `constraints.finger_offset`.
+
   * Every pad lands WHOLLY on the die's copper, and no two pads touch.
     See `_row` for why that needs saying.
 
@@ -36,7 +41,7 @@ import math
 from dataclasses import dataclass
 from typing import Dict, List
 
-from .constraints import CHIP_COPPER_INSET
+from .constraints import CHIP_COPPER_INSET, finger_offset
 
 SIGNAL = "signal"
 GROUND = "ground"
@@ -86,9 +91,13 @@ def layout(values: Dict[str, float], gap: float) -> List[Bond]:
     `gap` is the board's solved CPW gap; it decides how far out the
     ground bonds have to start at the feedline ends.
     """
+    # `span` below is the finger's own offset from the die's edge. It is
+    # NOT bonding_clearence: that is where the lid has to stay clear to,
+    # and the finger goes midway between the opening and it.
     chip_half_l = values.get("chip_length", 6.3) / 2.0
     chip_half_s = values.get("chip_side", 6.3) / 2.0
-    span = values.get("bonding_clearence", 1.0)
+    span = finger_offset(values.get("bonding_clearence", 1.0),
+                         values.get("cavity_clearance", 0.1))
     pitch = values.get("bond_pad_pitch", 0.4)
     pad_w = values.get("bond_pad_width", 0.15)
     inset = values.get("bond_pad_length", 0.3)

@@ -224,6 +224,40 @@ def check_combination(values: Dict[str, float]) -> Optional[str]:
 CHIP_COPPER_INSET = 0.15
 
 
+def finger_offset(bonding_clearence: float, cavity_clearance: float) -> float:
+    """How far past the die's edge the board's bond finger sits.
+
+    `bonding_clearence` is not that distance. It is how far out from the
+    die the LID has to stay clear, so that closing the package does not
+    put metal on the wires -- which is why the SolidWorks equations file
+    drives the chip lid from it. The finger belongs INSIDE that, not on
+    its edge: a finger at the outer edge lands every wire against the
+    very surface the clearance was reserved to hold away from it.
+
+    So the finger goes in the middle. The middle of WHAT is the part
+    that is easy to get wrong, and did get wrong once: the band runs
+    from the edge of the PCB's opening out to
+    `chip_half + bonding_clearence`, NOT from the die's own edge. The
+    die sits in a pocket cut `cavity_clearance` wider than it is, so the
+    innermost slice of the die-to-lid gap is over a hole -- there is no
+    board there for a finger to sit on, and centring on the die's edge
+    aims at thin air. Splitting the difference between the opening and
+    the lid's limit puts equal metal on both sides of the pad, which is
+    what the parameter is for.
+
+    That also asks the least of `bonding_clearence` that geometry
+    allows: the band has to be wider than the pad, and no more, so
+
+        bonding_clearence > bond_pad_length + cavity_clearance
+
+    It lives here rather than in `bonds` because `bonds` already imports
+    this module for CHIP_COPPER_INSET, and the checks below need the
+    same number. One definition, so a finger and the rule that says it
+    fits cannot drift apart.
+    """
+    return (cavity_clearance + bonding_clearence) / 2.0
+
+
 def check_layout(values: Dict[str, float]) -> Optional[str]:
     """Why this combination's layout cannot be built, or None if it can.
 
@@ -316,32 +350,38 @@ def check_layout(values: Dict[str, float]) -> Optional[str]:
         )
 
     # The bond fingers sit on the board, so they have to be clear of the
-    # opening -- not merely clear of the die. `bonding_clearence` is
-    # measured from the die edge, and the opening is cut past that edge
-    # by cavity_clearance, so a finger can be comfortably clear of the
-    # die and still half over the hole. Each row is checked on the axis
-    # it runs along, because a pad is bond_pad_length across at the
-    # feedline ends and bond_pad_width across along the sides.
+    # opening -- not merely clear of the die. `finger_offset` already
+    # centres them between the opening and the lid's limit, so what is
+    # left to check is whether that gap was ever wide enough for the pad
+    # in the first place. Each row is checked on the axis it runs along,
+    # because a pad is bond_pad_length across at the feedline ends and
+    # bond_pad_width across along the sides.
     for span, pad, extent, axis, pad_name in (
         (get("chip_length") / 2.0, get("bond_pad_length"),
          opening.half_length, "along the feedline", "bond_pad_length"),
         (get("chip_side") / 2.0, get("bond_pad_width"),
          opening.half_side, "across the feedline", "bond_pad_width"),
     ):
-        finger_inner = span + get("bonding_clearence") - pad / 2.0
+        offset = finger_offset(get("bonding_clearence"), get("cavity_clearance"))
+        finger_inner = span + offset - pad / 2.0
         if finger_inner <= extent:
             return (
                 f"the bond fingers reach in to {_fmt(finger_inner)} mm {axis}, but the "
                 f"die's opening already extends to {_fmt(extent)} mm, so they would hang "
-                f"over it -- increase bonding_clearence, or reduce cavity_clearance or "
-                f"{pad_name}"
+                f"over it -- there is only {_fmt(get('bonding_clearence') - get('cavity_clearance'))} "
+                f"mm of board between the opening and the lid's limit and the pad is "
+                f"{_fmt(pad)} mm, so bonding_clearence wants to be more than "
+                f"{_fmt(pad + get('cavity_clearance'))} mm here; increase it, or reduce "
+                f"cavity_clearance or {pad_name}"
             )
 
     # The shield ring goes OUTSIDE the bond fingers. Working inward from
     # the die the order is: die, opening, bond fingers, shield ring. Get
     # that backwards and the ring's vias land on the fingers -- which the
     # generator would build without complaint.
-    finger_outer = get("chip_length") / 2.0 + get("bonding_clearence") + get("bond_pad_length") / 2.0
+    finger_outer = (get("chip_length") / 2.0
+                    + finger_offset(get("bonding_clearence"), get("cavity_clearance"))
+                    + get("bond_pad_length") / 2.0)
     ring_inner = get("chip_length") / 2.0 + get("shield_ring_inset") - via_dia / 2.0
     if ring_inner <= finger_outer:
         return (
@@ -356,7 +396,8 @@ def check_layout(values: Dict[str, float]) -> Optional[str]:
     # aperture in the box wall, not this footprint.
     from . import smp
 
-    finger_x = get("chip_length") / 2.0 + get("bonding_clearence")
+    finger_x = (get("chip_length") / 2.0
+                + finger_offset(get("bonding_clearence"), get("cavity_clearance")))
     launch_inner = smp.launch_inner_edge(half_length, get("port_space"))
     if finger_x >= launch_inner:
         return (
