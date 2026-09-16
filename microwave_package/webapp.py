@@ -68,6 +68,7 @@ _STAGE_DISPLAY = {
     "postprocessing": ("Post-processing", "busy"),
     "plotting": ("Plotting results", "busy"),
     "complete": ("Complete", "ok"),
+    "stopped": ("Stopped", "muted"),
     "error": ("Error", "bad"),
 }
 
@@ -198,6 +199,18 @@ def _start_pipeline_thread(run: Run) -> None:
 def _is_running(run_id: str) -> bool:
     thread = _active_threads.get(run_id)
     return thread is not None and thread.is_alive()
+
+
+def _is_stopping(run_id: str) -> bool:
+    """Stop asked for, but the run has not got there yet.
+
+    There is always a gap: none of SolidWorks, Altium or AEDT can be
+    interrupted mid-call, so a stop lands when each of them next comes
+    back. Worth saying on the page rather than leaving the button looking
+    like it did nothing.
+    """
+    stop_event = _stop_events.get(run_id)
+    return bool(stop_event is not None and stop_event.is_set() and _is_running(run_id))
 
 
 _XML_DECLARATION = re.compile(r"^\s*<\?xml.*?\?>\s*", re.S)
@@ -522,6 +535,23 @@ def new_run():
     return redirect(url_for("run_status", run_id=run.run_id))
 
 
+@app.route("/runs/<run_id>/stop", methods=["POST"])
+def stop_run(run_id):
+    """Ask a running pipeline to stop.
+
+    Cooperative, not a kill: each stage finishes the combination it is in
+    the middle of -- there is no way to interrupt a SolidWorks rebuild or
+    an HFSS import part-way -- records it, and the thread ends. Nothing
+    already built is lost, and Resume picks the run back up exactly where
+    it stopped.
+    """
+    stop_event = _stop_events.get(run_id)
+    if stop_event is not None and _is_running(run_id):
+        stop_event.set()
+        logger.info("Stop requested for run %s.", run_id)
+    return redirect(url_for("run_status", run_id=run_id))
+
+
 @app.route("/runs/<run_id>/resume", methods=["POST"])
 def resume_run(run_id):
     if not _is_running(run_id):
@@ -550,6 +580,34 @@ def set_run_label(run_id):
 MAX_SKIPPED_ROWS = 100
 
 
+def _phase_meta() -> list:
+    """The phase list the page draws with -- names only, no server-side
+    plumbing. All of them, including a phase this run does not use, so a
+    position in the per-combination string always means the same thing."""
+    return [
+        {
+            "key": phase["key"], "label": phase["label"], "what": phase["what"],
+            "parallel": bool(phase.get("parallel")),
+            # What to call a phase that is waiting on something other than
+            # this machine -- "Queued", not "Analysis".
+            "waiting_label": phase.get("waiting_label"),
+        }
+        for phase in run_manager.PHASES
+    ]
+
+
+def _phase_csv(run, combo: dict) -> str:
+    """One combination's phases, in `run_manager.PHASES` order, as the one
+    string the page needs.
+
+    Comma-separated rather than an object per combination: this goes out
+    on every poll for every combination, and a sweep can have thousands.
+    The page splits it and paints one segment per phase.
+    """
+    states = run_manager.phase_states(combo, run.analysis_settings.get("use_altium", True))
+    return ",".join(states[key] for key in run_manager.PHASE_KEYS)
+
+
 def _combo_rows(run) -> dict:
     """The combinations to render, split into the ones being built and a
     capped sample of the ones skipped for not fitting."""
@@ -559,6 +617,10 @@ def _combo_rows(run) -> dict:
         (skipped if combo.get("skip_reason") else buildable)[combo_id] = combo
     return {
         "buildable": buildable,
+        # Kept beside the combinations rather than inside them: those are
+        # the live state dicts, and anything put in one is written back
+        # into state.json the next time a stage records progress.
+        "phases": {combo_id: _phase_csv(run, combo) for combo_id, combo in buildable.items()},
         "skipped_sample": dict(itertools.islice(skipped.items(), MAX_SKIPPED_ROWS)),
         "skipped_total": len(skipped),
         "skipped_hidden": max(len(skipped) - MAX_SKIPPED_ROWS, 0),
@@ -582,7 +644,7 @@ def run_status(run_id):
     )
 
     stage = run.state.get("stage")
-    progress = run_manager.progress_of(run.state)
+    progress = run.progress
     started = _run_started(run)
     try:
         updated = _dt.datetime.fromtimestamp(os.path.getmtime(run.state_path))
@@ -597,7 +659,9 @@ def run_status(run_id):
         run=run,
         run_name=run.label or _fmt_dt(started) or run.run_id,
         rows=_combo_rows(run),
+        phases=_phase_meta(),
         is_running=_is_running(run_id),
+        is_stopping=_is_stopping(run_id),
         plot_exists=plot_exists,
         progress=progress,
         stage_display=_stage_display(stage, progress["failed"]),
@@ -673,6 +737,33 @@ def open_combo_in_aedt(run_id, combo_id):
     return jsonify(ok=True, path=project_file)
 
 
+def _clear_queued_task(queue, task_id: str) -> None:
+    """Remove one task from the queue, wherever it has got to.
+
+    `queue_common.remove_task` clears a FAILED task and the task's
+    project folder, which is most of the job and not all of it: a task
+    still waiting in `pending`, or one the worker has already picked up
+    into `in_progress`, is left behind by it. That is worth more than
+    tidiness -- a task belonging to a run that no longer exists is the
+    worker spending hours on results nobody can read, and the run page
+    that would have shown them is gone.
+
+    A task the worker is in the middle of is removed too. It will fail
+    on its own missing file, which is the right outcome: the run it
+    belonged to does not exist any more.
+    """
+    queue_common.remove_task(queue, task_id)  # failed/*.task.json + projects/<task_id>
+    for folder in (queue.pending, queue.in_progress, queue.done, queue.failed):
+        task_file = os.path.join(folder, f"{task_id}.task.json")
+        for path in (task_file, task_file + ".error.log"):
+            if not os.path.exists(path):
+                continue
+            try:
+                os.remove(path)
+            except OSError as exc:
+                logger.warning("Could not remove %s: %s", path, exc)
+
+
 @app.route("/runs/<run_id>/delete", methods=["POST"])
 def delete_run(run_id):
     """Delete a run's folder, and any queue files its tasks still have.
@@ -681,19 +772,29 @@ def delete_run(run_id):
     the form has to come back with the run's own id typed in, and a run
     that is still going is refused outright.
     """
+    # Every refusal below says so on the page it returns to. Redirecting
+    # in silence is indistinguishable from a button that does nothing,
+    # and the only account of what happened was a line in the server log
+    # nobody watching the browser would ever see.
     if _is_running(run_id):
         logger.warning("Refusing to delete run %s -- it is still running.", run_id)
-        return redirect(url_for("run_status", run_id=run_id))
+        return redirect(url_for(
+            "run_status", run_id=run_id,
+            error="This run is still going. Stop it first, then delete it.",
+        ))
 
     if request.form.get("confirm_run_id", "").strip() != run_id:
         logger.warning("Refusing to delete run %s -- confirmation did not match.", run_id)
-        return redirect(url_for("run_status", run_id=run_id))
+        return redirect(url_for(
+            "run_status", run_id=run_id,
+            error=f"Nothing was deleted -- the confirmation did not match {run_id}.",
+        ))
 
     try:
         run = Run.load(run_id)
     except (OSError, ValueError):
         logger.warning("Cannot load run %s to delete it.", run_id)
-        return redirect(url_for("index"))
+        return redirect(url_for("index", error=f"Could not read run {run_id} to delete it."))
 
     # anything of this run's still sitting in the queue goes too, so
     # deleting a run really does leave nothing behind
@@ -705,10 +806,7 @@ def delete_run(run_id):
         if not task_id:
             continue
         try:
-            queue_common.remove_task(queue, task_id)
-            done_task_file = os.path.join(queue.done, f"{task_id}.task.json")
-            if os.path.exists(done_task_file):
-                os.remove(done_task_file)
+            _clear_queued_task(queue, task_id)
         except OSError as exc:
             logger.warning("Could not clear queue files for task %s: %s", task_id, exc)
 
@@ -727,13 +825,14 @@ def run_common_dimensions(run_id):
 def run_status_json(run_id):
     """What the run page polls every few seconds.
 
-    Only the three status fields go out, and only for combinations that
-    can still change -- a skipped one never will, and its parameters and
-    reason were already rendered into the page. Sending the whole state
-    instead meant a large sweep re-sent megabytes on every poll.
+    Each combination goes out as one short string -- its phases, in
+    order -- and only for combinations that can still change: a skipped
+    one never will, and its parameters and reason were already rendered
+    into the page. Sending the whole state instead meant a large sweep
+    re-sent megabytes on every poll.
     """
     run = Run.load(run_id)
-    prog = run_manager.progress_of(run.state)
+    prog = run.progress
     return jsonify({
         "run_id": run.run_id,
         "stage": run.state.get("stage"),
@@ -741,14 +840,11 @@ def run_status_json(run_id):
         "progress": prog,
         "error": run.state.get("error"),
         "is_running": _is_running(run_id),
+        "is_stopping": _is_stopping(run_id),
         # so the page can reload itself once, when the plot first appears
         "plot_ready": os.path.exists(os.path.join(run.plots_dir, plotting.PLOT_FILENAME)),
         "combos": {
-            combo_id: {
-                "step_status": combo.get("step_status"),
-                "queue_status": combo.get("queue_status"),
-                "post_status": combo.get("post_status"),
-            }
+            combo_id: _phase_csv(run, combo)
             for combo_id, combo in run.state["combos"].items()
             if not combo.get("skip_reason")
         },
@@ -987,24 +1083,28 @@ def combo_details(run_id, combo_id):
         rows = df[df["combo_id"] == combo_id]
         for _, row in rows.iterrows():
             values = []
-            for column, label in plotting.RESULT_FIELDS.items():
+            for column, label in plotting.result_fields().items():
                 if column in row and pd.notna(row[column]):
                     values.append({"label": label, "value": f"{float(row[column]):.6g}"})
             results.append({"mode": int(row["mode"]) if pd.notna(row.get("mode")) else None,
                             "values": values})
 
     has_project = _combo_project_file(run, combo_id) is not None
+    states = run_manager.phase_states(combo, run.analysis_settings.get("use_altium", True))
     return jsonify({
         "combo_id": combo_id,
         "swept": described(combo.get("params", {})),
         "pinned": described(run.parameter_defaults),
-        "status": {
-            "step": combo.get("step_status") or ("skipped" if combo.get("skip_reason") else "pending"),
-            "queue": combo.get("queue_status") or "not queued",
-            "post": combo.get("post_status") or "pending",
-        },
+        # Every phase, in order, with the word for what it is doing --
+        # the same seven the row's bar is made of, spelled out.
+        "status": [
+            {"label": phase["label"], "what": phase["what"], "state": states[phase["key"]]}
+            for phase in run_manager.PHASES
+        ],
         "skip_reason": combo.get("skip_reason"),
-        "error": combo.get("post_error") or combo.get("step_error"),
+        "altium_error": combo.get("altium_error"),
+        "error": (combo.get("post_error") or combo.get("model_error")
+                  or combo.get("step_error")),
         "results": results,
         "actions": {
             "step_url": (url_for("combo_step_file", run_id=run_id, combo_id=combo_id)

@@ -11,24 +11,29 @@ which calls `run_pipeline()` directly in a background thread.
 
 A run solves either for the cavity's eigenmodes or for the package's
 S-parameters, and the same stages carry both -- see hfss/registry.py.
+
+The local half of a run -- Altium, SolidWorks, AEDT -- is three queues
+draining at the same time rather than one loop (see workflow/stages.py);
+this module is what feeds them, hands each finished model to the worker,
+and does everything after that. Ctrl-C (or the web UI's Stop button)
+stops a run between combinations, leaving it resumable.
 """
 from __future__ import annotations
 
 import argparse
 import logging
+import signal
 import sys
 import threading
-from typing import Callable, List, Optional
+from typing import Callable, Dict, List, Optional
 
 from ansys_analyze_common import queue_common
 
 from . import paths
-from .design import equations as eq
-from .design import step_generation
 from .design.sweep import SweepParameter, expand_values, split_swept_and_fixed
 from .hfss import model_builder, registry
 from .hfss.driven import ports
-from .workflow import plotting, postprocess, resilient_io, results
+from .workflow import plotting, postprocess, resilient_io, results, stages
 from .workflow.monitor import monitor_run
 from .workflow import run_manager
 from .workflow.run_manager import Run
@@ -98,16 +103,44 @@ class _QueueProbe:
         return self.reachable
 
 
+def _stopped(stop_event) -> bool:
+    return stop_event is not None and stop_event.is_set()
+
+
 def run_pipeline(run: Run, queue: "queue_common.QueuePaths", log=logger.info, stop_event=None) -> None:
-    """Runs whichever stages `run` hasn't already completed. Safe to call
-    again on a `run` that was interrupted mid-stage -- every stage skips
-    combos it already finished."""
-    equations_path = str(paths.DEFAULT_EQUATIONS_FILE)
-    assembly_path = str(paths.DEFAULT_ASSEMBLY_FILE)
+    """Runs whatever `run` hasn't already finished. Safe to call again on
+    a run that was interrupted or stopped part-way -- every stage skips
+    what it already did, per combination and per program.
+
+    `stop_event` is how a run is stopped from outside (the web UI's Stop
+    button, Ctrl-C on the command line). Nothing is abandoned when it is
+    set: each stage finishes the combination it is in the middle of --
+    none of SolidWorks, Altium or AEDT can be interrupted mid-call
+    anyway -- records it, and the run ends where it stood, resumable.
+    """
+    try:
+        _run_stages(run, queue, log=log, stop_event=stop_event)
+    except resilient_io.Stopped as stopped:
+        # Somewhere that was waiting for the share gave up because this
+        # run was stopped. That is the stop working, not a failure, so it
+        # does not become the run's error.
+        logger.info("Run %s: %s", run.run_id, stopped)
+    finally:
+        # Whatever happened, nothing is working on this run any more --
+        # so a combination still marked as being drawn, built or read is
+        # a leftover, and saying so on the page would be a lie. (A
+        # process that was killed outright cannot do this, which is why
+        # the stages clear it on the way in as well.)
+        stages.clear_stale_progress(run)
+        if _stopped(stop_event) and run.state.get("stage") != "complete":
+            run.set_stage("stopped")
+            log(f"Run {run.run_id} stopped. Nothing already built is lost -- "
+                "resume it to carry on from where it stopped.")
+
+
+def _run_stages(run: Run, queue: "queue_common.QueuePaths", log=logger.info, stop_event=None) -> None:
     analysis_settings = run.config["analysis_settings"]
     parameter_defaults = run.config.get("parameter_defaults", {})
-    combos = {cid: c["params"] for cid, c in run.state["combos"].items()}
-    aedt_version = analysis_settings.get("aedt_version")
 
     # Combinations whose geometry is built but which could not be handed
     # over, because the queue was unreachable at the time.
@@ -116,69 +149,55 @@ def run_pipeline(run: Run, queue: "queue_common.QueuePaths", log=logger.info, st
     # Start checking whether the share is reachable straight away, on its
     # own thread, so the first STEP files and AEDT models start building
     # now instead of after the ~20s a disconnected mapped drive costs to
-    # answer. `queue_combo` consults the result when a model is actually
+    # answer. `handoff` consults the result when a model is actually
     # ready to hand over -- by then the answer is almost always already in.
     log(f"Checking the queue at {queue.root} in the background "
         "(a disconnected network drive can take ~20s to answer); "
         "geometry building starts now.")
     queue_probe = _QueueProbe(queue, log=log).start()
 
-    def queue_combo(combo_id: str) -> None:
-        """Build the AEDT model for one finished STEP, and hand it over
-        if the queue is reachable.
+    def handoff(combo_id: str, object_names: Dict[str, str]) -> None:
+        """Copy one built model into the queue, if the queue is there.
 
-        The two halves are deliberately separate. Building the model is
-        local work that needs AEDT and no network, so it happens either
-        way; only the copy into the queue needs the share. That is what
-        makes a run preparable offline: everything that can be computed
-        here is computed, and all that is left for later is the handoff.
+        The AEDT stage builds and this hands over, and the two are kept
+        apart deliberately: building is local work that needs AEDT and no
+        network, so it happens either way, and only the copy needs the
+        share. That is what makes a run preparable offline -- everything
+        computable here is computed, and all that is left for later is
+        the handoff.
+
+        Consults the background probe rather than checking the share
+        here: by now it has almost always answered, so this does not
+        block. If it somehow hasn't (a very slow share), waiting for it
+        beats deferring a handoff that would have gone through.
         """
-        combo = run.state["combos"][combo_id]
-        if combo.get("task_id") or combo.get("step_status") != "done":
-            return
-
-        dimensions_txt_content = eq.read_file(f"{run.combo_dir(combo_id)}/dimensions.txt")
-        object_names = model_builder.build_model(
-            combo_id, combo["step_path"], dimensions_txt_content, run, analysis_settings,
-            aedt_version, analysis_settings.get("student_version", True),
-            analysis_settings.get("graphical", False), log=log,
-        )
-        if object_names is None:
-            # Already queued, or the project could not be made ready --
-            # build_model has said which.
-            return
-
-        # The model is built and saved; only the handoff is left. Consult
-        # the background probe rather than checking the share here: by now
-        # it has almost always answered, so this does not block. If it
-        # somehow hasn't (a very slow share), waiting for it beats
-        # deferring a handoff that would have gone through.
         if not queue_probe.wait():
             # Offline. The model is built and saved; resuming once the
             # share is back picks up exactly here.
             if combo_id not in deferred:
                 deferred.append(combo_id)
-                run.update_combo(combo_id, queue_status="deferred")
+                run.update_combo(combo_id, handoff_status="deferred")
             return
 
         resilient_io.ensure_queue_ready(
-            queue, on_wait=lambda p: log(f"Queue path {p} unreachable -- waiting for it to come back...")
+            queue, stop_event=stop_event,
+            on_wait=lambda p: log(f"Queue path {p} unreachable -- waiting for it to come back..."),
         )
         resilient_io.call_with_retry(
             model_builder.queue_model,
-            combo_id, combo["step_path"], run, queue, object_names,
-            queue_root=queue.root, log=log,
+            combo_id, run.state["combos"][combo_id]["step_path"], run, queue, object_names,
+            queue_root=queue.root, log=log, stop_event=stop_event,
         )
 
-    # Each model is queued the moment its STEP file exists, and a monitor
-    # thread watches the queue throughout -- so the combos that are
-    # already analysing report progress to the UI while the remaining
-    # geometry is still being built. The STEP files themselves are still
-    # produced one at a time: they share a single SolidWorks document.
-    # The queue's reachability is being probed in parallel (see above);
-    # nothing here waits on it until there is a model to hand over.
-    log("Stage 1/4: generating layouts in Altium, STEP files in SolidWorks, "
-        "building AEDT models, and queuing analysis tasks...")
+    # Altium, SolidWorks and AEDT each drain their own queue of
+    # combinations at the same time (workflow/stages.py), and a monitor
+    # thread watches the analysis queue throughout -- so the combos that
+    # are already analysing report progress to the UI while the remaining
+    # geometry is still being drawn and built. The queue's reachability
+    # is being probed in parallel too (see above); nothing waits on it
+    # until there is a model to hand over.
+    log("Preparing models: Altium draws each combination's boards, SolidWorks "
+        "rebuilds its solid, and AEDT turns the two into a model and queues it.")
     run.set_stage("generating_and_queuing")
 
     queuing_finished = threading.Event()
@@ -203,34 +222,21 @@ def run_pipeline(run: Run, queue: "queue_common.QueuePaths", log=logger.info, st
 
     try:
         resilient_io.call_with_retry(
-            step_generation.generate_step_files, combos, equations_path, assembly_path, run,
-            log=log, parameter_defaults=parameter_defaults, on_step_done=queue_combo,
-            stop_event=stop_event,
-            use_altium=analysis_settings.get("use_altium", True),
-            materials=analysis_settings.get("materials"),
+            stages.run_local_stages, run,
+            equations_path=str(paths.DEFAULT_EQUATIONS_FILE),
+            assembly_path=str(paths.DEFAULT_ASSEMBLY_FILE),
+            analysis_settings=analysis_settings,
+            parameter_defaults=parameter_defaults,
+            handoff=handoff, log=log, stop_event=stop_event,
         )
-        if stop_event is None or not stop_event.is_set():
-            # Anything whose STEP was already on disk from an earlier
-            # attempt never went through on_step_done, so it is queued here.
-            for combo_id, combo in run.state["combos"].items():
-                if stop_event is not None and stop_event.is_set():
-                    break
-                if combo.get("task_id"):
-                    continue
-                if combo.get("skip_reason"):
-                    continue  # already reported by generate_step_files
-                if combo.get("step_status") != "done":
-                    log(f"Skipping {combo_id} -- STEP generation did not succeed for it.")
-                    continue
-                queue_combo(combo_id)
     finally:
         queuing_finished.set()
 
-    if stop_event is not None and stop_event.is_set():
+    if _stopped(stop_event):
         monitor_thread.join(timeout=30)
         return
 
-    # If Stage 1 handed nothing over (every combo was already queued on an
+    # If nothing was handed over (every combo was already queued on an
     # earlier run) the probe was never consulted; settle it now so the
     # deferred / geometry-ready decision below rests on a real answer.
     queue_probe.wait()
@@ -238,7 +244,7 @@ def run_pipeline(run: Run, queue: "queue_common.QueuePaths", log=logger.info, st
     if deferred:
         # The geometry is built and saved; only the handoff is missing.
         # Resuming this run once the share is back picks up exactly here,
-        # because every finished STEP is skipped and every combination
+        # because every finished stage is skipped and every combination
         # without a task_id gets queued.
         monitor_thread.join(timeout=30)
         run.set_stage("geometry_ready")
@@ -266,14 +272,14 @@ def run_pipeline(run: Run, queue: "queue_common.QueuePaths", log=logger.info, st
         ]
 
     if worker_is_remote:
-        log("Stage 2/4: post-processing each analysis as it finishes...")
+        log("Waiting for the worker, and reading each analysis back as it finishes...")
         run.set_stage("postprocessing")
     else:
-        log("Stage 2/4: waiting for the remaining analyses to finish...")
+        log("Waiting for the remaining analyses to finish...")
         run.set_stage("monitoring")
 
     while True:
-        if stop_event is not None and stop_event.is_set():
+        if _stopped(stop_event):
             return
         if worker_is_remote:
             # results are pulled in as they land rather than at the end
@@ -293,21 +299,22 @@ def run_pipeline(run: Run, queue: "queue_common.QueuePaths", log=logger.info, st
             monitor_thread = start_monitor()
         monitor_thread.join(timeout=poll_seconds)
 
-    if stop_event is not None and stop_event.is_set():
+    if _stopped(stop_event):
         return
-    log("Stage 3/4: post-processing analyzed projects...")
+    log("Copying the analysed projects back and reading their results...")
 
     run.set_stage("postprocessing")
     resilient_io.call_with_retry(
         postprocess.postprocess_run, run, queue, analysis_settings,
         queue_root=queue.root, log=log, stop_event=stop_event,
     )
-    if stop_event is not None and stop_event.is_set():
+    if _stopped(stop_event):
         return
 
-    log("Stage 4/4: building combined results and plotting...")
+    log("Building combined results and plotting...")
     run.set_stage("plotting")
-    df = resilient_io.call_with_retry(results.build_combined_results, run, queue, queue_root=queue.root, log=log)
+    df = resilient_io.call_with_retry(results.build_combined_results, run, queue,
+                                      queue_root=queue.root, log=log, stop_event=stop_event)
     plotting.plot_results(df, run, run.sweep_param_names, log=log)
 
     run.set_stage("complete")
@@ -447,6 +454,27 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def stop_on_interrupt(stop_event: threading.Event) -> None:
+    """Make Ctrl-C ask the run to stop rather than kill it mid-call.
+
+    The first Ctrl-C sets the stop event: every stage finishes the
+    combination it is in the middle of -- none of the three programs can
+    be interrupted mid-call anyway -- records it, and the run ends
+    resumable, exactly as the web UI's Stop button leaves it. The
+    handler then puts Python's own back, so a second Ctrl-C quits
+    immediately for when waiting is not what you want.
+    """
+    def handler(signum, frame):
+        signal.signal(signal.SIGINT, signal.default_int_handler)
+        stop_event.set()
+        logger.warning(
+            "Stopping this run -- each program will finish the combination it is on. "
+            "Press Ctrl-C again to quit without waiting (the run stays resumable either way)."
+        )
+
+    signal.signal(signal.SIGINT, handler)
+
+
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s: %(message)s", stream=sys.stdout)
     args = parse_args()
@@ -486,7 +514,9 @@ def main() -> None:
         run = Run.create(sweep_params, analysis_settings, parameter_defaults)
         logger.info("Created run %s with %d combination(s)", run.run_id, len(run.state["combos"]))
 
-    run_pipeline(run, queue)
+    stop_event = threading.Event()
+    stop_on_interrupt(stop_event)
+    run_pipeline(run, queue, stop_event=stop_event)
 
 
 if __name__ == "__main__":

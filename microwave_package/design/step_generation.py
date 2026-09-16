@@ -3,15 +3,20 @@ SolidWorks STEP-file generation: for each parameter combination in a
 sweep, edits the shared equations file, rebuilds the assembly, and
 exports a STEP file. Runs on the machine that has SolidWorks installed
 (requires `pywin32`).
+
+`Session` is the whole of it -- one connection, one open assembly, one
+combination at a time. Which combinations it is given, and in what
+order, is decided by `workflow/stages.py`, which runs this alongside the
+Altium and AEDT stages rather than before them.
 """
 from __future__ import annotations
 
 import logging
 import os
 import time
-from typing import Callable, Dict, Optional, Tuple
+from typing import Callable, Optional, Tuple
 
-from . import altium_generation, equations as eq
+from . import equations as eq
 
 logger = logging.getLogger("microwave_package")
 
@@ -166,123 +171,77 @@ def write_common_dimensions(run, log: Callable[[str], None] = logger.info) -> Op
     return out_path
 
 
-def generate_step_files(
-    combos: Dict[str, Dict[str, float]],
-    equations_path: str,
-    assembly_path: str,
-    run,
-    log: Callable[[str], None] = logger.info,
-    parameter_defaults: Optional[Dict[str, float]] = None,
-    on_step_done: Optional[Callable[[str], None]] = None,
-    stop_event=None,
-    use_altium: bool = True,
-    materials: Optional[Dict[str, str]] = None,
-) -> None:
+class Session:
+    """One SolidWorks document, held open across a run's combinations.
+
+    SolidWorks drives a single document and a single shared equations
+    file, so a run's combinations go through it strictly one at a time,
+    in order -- which is why this is a session opened once and reused
+    rather than a function that connects per combination. What it costs
+    to open (and what a combination costs to rebuild) is exactly why the
+    Altium and AEDT stages no longer wait behind it: see
+    `workflow/stages.py`.
+
+    The original equations file is held from the moment the session
+    opens and written back when it closes, so the shared file is left as
+    it was found however the run ends.
     """
-    Build a STEP file for every combo, skipping ones already generated
-    (resume support -- checked via `run.state`). Restores the equations
-    file to its original content when done, even on failure.
 
-    `parameter_defaults` are applied to every combination before its own
-    values are, so a parameter pinned for the run takes effect everywhere
-    without becoming part of what distinguishes one combination.
+    def __init__(self, app, model, equations_path: str, original_content: str) -> None:
+        self.app = app
+        self.model = model
+        self.equations_path = equations_path
+        self.original_content = original_content
 
-    `on_step_done` is called with each combo_id as soon as its STEP file
-    lands, so the caller can queue that model for analysis while the
-    remaining geometry is still being built. SolidWorks drives one
-    document here, so the combos themselves stay strictly sequential.
-    """
-    # Combinations whose geometry cannot physically fit (see
-    # constraints.py) are never handed to SolidWorks -- they are marked
-    # at run creation and reported on the run page instead.
-    skipped = {
-        combo_id: run.state["combos"][combo_id]["skip_reason"]
-        for combo_id in combos
-        if run.state["combos"][combo_id].get("skip_reason")
-    }
-    for combo_id, reason in skipped.items():
-        if run.state["combos"][combo_id].get("step_status") != "skipped":
-            run.update_combo(combo_id, step_status="skipped")
-        log(f"Skipping {combo_id} -- {reason}")
+    @classmethod
+    def open(cls, equations_path: str, assembly_path: str,
+             log: Callable[[str], None] = logger.info) -> "Session":
+        """Connect to SolidWorks and open the assembly.
 
-    pending = {
-        combo_id: params
-        for combo_id, params in combos.items()
-        if combo_id not in skipped
-        and run.state["combos"][combo_id].get("step_status") != "done"
-    }
-    if not pending:
-        log("All STEP files already generated -- skipping SolidWorks step.")
-        write_common_dimensions(run, log=log)
-        return
+        Raises RuntimeError if either fails: a run cannot produce
+        geometry without this, and failing here rather than once per
+        combination is what says so plainly.
+        """
+        original_content = eq.read_file(equations_path)
+        app, err = connect_solidworks()
+        if not app:
+            raise RuntimeError(
+                f"Could not connect to SolidWorks -- is it installed and licensed on this machine? ({err})"
+            )
+        model, err = open_and_activate_assembly(app, assembly_path)
+        if not model:
+            eq.write_file(equations_path, original_content)
+            raise RuntimeError(f"Could not open/activate assembly {assembly_path}: {err}")
+        return cls(app, model, equations_path, original_content)
 
-    original_content = eq.read_file(equations_path)
-    swApp, err = connect_solidworks()
-    if not swApp:
-        raise RuntimeError(f"Could not connect to SolidWorks -- is it installed and licensed on this machine? ({err})")
+    def build(self, combo_id: str, content: str, combo_dir: str,
+              log: Callable[[str], None] = logger.info) -> Tuple[Optional[str], Optional[str]]:
+        """Rebuild the assembly for one combination and export its STEP.
 
-    swModel, err = open_and_activate_assembly(swApp, assembly_path)
-    if not swModel:
-        eq.write_file(equations_path, original_content)
-        raise RuntimeError(f"Could not open/activate assembly {assembly_path}: {err}")
+        `content` is the whole equations file as this combination wants
+        it -- worked out by the caller (see `equations.with_values`), not
+        here, so the Altium stage can work out the same numbers for a
+        different combination at the same time.
 
-    try:
-        for combo_id, params in pending.items():
-            if stop_event is not None and stop_event.is_set():
-                log("STEP generation stopped.")
-                return
-            log(f"Building geometry for {combo_id} ({params})...")
-            content = original_content
-            for name, value in (parameter_defaults or {}).items():
-                content = eq.set_parameter(content, name, value)
-            for name, value in params.items():
-                content = eq.set_parameter(content, name, value)
-            eq.write_file(equations_path, content)
+        Returns (step_path, None) on success, or (None, reason).
+        """
+        eq.write_file(self.equations_path, content)
+        os.makedirs(combo_dir, exist_ok=True)
 
-            combo_dir = run.combo_dir(combo_id)
-            os.makedirs(combo_dir, exist_ok=True)
+        rebuild_model(self.model)
+        # Snapshot of the exact equations used for this combo, so
+        # later steps (min-frequency estimate) can read it back
+        # without depending on the shared file's current state.
+        eq.write_file(os.path.join(combo_dir, "dimensions.txt"), content)
 
-            # Altium regenerates the boards for this combination and
-            # leaves their copper alongside the STEP. It runs BEFORE the
-            # SolidWorks rebuild because the substrates are sized from
-            # the same equations file, and after it because Altium is
-            # single-instance and this loop is already sequential -- one
-            # more sequential step costs nothing here.
-            if use_altium:
-                ok, reason = altium_generation.generate_for_combo(
-                    combo_dir, eq.get_numeric_parameters(content),
-                    materials=materials, log=log,
-                )
-                run.update_combo(
-                    combo_id,
-                    altium_status="done" if ok else "failed",
-                    altium_error=None if ok else reason,
-                )
-                if not ok:
-                    # One unbuildable layout is recorded and skipped, the
-                    # same way a failed STEP is. It must not take the
-                    # rest of the sweep with it.
-                    log(f"Altium failed for {combo_id}: {reason}")
-                    run.update_combo(combo_id, step_status="failed", step_error=reason)
-                    continue
+        step_path = os.path.join(combo_dir, f"{combo_id}.STEP")
+        success, err = save_as_step(self.model, step_path)
+        if not success:
+            return None, err
+        log(f"Saved {step_path}")
+        return step_path, None
 
-            rebuild_model(swModel)
-            # Snapshot of the exact equations used for this combo, so
-            # later steps (min-frequency estimate) can read it back
-            # without depending on the shared file's current state.
-            eq.write_file(os.path.join(combo_dir, "dimensions.txt"), content)
-
-            step_path = os.path.join(combo_dir, f"{combo_id}.STEP")
-            success, err = save_as_step(swModel, step_path)
-            if success:
-                log(f"Saved {step_path}")
-                run.update_combo(combo_id, step_path=step_path, step_status="done", step_error=None)
-                if on_step_done is not None:
-                    on_step_done(combo_id)
-            else:
-                log(f"FAILED to save STEP for {combo_id}: {err}")
-                run.update_combo(combo_id, step_status="failed", step_error=err)
-    finally:
-        eq.write_file(equations_path, original_content)
+    def close(self, log: Callable[[str], None] = logger.info) -> None:
+        """Put the shared equations file back the way it was found."""
+        eq.write_file(self.equations_path, self.original_content)
         log("Restored original equations file.")
-        write_common_dimensions(run, log=log)

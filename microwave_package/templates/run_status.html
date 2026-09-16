@@ -136,15 +136,35 @@
   </span>
 </p>
 
+{# One row per phase, filled in by renderPhases() -- the widths and the
+   counts are patched on every poll anyway, so they are not also
+   computed here. The first phases are marked as the ones that run at
+   the same time (see workflow/stages.py). #}
+{% macro phase_rows(phases) -%}
+{%- for phase in phases %}
+<div class="phase-row{{ " parallel" if phase.parallel }}" data-phase="{{ phase.key }}">
+  <span class="name" title="{{ phase.what }}">{{ phase.label }}</span>
+  <span class="progress"><i class="d"></i><i class="f"></i><i class="r"></i><i class="w"></i></span>
+  <span class="num"></span>
+</div>
+{%- endfor %}
+{%- endmacro %}
+
 <div class="statusbar">
   <div class="line1">
     <span class="pill {{ stage_display.kind }}" id="stage">{{ stage_display.label }}</span>
-    <span class="pill idle" id="running-indicator">{{ "running" if is_running else "idle" }}</span>
+    <span class="pill idle" id="running-indicator">{{ "stopping…" if is_stopping else ("running" if is_running else "idle") }}</span>
   </div>
   <div class="bar-wrap">
     {{ progress_bar(progress) }}
     <span class="progress-num" id="progress-num"></span>
   </div>
+  <div class="phase-strip" id="phase-strip">{{ phase_rows(progress.phases) }}</div>
+  {% set together = progress.phases | selectattr("parallel") | map(attribute="label") | join(" and ") %}
+  {% if together %}
+  <p class="phase-note">{{ together }} work at the same time, each on its own
+     combination; everything after them happens in order.</p>
+  {% endif %}
   <div class="timing">
     {%- if started_text %}started {{ started_text }}{% endif -%}
     {%- if duration_text %} · ran {{ duration_text }}
@@ -162,6 +182,10 @@
 </div>
 {% endif %}
 
+{% if request.args.get("error") %}
+<div class="error-box" role="alert">{{ request.args.get("error") }}</div>
+{% endif %}
+
 {% if run.state.stage == "error" and run.state.error %}
 <div class="error-box">
   <strong>The pipeline stopped with an error:</strong>
@@ -171,15 +195,28 @@
 
 {# Offered on what the combinations actually show, not on the stage
    label: a run can stop early and still be marked complete, and then
-   this is the only way to pick it back up. #}
-{% if not is_running and not run.is_complete %}
-<form method="post" action="{{ url_for('resume_run', run_id=run.run_id) }}">
+   this is the only way to pick it back up. Both forms are rendered and
+   the poll shows whichever applies, so the buttons follow a run that
+   starts or stops while the page is open. #}
+{% if not run.is_complete %}
+<form method="post" action="{{ url_for('resume_run', run_id=run.run_id) }}"
+      id="resume-form" {% if is_running %}hidden{% endif %}>
   <button type="submit">{{ "Retry" if run.state.stage == "error" else "Resume this run" }}</button>
   {% if run.state.stage == "complete" %}
   <span class="muted">This run is marked complete but some combinations never finished.</span>
   {% endif %}
 </form>
 {% endif %}
+<form method="post" action="{{ url_for('stop_run', run_id=run.run_id) }}"
+      id="stop-form" {% if not is_running or is_stopping %}hidden{% endif %}>
+  <button type="submit" class="stop">Stop this run</button>
+  <span class="muted">Each program finishes the combination it is on and then stops.
+    Nothing already built is lost -- Resume carries on from there.</span>
+</form>
+<p class="muted stopping-note" id="stopping-note" {% if not is_stopping %}hidden{% endif %}>
+  Stopping -- waiting for Altium, SolidWorks and AEDT to finish the combinations
+  they are in the middle of. None of the three can be interrupted part-way.
+</p>
 
 {% for note in run.config.notes or [] %}
 <div class="note-box">{{ note }}</div>
@@ -228,6 +265,22 @@
   <button type="button" data-filter="done">Done <span class="chip-count"></span></button>
 </div>
 <p class="muted" style="font-size:.85em;margin:.2rem 0 .4rem">Click a row for that combination's details.</p>
+{# One segment per phase, in order, with the ones that run at the same
+   time stacked in a single column -- so the bar still reads left to
+   right as time. Which segment is which comes from the same phase list
+   the header strip uses. #}
+{% macro phase_track() -%}
+<span class="track">
+{%- set ns = namespace(paired=false) -%}
+{%- for phase in phases -%}
+{%- if phase.parallel and not ns.paired %}<span class="pair">{% set ns.paired = true %}{% endif -%}
+{%- if not phase.parallel and ns.paired %}</span>{% set ns.paired = false %}{% endif -%}
+<span class="seg" title="{{ phase.label }} -- {{ phase.what }}"></span>
+{%- endfor -%}
+{%- if ns.paired %}</span>{% endif -%}
+</span>
+{%- endmacro %}
+
 <table id="combo-table">
 <thead>
 <tr><th>Parameters</th><th>Progress</th><th></th></tr>
@@ -236,12 +289,8 @@
 {% for combo_id, combo in rows.buildable.items() %}
 <tr data-combo="{{ combo_id }}" data-state="" tabindex="0">
   <td>{{ combo_params(combo) }}</td>
-  <td class="pipeline"
-      data-step="{{ combo.step_status or '' }}"
-      data-queue="{{ combo.queue_status or '' }}"
-      data-post="{{ combo.post_status or '' }}"
-      data-skip="{{ 1 if combo.skip_reason else 0 }}">
-    <span class="track"><span class="seg"></span><span class="seg"></span><span class="seg"></span></span>
+  <td class="pipeline" data-phases="{{ rows.phases[combo_id] }}">
+    {{ phase_track() }}
     <span class="lbl">…</span>
   </td>
   <td class="row-actions">
@@ -253,7 +302,9 @@
             data-title="{{ combo_id }}"
             title="Quick 3D view of this combination's geometry, read from its STEP file">3D view</button>
     {% endif %}
-    {% if combo.queue_status %}
+    {# On having a project, not on having been queued: a run prepared
+       while the share was down has models to look at and no tasks. #}
+    {% if combo.model_status or combo.queue_status %}
     <button type="button" class="mini open-aedt"
             data-url="{{ url_for('open_combo_in_aedt', run_id=run.run_id, combo_id=combo_id) }}"
             title="Open this combination's project in a visible AEDT window">Open in AEDT</button>
@@ -366,20 +417,26 @@
 </details>
 {% endif %}
 
-{% if not is_running %}
+{# Always rendered, and the poll keeps it in step with whether the run
+   is going. Leaving it out of a page loaded during a run meant the
+   section never appeared once the run stopped -- and a page loaded
+   before one started kept offering a delete that the server would
+   refuse. #}
 <details class="danger-zone">
   <summary>Delete this run</summary>
   <p>This permanently removes <code>{{ run.run_dir }}</code>
      ({{ "%.0f"|format(disk_usage_mb) }} MB, {{ rows.total }} combination(s)) --
      its STEP files, analysed projects, results and plots -- along with anything these tasks
      still have in the queue folder. It cannot be undone.</p>
+  <p class="delete-blocked" id="delete-blocked-note" {% if not is_running %}hidden{% endif %}>
+    This run is still going -- <em>Stop this run</em> first, then delete it.
+  </p>
   <form method="post" action="{{ url_for('delete_run', run_id=run.run_id) }}" id="delete-form">
     <label for="confirm_run_id">Type <strong>{{ run.run_id }}</strong> to confirm:</label>
     <input type="text" id="confirm_run_id" name="confirm_run_id" autocomplete="off" spellcheck="false">
     <button type="submit" class="danger" id="delete-button" disabled>Delete permanently</button>
   </form>
 </details>
-{% endif %}
 
 <dialog class="combo-window" id="combo-window">
   <header>
@@ -390,23 +447,40 @@
 </dialog>
 
 <script>
-// The delete button stays disabled until the run's own id has been typed
-// in, and asks once more on submit -- there is no undo behind it.
-(function () {
-  var form = document.getElementById("delete-form");
-  if (!form) { return; }
+// Typing the run's own id IS the confirmation, and it is the only one.
+//
+// There used to be a window.confirm() behind the button as well. It
+// looked like a second safeguard and was really a single point of
+// silent failure: a browser that suppresses dialogs -- which Chrome
+// offers to do after a page has shown a few, and which embedded
+// browsers do by default -- makes confirm() return false, the handler
+// cancels the submit, and Delete then does nothing at all, with nothing
+// on screen and nothing in the server log to say why. Twenty-five
+// characters typed by hand is the stronger guard of the two, and the
+// server checks them again before removing anything.
+var deleteBlocked = false;
+
+function refreshDeleteButton() {
   var field = document.getElementById("confirm_run_id");
   var button = document.getElementById("delete-button");
-  var expected = "{{ run.run_id }}";
+  if (!field || !button) { return; }
+  button.disabled = deleteBlocked || field.value.trim() !== "{{ run.run_id }}";
+}
 
-  field.addEventListener("input", function () {
-    button.disabled = field.value.trim() !== expected;
-  });
-  form.addEventListener("submit", function (event) {
-    if (!window.confirm("Permanently delete " + expected + " and all of its files?")) {
-      event.preventDefault();
-    }
-  });
+// A run cannot be deleted while it is going -- the server refuses, and
+// saying so here beats letting someone type the id out first.
+function setDeleteBlocked(blocked) {
+  deleteBlocked = !!blocked;
+  var note = document.getElementById("delete-blocked-note");
+  if (note) { note.hidden = !deleteBlocked; }
+  refreshDeleteButton();
+}
+
+(function () {
+  var field = document.getElementById("confirm_run_id");
+  if (!field) { return; }
+  field.addEventListener("input", refreshDeleteButton);
+  setDeleteBlocked({{ "true" if is_running else "false" }});
 })();
 </script>
 
@@ -422,32 +496,46 @@
 const initialStage = "{{ run.state.stage }}";
 const hadPlot = {{ "true" if plot_exists else "false" }};
 const initialProgress = {{ progress | tojson }};
+// The phases a combination goes through, in order. The per-combination
+// string the poll sends is in this order too, so position N of that
+// string is PHASES[N] -- which is what lets one list drive the header
+// strip, the row bars and the labels without any of them agreeing
+// separately.
+const PHASES = {{ phases | tojson }};
 
-// One <td class="pipeline"> -> three coloured segments (STEP, analysis,
-// post-processing) and a word for the combination's overall state. The
-// same data-step/queue/post attributes are what the poll updates, so
-// this is the single place that turns them into what is shown.
-function pipeInfo(d) {
-  if (d.skip === "1") { return { state: "skipped", label: "Skipped" }; }
-  if (d.step === "failed" || d.queue === "failed" || d.post === "failed") {
-    return { state: "failed", label: "Failed" };
+// One <td class="pipeline"> -> one coloured segment per phase, and a
+// word for what the combination is doing. The word is the interesting
+// part: with three programs working at once, a combination is somewhere
+// specific ("SolidWorks…", "Queued…", "Copy back…"), not just "running".
+function comboInfo(states) {
+  const at = (test) => states.findIndex(test);
+  if (states.every((s) => s === "skipped")) { return { state: "skipped", label: "Skipped" }; }
+
+  const failed = at((s) => s === "failed");
+  if (failed >= 0) { return { state: "failed", label: PHASES[failed].label + " failed" }; }
+  if (states.every((s) => s === "done" || s === "skipped")) { return { state: "done", label: "Done" }; }
+
+  const running = at((s) => s === "running");
+  if (running >= 0) { return { state: "running", label: PHASES[running].label + "…" }; }
+
+  const waiting = at((s) => s === "waiting");
+  if (waiting >= 0) {
+    const phase = PHASES[waiting];
+    return { state: "running", label: (phase.waiting_label || phase.label) + "…" };
   }
-  if (d.post === "done") { return { state: "done", label: "Done" }; }
-  if (d.queue === "in_progress") { return { state: "running", label: "Analysing…" }; }
-  if (d.queue === "done") { return { state: "running", label: "Post-processing…" }; }
-  if (d.queue === "pending" || d.queue === "deferred") { return { state: "running", label: "Queued…" }; }
-  if (d.step === "done") { return { state: "running", label: "Ready to queue…" }; }
+  const pending = at((s) => s === "pending");
+  if (states.some((s) => s === "done")) {
+    return { state: "running", label: "Waiting for " + PHASES[pending].label };
+  }
   return { state: "pending", label: "Pending" };
 }
 
 function renderPipe(td) {
-  const d = td.dataset;
-  const skip = d.skip === "1";
-  const segs = td.querySelectorAll(".seg");
-  segs[0].dataset.state = skip ? "skipped" : ({ done: "done", failed: "failed", skipped: "skipped" }[d.step] || "pending");
-  segs[1].dataset.state = skip ? "skipped" : ({ done: "done", failed: "failed", in_progress: "in_progress" }[d.queue] || "pending");
-  segs[2].dataset.state = skip ? "skipped" : ({ done: "done", failed: "failed" }[d.post] || "pending");
-  const info = pipeInfo(d);
+  const states = (td.dataset.phases || "").split(",");
+  td.querySelectorAll(".seg").forEach(function (seg, i) {
+    seg.dataset.state = states[i] || "pending";
+  });
+  const info = comboInfo(states);
   td.querySelector(".lbl").textContent = info.label;
   const row = td.closest("tr");
   if (row) { row.dataset.state = info.state; }
@@ -460,9 +548,33 @@ function renderStage(display) {
   ["ok", "bad", "busy", "muted"].forEach((k) => el.classList.toggle(k, k === display.kind));
 }
 
+// The run's phases, one bar each: how many combinations have got through
+// each of them. While Altium, SolidWorks and AEDT are all working this
+// is the honest account of where a run is -- a single bar can only show
+// the end of the chain.
+function renderPhases(phases) {
+  (phases || []).forEach(function (phase) {
+    const row = document.querySelector('.phase-row[data-phase="' + phase.key + '"]');
+    if (!row) { return; }
+    const bar = row.querySelector(".progress");
+    const width = (n) => (phase.total ? (100 * n / phase.total).toFixed(1) : 0) + "%";
+    bar.querySelector("i.d").style.width = width(phase.done);
+    bar.querySelector("i.f").style.width = width(phase.failed);
+    bar.querySelector("i.r").style.width = width(phase.running);
+    bar.querySelector("i.w").style.width = width(phase.waiting);
+    const bits = [phase.done + " done"];
+    if (phase.running) { bits.push(phase.running + " in progress"); }
+    if (phase.waiting) { bits.push(phase.waiting + " waiting"); }
+    if (phase.failed) { bits.push(phase.failed + " failed"); }
+    bits.push(phase.pending + " to go");
+    bar.title = phase.label + " -- " + bits.join(" · ");
+    row.querySelector(".num").textContent = phase.done + "/" + phase.total;
+  });
+}
+
 function renderProgress(p) {
   if (!p) { return; }
-  const wrap = document.querySelector(".statusbar .progress");
+  const wrap = document.querySelector(".statusbar .bar-wrap .progress");
   if (wrap && p.total) {
     wrap.querySelector("i.d").style.width = (100 * p.done / p.total).toFixed(1) + "%";
     wrap.querySelector("i.f").style.width = (100 * p.failed / p.total).toFixed(1) + "%";
@@ -475,6 +587,7 @@ function renderProgress(p) {
     if (p.skipped) { bits.push(p.skipped + " skipped"); }
     num.textContent = bits.join(" · ") || "—";
   }
+  renderPhases(p.phases);
 }
 
 // Filter the combination table by a row's overall state (set by
@@ -533,19 +646,29 @@ async function poll() {
   }
 
   renderStage(data.stage_display || { label: data.stage, kind: "muted" });
-  document.getElementById("running-indicator").textContent = data.is_running ? "running" : "idle";
+  document.getElementById("running-indicator").textContent =
+    data.is_stopping ? "stopping…" : (data.is_running ? "running" : "idle");
   renderProgress(data.progress);
   const ago = document.getElementById("updated-ago");
   if (ago) { ago.textContent = "just now"; }
 
-  for (const [comboId, combo] of Object.entries(data.combos || {})) {
+  // Stop is offered while the run is going, Resume once it is not -- so
+  // the buttons follow a run that finishes, stops or is started from
+  // somewhere else while this page is open.
+  const stopForm = document.getElementById("stop-form");
+  if (stopForm) { stopForm.hidden = !data.is_running || data.is_stopping; }
+  const resumeForm = document.getElementById("resume-form");
+  if (resumeForm) { resumeForm.hidden = data.is_running; }
+  const stoppingNote = document.getElementById("stopping-note");
+  if (stoppingNote) { stoppingNote.hidden = !data.is_stopping; }
+  setDeleteBlocked(data.is_running);
+
+  for (const [comboId, phases] of Object.entries(data.combos || {})) {
     const row = document.querySelector('tr[data-combo="' + CSS.escape(comboId) + '"]');
     if (!row) continue;
     const td = row.querySelector("td.pipeline");
     if (!td) continue;
-    td.dataset.step = combo.step_status || "";
-    td.dataset.queue = combo.queue_status || "";
-    td.dataset.post = combo.post_status || "";
+    td.dataset.phases = phases;
     renderPipe(td);
   }
   updateFilterCounts();
@@ -704,10 +827,10 @@ setInterval(poll, 4000);
   }
 
   function statusLine(status) {
-    return ["step", "queue", "post"].map(function (key) {
-      return '<tr><td>' + key.replace("post", "post-processing").replace("queue", "analysis") +
-             '</td><td class="status-' + esc(status[key]).replace(/\s+/g, "_") + '">' +
-             esc(status[key]) + "</td></tr>";
+    return (status || []).map(function (phase) {
+      return '<tr><td title="' + esc(phase.what) + '">' + esc(phase.label) +
+             '</td><td class="status-' + esc(phase.state) + '">' + esc(phase.state) +
+             "</td></tr>";
     }).join("");
   }
 

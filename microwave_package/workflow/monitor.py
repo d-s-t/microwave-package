@@ -72,6 +72,7 @@ def monitor_run(
                     queue.root,
                     poll_seconds=poll_seconds,
                     on_wait=lambda p: log(f"Queue path {p} is unreachable -- waiting for it to come back..."),
+                    stop_event=stop_event,
                 )
 
             for combo_id in pending_ids:
@@ -81,6 +82,9 @@ def monitor_run(
                     run.update_combo(combo_id, queue_status=status)
                     if status in TERMINAL_STATUSES:
                         log(f"{combo_id} (task {task_id}) -> {status}")
+        except resilient_io.Stopped:
+            log("Monitoring stopped.")
+            return
         except Exception as exc:
             logger.exception("Monitoring pass failed; will retry in %.0fs", poll_seconds)
             log(f"Could not check task status ({exc}) -- will retry in {poll_seconds:.0f}s.")

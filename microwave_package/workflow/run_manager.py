@@ -26,31 +26,156 @@ from ..design.sweep import SweepParameter, combinations, combo_id_for
 logger = logging.getLogger("microwave_package")
 
 
-def progress_of(state: dict) -> Dict[str, int]:
+# What happens to a combination, in the order it happens, and which of
+# the combination's status fields records each one. `states` maps that
+# field's values into the one vocabulary everything downstream paints:
+# pending / running / waiting / done / failed / skipped ("waiting" being
+# real progress that nothing on this machine is working on -- a project
+# sitting in the queue, or one built while the share was unreachable).
+#
+# The first two run AT THE SAME TIME, on different combinations (see
+# workflow/stages.py); everything from the model onwards is strictly in
+# order. One list, used by the progress counts, the run page's
+# per-combination bar and the live status feed, so all three agree on
+# what a run is doing -- which matters more now that "what stage is the
+# run in" has three answers at once.
+PHASES = (
+    {"key": "layout", "label": "Altium", "what": "the boards, drawn in Altium",
+     "field": "altium_status", "parallel": True,
+     "states": {"running": "running", "done": "done", "failed": "failed"}},
+    {"key": "geometry", "label": "SolidWorks", "what": "the solid, rebuilt and exported as STEP",
+     "field": "step_status", "parallel": True,
+     "states": {"running": "running", "done": "done", "failed": "failed",
+                "skipped": "skipped"}},
+    {"key": "model", "label": "AEDT model", "what": "the HFSS model, built on this machine",
+     "field": "model_status",
+     "states": {"building": "running", "built": "done", "failed": "failed"}},
+    {"key": "upload", "label": "Copy to queue", "what": "the project, copied to the shared queue",
+     "field": "handoff_status", "waiting_label": "Waiting for the queue",
+     "states": {"running": "running", "done": "done", "deferred": "waiting",
+                "failed": "failed"}},
+    {"key": "analysis", "label": "Analysis", "what": "the solve, run by the worker",
+     "field": "queue_status", "waiting_label": "Queued",
+     "states": {"pending": "waiting", "in_progress": "running", "done": "done",
+                "failed": "failed"}},
+    {"key": "download", "label": "Copy back", "what": "the analysed files, copied off the queue",
+     "field": "fetch_status",
+     "states": {"running": "running", "done": "done", "failed": "failed"}},
+    {"key": "results", "label": "Results", "what": "the results, read out of the solved project",
+     "field": "post_status",
+     "states": {"running": "running", "done": "done", "failed": "failed"}},
+)
+PHASE_KEYS = [phase["key"] for phase in PHASES]
+
+# The first phase that can only happen after every earlier one has --
+# see `phase_states` for what that is used for.
+_STRICTLY_ORDERED_FROM = PHASE_KEYS.index("model")
+
+
+def phase_states(combo: dict, use_altium: bool = True) -> Dict[str, str]:
+    """What each of a combination's phases is doing, in one vocabulary.
+
+    A run made before a phase was recorded separately still reads right:
+    a combination only reaches AEDT with both of its halves in hand, and
+    only reaches the queue with a model, so anything from the model
+    onwards means everything before it landed, whether or not there is a
+    field saying so. Nothing is inferred BETWEEN the layout and the
+    geometry -- those two run at the same time, in either order, and one
+    being finished says nothing about the other.
+    """
+    if combo.get("skip_reason"):
+        return {key: "skipped" for key in PHASE_KEYS}
+
+    states = {}
+    for phase in PHASES:
+        value = combo.get(phase["field"])
+        states[phase["key"]] = phase["states"].get(value, "pending")
+    if not use_altium:
+        states["layout"] = "skipped"
+    # A run prepared before the handoff had a field of its own still has
+    # the one thing that proves it happened.
+    if states["upload"] == "pending" and combo.get("task_id"):
+        states["upload"] = "done"
+
+    # Read backwards: anything a combination has reached is proof of
+    # everything that had to happen first. Only the phases that cannot
+    # happen out of order count as that proof, which is why the layout
+    # and the geometry are evidence about nothing -- they run at the
+    # same time.
+    later = False
+    for key in reversed(PHASE_KEYS):
+        if later and states[key] == "pending":
+            states[key] = "done"
+        if PHASE_KEYS.index(key) >= _STRICTLY_ORDERED_FROM and states[key] != "pending":
+            later = True
+    return states
+
+
+def combo_state(states: Dict[str, str]) -> str:
+    """One word for a whole combination: what the run page's filter chips
+    count, and what colours its row."""
+    values = list(states.values())
+    if "failed" in values:
+        return "failed"
+    if all(value == "skipped" for value in values):
+        return "skipped"
+    if all(value in ("done", "skipped") for value in values):
+        return "done"
+    if any(value in ("running", "waiting", "done") for value in values):
+        return "running"
+    return "pending"
+
+
+def progress_of(state: dict, analysis_settings: Optional[dict] = None) -> Dict[str, object]:
     """How far a run has got, counted from its combinations.
 
     One definition, used by both the run list and the run page, so the
-    numbers agree: a combination is *done* once it is post-processed,
-    *failed* if analysis or post-processing failed, and otherwise still
-    on its way.
+    numbers agree: a combination is *done* once every phase of it is,
+    *failed* as soon as any phase of it failed, and otherwise still on
+    its way.
 
     Skipped combinations (their geometry never fitted, so nothing is
     built for them) are *not* progress -- a run whose every buildable
     combination is done is finished, however many were skipped. `total`
     is therefore the buildable count; `skipped` and `grand_total` are
     reported alongside for context.
+
+    `phases` counts the same combinations again, once per phase. That is
+    what makes a run readable while three programs are working on three
+    different combinations at once: "18 drawn, 17 built, 14 modelled, 9
+    analysed" says what a single overall bar cannot.
     """
     combos = state.get("combos", {})
+    use_altium = (analysis_settings or {}).get("use_altium", True)
+    counted = {key: {"done": 0, "running": 0, "waiting": 0, "failed": 0} for key in PHASE_KEYS}
     done = failed = skipped = 0
+
     for combo in combos.values():
-        if combo.get("skip_reason"):
+        states = phase_states(combo, use_altium)
+        overall = combo_state(states)
+        if overall == "skipped":
             skipped += 1
-        elif combo.get("queue_status") == "failed" or combo.get("post_status") == "failed":
+            continue
+        for key, value in states.items():
+            if value in counted[key]:
+                counted[key][value] += 1
+        if overall == "failed":
             failed += 1
-        elif combo.get("post_status") == "done":
+        elif overall == "done":
             done += 1
+
     grand_total = len(combos)
     total = grand_total - skipped
+    phases = [
+        {
+            "key": phase["key"], "label": phase["label"], "what": phase["what"],
+            "parallel": bool(phase.get("parallel")), "total": total,
+            **counted[phase["key"]],
+            "pending": total - sum(counted[phase["key"]].values()),
+        }
+        for phase in PHASES
+        if use_altium or phase["key"] != "layout"
+    ]
     return {
         "total": total,
         "done": done,
@@ -58,6 +183,7 @@ def progress_of(state: dict) -> Dict[str, int]:
         "skipped": skipped,
         "pending": total - done - failed,
         "grand_total": grand_total,
+        "phases": phases,
     }
 
 
@@ -228,7 +354,7 @@ class Run:
                 "created_at": config.get("created_at"),
                 "stage": state.get("stage"),
                 "swept": swept,
-                **progress_of(state),
+                **progress_of(state, config.get("analysis_settings")),
             })
         return summaries
 
@@ -363,11 +489,29 @@ class Run:
         return values
 
     @property
+    def analysis_settings(self) -> dict:
+        return self.config.get("analysis_settings", {})
+
+    @property
+    def progress(self) -> Dict[str, object]:
+        """This run's progress, counted the one way (see `progress_of`).
+        A method on the run rather than a bare call, so nobody has to
+        remember to pass the settings that say which phases apply."""
+        return progress_of(self.state, self.analysis_settings)
+
+    def phase_states(self, combo_id: str) -> Dict[str, str]:
+        return phase_states(
+            self.state["combos"][combo_id],
+            self.analysis_settings.get("use_altium", True),
+        )
+
+    @property
     def is_complete(self) -> bool:
+        """Nothing left that this pipeline could still do for any
+        combination -- every one of them finished, failed or skipped."""
         combos = self.state["combos"]
+        use_altium = self.analysis_settings.get("use_altium", True)
         return bool(combos) and all(
-            c.get("skip_reason")
-            or c.get("queue_status") == "failed"
-            or c.get("post_status") in ("done", "failed")
-            for c in combos.values()
+            combo_state(phase_states(combo, use_altium)) in ("done", "failed", "skipped")
+            for combo in combos.values()
         )

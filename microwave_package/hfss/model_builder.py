@@ -1041,11 +1041,17 @@ def queue_model(
     Split out from the build so the two can happen at different times:
     the model is built on this machine with no network at all, and only
     this half needs the queue to be reachable.
+
+    Recorded as its own phase (`handoff_status`), because it is its own
+    kind of slow: an AEDT project is hundreds of megabytes and the queue
+    is usually a network share, so "copying it across" is a thing a
+    combination can visibly be in the middle of.
     """
     if run.state["combos"][combo_id].get("task_id"):
         log(f"{combo_id} is already queued -- skipping.")
         return
 
+    run.update_combo(combo_id, handoff_status="running")
     combo_dir = run.combo_dir(combo_id)
     project_path = project_file_for(run, combo_id)
     analysis_settings = run.config["analysis_settings"]
@@ -1091,6 +1097,6 @@ def queue_model(
             "output_dir": relative_output_dir,
         },
     )
-    run.update_combo(combo_id, task_id=task_id, queue_status="pending")
+    run.update_combo(combo_id, task_id=task_id, handoff_status="done", queue_status="pending")
     log(f"Queued analysis task {task_id} for {combo_id}: {task_path}")
 

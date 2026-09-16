@@ -229,16 +229,23 @@ def postprocess_run(
         # Everything is brought over the network first and AEDT is then
         # pointed at the local copy: opening a solved project across a
         # share is slow, and it was what put O:\ paths into the results.
+        # Recorded as its own phase, because a solved project coming back
+        # over a share is minutes of a combination's life, not a moment.
         log(f"{combo_id}: fetching analysed files for task {task_id}...")
+        run.update_combo(combo_id, fetch_status="running")
         local_dir = bring_task_local(run, queue, combo_id, task_id, remote_output_dir, log)
         if local_dir is None:
-            run.update_combo(combo_id, post_status="failed",
+            run.update_combo(combo_id, fetch_status="failed", post_status="failed",
                              post_error="could not copy the analysed files off the queue")
             handled += 1
             continue
 
+        run.update_combo(combo_id, fetch_status="done")
+
         project_file = find_project_file(local_dir, remote_project_file)
         if project_file is None:
+            # The copy itself was fine and verified -- there is just
+            # nothing in it to read, which is the next phase's failure.
             run.update_combo(combo_id, post_status="failed",
                              post_error=f"no .aedt project in {local_dir}")
             log(f"{combo_id}: no .aedt project among the files that came over.")
@@ -249,6 +256,7 @@ def postprocess_run(
         task["output_dir"] = local_dir
 
         log(f"{combo_id}: post-processing {os.path.basename(project_file)}...")
+        run.update_combo(combo_id, post_status="running")
         try:
             result = postprocess_task(task, aedt_version, student_version, graphical, log)
             client_result = {"status": "success", "task_id": task_id, "combo_id": combo_id, "result": result}

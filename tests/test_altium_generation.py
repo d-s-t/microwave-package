@@ -85,6 +85,63 @@ class TestReadSentinel(unittest.TestCase):
         self.assertNotEqual(got.get("stage"), "end")
 
 
+class TestNotHoldingTheReportOpen(unittest.TestCase):
+    """The script rewrites its report on every progress line, and Delphi
+    takes the file exclusively to do it -- so a handle held on this side
+    does not slow the script down, it fails its write, and a failed write
+    inside Altium is a modal dialog waiting for a human. These pin the
+    two halves of avoiding that: a file that is still being written is
+    not opened at all, and one that cannot be read is not an error.
+    """
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        self.path = os.path.join(self.dir, "done.txt")
+
+    def _write(self, *lines):
+        with open(self.path, "w", encoding="utf-8") as f:
+            f.write("".join(f"{line}\n" for line in lines))
+
+    def test_a_file_that_cannot_be_read_is_empty_not_an_error(self):
+        """Same answer as a missing one: the caller polls, so the next
+        pass gets it -- there is nothing here worth raising over."""
+        os.mkdir(os.path.join(self.dir, "a_directory.txt"))
+        self.assertEqual(ag.read_sentinel(os.path.join(self.dir, "a_directory.txt")), {})
+
+    def test_a_missing_file_has_no_fingerprint(self):
+        self.assertIsNone(ag._fingerprint(self.path))
+
+    def test_a_file_that_has_not_changed_fingerprints_the_same(self):
+        self._write("stage=start")
+        self.assertEqual(ag._fingerprint(self.path), ag._fingerprint(self.path))
+
+    def test_a_file_that_has_grown_fingerprints_differently(self):
+        """How "the script is still writing" is known without opening
+        the file the script is writing."""
+        self._write("stage=start")
+        before = ag._fingerprint(self.path)
+        self._write("stage=start", "open=ok")
+        self.assertNotEqual(ag._fingerprint(self.path), before)
+
+    def test_clearing_removes_the_previous_report(self):
+        self._write("stage=end")
+        self.assertTrue(ag._clear_sentinel(self.path))
+        self.assertFalse(os.path.exists(self.path))
+
+    def test_clearing_a_report_that_is_not_there_is_fine(self):
+        self.assertTrue(ag._clear_sentinel(self.path))
+
+    def test_clearing_gives_up_rather_than_waiting_forever(self):
+        """A report that will not go away means the last script still has
+        it open -- almost always because Altium is sitting on a dialog.
+        Waiting for that forever helps nobody."""
+        undeletable = os.path.join(self.dir, "a_directory_here_too")
+        os.mkdir(undeletable)
+        with open(os.path.join(undeletable, "keeps_it_alive.txt"), "w") as f:
+            f.write("x")
+        self.assertFalse(ag._clear_sentinel(undeletable, timeout=0.5))
+
+
 class TestAltiumDiscovery(unittest.TestCase):
     def test_find_altium_exe_returns_an_existing_file_or_none(self):
         exe = ag.find_altium_exe()

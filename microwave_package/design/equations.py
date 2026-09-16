@@ -100,3 +100,19 @@ def set_parameter(content: str, name: str, value: float) -> str:
     if count == 0:
         raise KeyError(f"Could not find a settable line for {name!r}")
     return new_content
+
+
+def with_values(content: str, *value_maps) -> str:
+    """`content` with every value in `value_maps` applied, in order.
+
+    The layering a combination is built from, in one call: the equations
+    file underneath, the run's pinned values over it, the combination's
+    own values on top. It is pure string work on a copy, which is what
+    lets the Altium and SolidWorks stages work out the same combination's
+    numbers at the same time without either of them reading the shared
+    file the other is in the middle of writing.
+    """
+    for values in value_maps:
+        for name, value in (values or {}).items():
+            content = set_parameter(content, name, value)
+    return content

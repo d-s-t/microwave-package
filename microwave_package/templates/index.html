@@ -93,8 +93,15 @@
   <a href="{{ url_for('index') }}" class="brand">Eigenmode Analysis</a>
 </header>
 
+{# The bar counts combinations all the way through; the tooltip breaks
+   the same run down by phase, which is where it actually is while three
+   programs are working on it at once. #}
+{% macro phase_summary(p) -%}
+{%- for phase in p.phases %}{{ phase.label }} {{ phase.done }}/{{ phase.total }}{{ ", " if not loop.last }}{% endfor -%}
+{%- endmacro %}
+
 {% macro progress_bar(p) -%}
-<span class="progress" title="{{ p.done }} done · {{ p.failed }} failed · {{ p.pending }} to go{% if p.skipped %} ({{ p.skipped }} skipped, not counted){% endif %}">
+<span class="progress" title="{{ p.done }} done · {{ p.failed }} failed · {{ p.pending }} to go{% if p.skipped %} ({{ p.skipped }} skipped, not counted){% endif %}{% if p.phases %}&#10;{{ phase_summary(p) }}{% endif %}">
 {%- if p.total -%}
 <i class="d" style="width:{{ (100.0 * p.done / p.total)|round(1) }}%"></i><i class="f" style="width:{{ (100.0 * p.failed / p.total)|round(1) }}%"></i>
 {%- endif -%}
@@ -666,6 +673,15 @@
         if (r.failed) { t += ' · ' + r.failed + ' failed'; }
         if (r.skipped) { t += ' · ' + r.skipped + ' skipped'; }
         num.textContent = t;
+      }
+      var bar = row.querySelector('.progress');
+      if (bar && r.phases) {
+        bar.title = r.done + ' done · ' + r.failed + ' failed · ' + r.pending + ' to go' +
+          (r.skipped ? ' (' + r.skipped + ' skipped, not counted)' : '') + '
+' +
+          r.phases.map(function (phase) {
+            return phase.label + ' ' + phase.done + '/' + phase.total;
+          }).join(', ');
       }
       var pill = row.querySelector('.pill');
       if (pill && r.stage_display) {

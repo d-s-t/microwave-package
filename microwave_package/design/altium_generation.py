@@ -102,18 +102,61 @@ def write_params(path: str, values: Dict[str, float], extra: Optional[Dict[str, 
 
 
 def read_sentinel(path: str) -> Dict[str, str]:
-    """Parse the script's `key=value` report. Missing file -> empty."""
+    """Parse the script's `key=value` report. Missing -> empty.
+
+    Read in one go and closed at once, and a file that cannot be read is
+    treated exactly like a missing one -- see `_settled` for why holding
+    this file open for any longer than it takes to read it is something
+    to avoid rather than to retry.
+    """
     result: Dict[str, str] = {}
-    if not os.path.isfile(path):
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            content = f.read()
+    except OSError:
         return result
-    with open(path, "r", encoding="utf-8", errors="replace") as f:
-        for line in f:
-            line = line.strip()
-            if not line or line.startswith("#") or "=" not in line:
-                continue
-            key, _, value = line.partition("=")
-            result[key.strip()] = value.strip()
+    for line in content.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        result[key.strip()] = value.strip()
     return result
+
+
+def _fingerprint(path: str):
+    """Size and modification time, or None if the file is not there.
+
+    Deliberately `stat` rather than a read: it says whether the script
+    has written anything since the last look without opening the file.
+    """
+    try:
+        stat = os.stat(path)
+    except OSError:
+        return None
+    return stat.st_size, stat.st_mtime_ns
+
+
+def _clear_sentinel(path: str, timeout: float = 30.0) -> bool:
+    """Remove the previous call's report, waiting for Altium to let go.
+
+    A stale sentinel would be read as this call's result within
+    microseconds of starting, so it has to go -- but the script that
+    wrote it may still have it open, and on Windows that refuses the
+    delete. Waiting for the delete to go through is also how this knows
+    the previous script really has finished with the file: while a
+    handle is open, Windows will not let it be deleted.
+    """
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            if os.path.exists(path):
+                os.remove(path)
+            return True
+        except OSError:
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(0.25)
 
 
 def run_script(
@@ -141,10 +184,11 @@ def run_script(
     if not os.path.isfile(script_path):
         raise FileNotFoundError(f"Altium script not found: {script_path}")
 
-    # A stale sentinel from a previous run would be read as this run's
-    # result within microseconds of starting.
-    if os.path.exists(sentinel_path):
-        os.remove(sentinel_path)
+    if not _clear_sentinel(sentinel_path):
+        return False, {"error": (
+            f"the previous script still has {os.path.basename(sentinel_path)} open. "
+            "Altium is most likely sitting on a dialog -- look at its window."
+        )}
 
     if timeout is None:
         timeout = WARM_TIMEOUT if altium_is_running() else COLD_START_TIMEOUT
@@ -162,14 +206,34 @@ def run_script(
     # costs a full timeout every time.
     subprocess.Popen('"' + exe + '" ' + argument, close_fds=True)
 
+    # The report is only opened once it has stopped changing, and this
+    # is the reason why. The script rewrites it from scratch on every
+    # progress line (`Say`), and Delphi's SaveToFile takes the file
+    # EXCLUSIVELY: a handle held on this side at that moment does not
+    # slow the script down, it fails its write -- and a failed write
+    # inside Altium is a modal dialog waiting for a human who is not
+    # there. So while the script is working the file is left alone
+    # entirely, and what eventually gets read is a file nobody is
+    # writing. It costs one poll interval to notice the end, which is
+    # nothing next to what it avoids.
+    #
+    # It matters more than it used to: with Altium, SolidWorks and AEDT
+    # all working at once, a read that used to take microseconds can sit
+    # behind the other two's disk traffic for far longer.
     deadline = time.monotonic() + timeout
+    written = None
     while time.monotonic() < deadline:
+        time.sleep(POLL_SECONDS)
+        fingerprint = _fingerprint(sentinel_path)
+        settled = fingerprint is not None and fingerprint == written
+        written = fingerprint
+        if not settled:
+            continue
         report = read_sentinel(sentinel_path)
         if report.get("stage") == "end":
             ok = report.get("ok", "1") == "1"
             log(f"Altium script finished ({'ok' if ok else 'reported a failure'}).")
             return ok, report
-        time.sleep(POLL_SECONDS)
 
     partial = read_sentinel(sentinel_path)
     if partial:

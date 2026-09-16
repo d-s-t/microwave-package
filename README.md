@@ -2,10 +2,17 @@
 
 The client pipeline for the pedestal experiment, in
 [`microwave_package/`](microwave_package/): one script (or a web UI on
-top of it) that, end to end, builds a SolidWorks STEP file per point in a
-parameter sweep, builds an AEDT model from each, queues them for
-analysis, waits for and monitors the worker's progress, and plots the
-combined results once they're in. Resumable at every stage.
+top of it) that, end to end, draws each point of a parameter sweep in
+Altium, builds its SolidWorks STEP file, turns the two into an AEDT
+model, queues them for analysis, waits for and monitors the worker's
+progress, and plots the combined results once they're in. Resumable at
+every stage, and stoppable at any point.
+
+The three programs work at the same time, each on its own combination
+(see [`workflow/stages.py`](microwave_package/workflow/stages.py)):
+Altium draws combination 5's boards while SolidWorks rebuilds
+combination 4's solid and AEDT imports combination 3's STEP. A
+combination reaches AEDT once both of its halves have landed.
 
 A run asks HFSS one of two questions, chosen per run:
 
@@ -33,6 +40,7 @@ microwave_package/
     eigenmode/    resonant frequencies and Q, and the chip |E| pictures
     driven/       S-parameters: the sweep, the ports, the Touchstone
   workflow/   running a sweep: state, queue, results, plots
+    stages.py     Altium, SolidWorks and AEDT as three parallel queues
   pipeline.py, webapp.py    the two entry points
 runs/         every run's output (git-ignored)
 base_parts/   the SolidWorks part library and the Altium generator
@@ -83,12 +91,30 @@ Open <http://127.0.0.1:5000/> (or set `PORT` to serve somewhere else).
 Pick which parameter(s) from `base_parts/default.txt` to sweep and over
 what range, choose what to solve -- Eigenmode or Driven Modal, which
 decides which analysis settings the form then asks for -- and start the
-run. The status page updates live as STEP files
-get built, models get queued, the worker finishes each analysis, and
-this pipeline reopens each analyzed project to pull out its results (one
-at a time, never in parallel) -- the plot appears there automatically
-once everything's done. Existing runs (including ones interrupted
-mid-way) are listed on the home page and can be resumed with one click.
+run.
+
+The status page updates live, with a bar per phase rather than one bar
+for the whole run -- because several of them are happening at once:
+
+    Altium          the boards, drawn in Altium          \ at the same
+    SolidWorks      the solid, rebuilt and exported      / time
+    AEDT model      the HFSS model, built here
+    Copy to queue   the project, copied to the share
+    Analysis        the solve, run by the worker
+    Copy back       the analysed files, copied off the share
+    Results         the results, read out of the solved project
+
+Every combination carries the same seven, so its row says where it
+actually is ("SolidWorks...", "Queued...", "Copy back...") instead of
+just "running". The plot appears automatically once everything's done.
+Existing runs (including ones interrupted or stopped mid-way) are listed
+on the home page and can be resumed with one click.
+
+**Stop this run** stops a run without losing anything. It is cooperative
+rather than a kill -- none of the three programs can be interrupted
+mid-call -- so each finishes the combination it is in the middle of,
+records it, and the run ends where it stood. Resume carries on from
+there: nothing already drawn, built, modelled or analysed is done twice.
 
 Each combination on a run's status page has an **Open in AEDT** button
 (opens that combination's project in a visible AEDT window on this
@@ -112,8 +138,13 @@ python -m microwave_package.pipeline --sweep pedestal_depth=0:10:2
 
 `--sweep` is repeatable -- sweeping more than one parameter runs every
 combination of them (the cartesian product), so watch the combination
-count: each one is a full model build + analysis. To resume an
-interrupted run instead of starting a new one:
+count: each one is a full model build + analysis.
+
+Ctrl-C stops a run the same way the web UI's Stop button does: each
+program finishes the combination it is on and the run ends resumable
+(press it again to quit without waiting -- the run stays resumable
+either way). To resume a stopped or interrupted run instead of starting
+a new one:
 
 ```
 python -m microwave_package.pipeline --resume run_20260819_140102
