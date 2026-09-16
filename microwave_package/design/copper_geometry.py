@@ -615,6 +615,40 @@ def _unite_as(modeler, parts: Sequence[str], name: str) -> List[str]:
 # pads from, so a wire always lands on its pad.
 
 
+# A bond does not balance the wire on the pad. The tool mashes the end
+# of it out into a foot -- a ball bond's flattened ball, a wedge bond's
+# heel -- wider than the wire it came from and pressed onto the metal,
+# with the wire rising out of it. Both constants are in wire diameters,
+# which is how a bonder's setup sheet gives them.
+FOOT_WIDTH = 2.0
+FOOT_MARGIN = 0.125
+
+
+def foot_of(diameter: float) -> Tuple[float, float]:
+    """The (radius, height) of the foot carrying a wire of `diameter`.
+
+    Sized by one rule: a sphere of the WIRE's own radius, centred at the
+    foot's centre, must fit inside the foot with FOOT_MARGIN to spare.
+
+    That rule is the whole point. `build_bond_wires` ends the arc at the
+    foot's centre, and the arc's end cap is a disc of one wire radius
+    about that point -- so every point of it is exactly a radius from
+    the centre, whichever way the cap is tilted. Fit the sphere and the
+    cap is buried for ANY approach angle, with no dependence on the loop
+    height, the span, or where the two pads sit relative to each other.
+
+    Getting this wrong is not subtle but it is easy to miss in a tree:
+    end the arc at the foot's TOP face instead, as this first did, and
+    half the cap stands proud of the foot. That shows up as a flat, cut
+    end of wire poking out of the bond -- and where the exposed cap runs
+    into the foot's top face it leaves a thin wedge, which is a sliver
+    for the mesher and the kind of feature Ansys asks be kept above
+    0.001 model units.
+    """
+    half = diameter * (0.5 + FOOT_MARGIN)
+    return diameter * FOOT_WIDTH / 2.0, 2.0 * half
+
+
 def wire_path(bond, frame: Frame, pcb_top: float, chip_top: float,
               height: float, segments: int = 12) -> List[List[float]]:
     """Points along one bond loop, in assembly coordinates.
@@ -624,6 +658,11 @@ def wire_path(bond, frame: Frame, pcb_top: float, chip_top: float,
     gives that shape with the apex `height` above the ends, and needs no
     special-casing when the two ends sit at different heights -- which
     they do not, now the die is let into the board flush.
+
+    `pcb_top`/`chip_top` are where the wire's CENTRELINE starts and
+    ends, which the caller sets at the centre of each foot -- half a
+    foot height above the pad -- so that both ends of the arc finish
+    buried. See `foot_of` for why the centre and not the top face.
     """
     import math
 
@@ -640,28 +679,72 @@ def wire_path(bond, frame: Frame, pcb_top: float, chip_top: float,
 def build_bond_wires(modeler, bond_list, frame: Frame, pcb_top: float,
                      chip_top: float, height: float, diameter: float,
                      name: str = "wirebond", log=logger.info) -> List[str]:
-    """Create every bond wire as a swept circular profile.
+    """Create every bond wire as a swept circular profile on two feet.
 
     `pcb_top`/`chip_top` are the height of the COPPER surface a wire
     lands on -- the caller passes substrate-top-face-plus-plating, not
-    the bare substrate. The whole path is then raised by one more wire
-    radius here, so the tube's UNDERSIDE sits tangent to the pad rather
-    than its centreline. A tube centred exactly on the pad surface has
-    half its cross-section sunk into the pad and the substrate below it,
-    which is exactly what an intersection check flags.
+    the bare substrate.
 
-    They are united into one body: the model wants a handful of named
-    solids, not one per wire, and the material rules match on the name.
+    Each end gets a FOOT: a short cylinder of conductor standing on the
+    pad, with the arc's end buried in it. This is not decoration. HFSS
+    joins conductors through shared mesh, which wants either overlapping
+    volume or a coincident face, and the arc on its own offers neither:
+    run at pad height it sinks half its cross-section into the pad and
+    the substrate under it, and raised clear by a radius -- which is what
+    this did before -- it only ever touches the pad along a line of zero
+    width. Ansys names "imperfect tangential contacts" as a cause of
+    mesh failure outright, and asks that a contact between objects be at
+    least 0.001 model units across; a tangent is zero. When it does mesh
+    the result is worse than a failure, because the model still solves:
+    either the bond comes out open, which for the signal collapses S21
+    and for the ground quietly unreferences the die, or the current
+    crowds through a near-singular contact and the adaptive passes chase
+    that instead of the interconnect.
+
+    Sinking the wire into the pad instead would work on the board, where
+    the copper is 35 um of a 25 um wire's diameter, and not on the die,
+    whose metal is 200 NANOmetres -- a wire buried half a diameter there
+    is a wire buried 12 um in silicon. The foot avoids the choice: it
+    stands ON the metal, so its underside is a coincident face on either
+    side, and at FOOT_WIDTH diameters across it lands some 2000 square
+    microns of contact rather than a line.
+
+    The arc ends at the foot's CENTRE, which is what buries its cut end
+    rather than leaving it standing proud -- `foot_of` has the rule and
+    what it looks like when it is wrong.
+
+    They are united into one body -- feet and wires together: the model
+    wants a handful of named solids, not one per wire, and the material
+    rules match on the name. The union is only with itself; the join to
+    the pad is the coincident face, which is why nothing here has to
+    know which copper body it came down on.
     """
-    radius = diameter / 2.0
+    foot_radius, foot_height = foot_of(diameter)
+    bury = foot_height / 2.0
+
     made = []
+    wires = 0
     for bond in bond_list:
+        # The wire first, so `made[0]` is a wire: unite takes the name
+        # of the first body in the list, and that is the one renamed.
         wire = modeler.create_polyline(
-            points=wire_path(bond, frame, pcb_top + radius, chip_top + radius, height),
+            points=wire_path(bond, frame,
+                             pcb_top + bury, chip_top + bury, height),
             xsection_type="Circle",
             xsection_width=diameter,
         )
         made.append(wire.name)
+        wires += 1
+
+        for x, y, pad_top in ((bond.pcb_x, bond.pcb_y, pcb_top),
+                              (bond.chip_x, bond.chip_y, chip_top)):
+            foot = modeler.create_cylinder(
+                orientation="Y",
+                origin=frame.point(x, y, pad_top),
+                radius=foot_radius,
+                height=foot_height,
+            )
+            made.append(foot.name)
 
     if not made:
         return []
@@ -670,7 +753,8 @@ def build_bond_wires(modeler, bond_list, frame: Frame, pcb_top: float,
     modeler[made[0]].name = name
 
     signal = sum(1 for b in bond_list if b.kind == "signal")
-    log(f"Built {len(made)} bond wires as {name!r} ({signal} signal, {len(made) - signal} ground)")
+    log(f"Built {wires} bond wires on {len(made) - wires} feet as {name!r} "
+        f"({signal} signal, {wires - signal} ground)")
     return [name]
 
 

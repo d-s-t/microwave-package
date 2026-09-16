@@ -12,10 +12,11 @@ nonsense with the copper lying in the wrong plane.
 
 Run: python -m unittest discover -s tests
 """
+import math
 import os
 import unittest
 
-from microwave_package.design import cavity as cav, copper_geometry as cg
+from microwave_package.design import bonds as bond_mod, cavity as cav, copper_geometry as cg
 
 # A trimmed copy of real output from base_parts/altium/ExportCopper.pas.
 SAMPLE = """# copper geometry, millimetres, relative to board centre
@@ -412,14 +413,15 @@ class TestBondWires(unittest.TestCase):
         self.assertEqual(path[0], FRAME.point(bond.pcb_x, bond.pcb_y, 1.381))
         self.assertEqual(path[-1], FRAME.point(bond.chip_x, bond.chip_y, 1.381))
 
-    def test_build_bond_wires_raises_the_path_by_one_radius(self):
+    def test_build_bond_wires_raises_the_path_onto_the_feet(self):
         """The caller passes the copper's own top surface as pcb_top/
         chip_top. A tube CENTRED there has half its cross-section sunk
-        into the pad and the substrate below it -- which an interference
-        check flags as an intersection even though the wire is only
-        doing what a real bond does, resting on the pad. Raising the
-        centreline by one radius puts the tube's underside, not its
-        centre, at the surface."""
+        into the pad and the substrate below it. This used to be fixed
+        by raising the centreline exactly one radius, which put the
+        tube's underside ON the surface -- tangent, touching along a
+        line of zero width, which is the one contact HFSS cannot mesh.
+        The centreline now clears the pad by a whole foot height, and
+        the foot is what carries the contact. See TestBondWireFeet."""
         modeler = FakeModeler()
         pcb_top = 1.381
         diameter = 0.025
@@ -427,8 +429,9 @@ class TestBondWires(unittest.TestCase):
                             chip_top=pcb_top, height=0.2, diameter=diameter,
                             log=lambda _m: None)
         lowest = min(p[1] for path in modeler.polylines for p in path)
-        self.assertAlmostEqual(lowest, pcb_top + diameter / 2.0, places=9)
-        self.assertGreater(lowest, pcb_top, "the tube must not dip to the bare pad surface")
+        self.assertAlmostEqual(lowest, pcb_top + cg.foot_of(diameter)[1] / 2.0, places=9)
+        self.assertGreater(lowest, pcb_top + diameter / 2.0,
+                           "a centreline one radius up leaves the tube tangent")
 
     def test_the_loop_rises_above_both_ends(self):
         from microwave_package.design.bonds import Bond
@@ -456,6 +459,8 @@ class TestBondWires(unittest.TestCase):
                                 log=lambda _m: None),
             [],
         )
+        self.assertEqual(modeler.cylinders, [], "no bonds, no feet either")
+        self.assertEqual(modeler.unites, [])
 
 
 class TestAgainstRealExport(unittest.TestCase):
@@ -1167,3 +1172,218 @@ class TestExportedLayoutIsSane(unittest.TestCase):
             self.assertAlmostEqual(hi, half_trace, places=6, msg=f"at x={x}")
             checked += 1
         self.assertGreater(checked, 0)
+
+
+# --- wire bonds -------------------------------------------------------
+
+def _unit(a, b):
+    d = [b[i] - a[i] for i in range(3)]
+    length = math.sqrt(sum(c * c for c in d))
+    return [c / length for c in d]
+
+
+def _cap_points(end, inward, radius, samples=24):
+    """The rim of the tube's flat end cap, sampled all the way round.
+
+    The cap is a disc of `radius` about `end`, lying square to the run
+    `inward -> end`. Two unit vectors perpendicular to that run span it;
+    the first is built against whichever axis the run leans on least, so
+    the cross product never collapses on a wire that happens to come
+    down along one.
+    """
+    d = _unit(inward, end)
+    axis = min(range(3), key=lambda i: abs(d[i]))
+    seed = [0.0, 0.0, 0.0]
+    seed[axis] = 1.0
+    e1 = _cross(d, seed)
+    e1 = [c / math.sqrt(sum(v * v for v in e1)) for c in e1]
+    e2 = _cross(d, e1)
+    return [
+        [end[i] + radius * (math.cos(a) * e1[i] + math.sin(a) * e2[i]) for i in range(3)]
+        for a in (2.0 * math.pi * k / samples for k in range(samples))
+    ]
+
+
+def _cross(a, b):
+    return [a[1] * b[2] - a[2] * b[1],
+            a[2] * b[0] - a[0] * b[2],
+            a[0] * b[1] - a[1] * b[0]]
+
+
+def _tube_underside(points, radius):
+    """The lowest point on the swept tube's surface, per centreline point.
+
+    For a straight run in direction `d`, the surface is `c + r * n` over
+    every unit `n` perpendicular to `d`, so the surface dips
+    `r * sqrt(1 - d_up^2)` below the centreline -- a full radius when the
+    run is level, nothing at all when it is vertical. The up axis is Y,
+    index 1, because the assembly is Y-up (see `Frame`).
+
+    Only the ends of each straight run are checked: the centreline
+    height is linear along one, so its minimum is at an end.
+    """
+    lows = []
+    for a, b in zip(points, points[1:]):
+        d = _unit(a, b)
+        drop = radius * math.sqrt(max(0.0, 1.0 - d[1] * d[1]))
+        lows.append(a[1] - drop)
+        lows.append(b[1] - drop)
+    return lows
+
+
+class TestBondWireFeet(unittest.TestCase):
+    """A bond has to JOIN the pad, and HFSS joins conductors through
+    shared mesh -- overlapping volume, or a coincident face. The wire
+    alone gives neither: level with the pad it buries half its section
+    in the substrate, and lifted clear by a radius it only grazes the
+    pad along a line of zero width. Ansys lists tangential contacts as a
+    mesh-failure cause and asks for at least 0.001 model units across a
+    contact. So each end stands on a foot.
+    """
+
+    DIAMETER = 0.025
+    HEIGHT = 0.2
+
+    def build(self, bond_list, height=None, diameter=None):
+        modeler = FakeModeler()
+        names = cg.build_bond_wires(
+            modeler, bond_list, FRAME,
+            pcb_top=STACK.pcb_copper_top,
+            chip_top=STACK.chip_copper_top,
+            height=self.HEIGHT if height is None else height,
+            diameter=self.DIAMETER if diameter is None else diameter,
+            log=lambda *a, **k: None,
+        )
+        return modeler, names
+
+    def bonds(self):
+        return [
+            bond_mod.Bond(bond_mod.SIGNAL, -4.0, 0.05, -3.0, 0.05),
+            bond_mod.Bond(bond_mod.GROUND, -4.0, 1.20, -3.0, 1.20),
+            bond_mod.Bond(bond_mod.GROUND, 2.0, 4.0, 2.0, 3.0),
+        ]
+
+    def test_every_bond_gets_a_foot_at_each_end(self):
+        modeler, _ = self.build(self.bonds())
+        self.assertEqual(len(modeler.polylines), 3)
+        self.assertEqual(len(modeler.cylinders), 6)
+
+    def test_feet_stand_on_the_pad_and_rise_from_it(self):
+        """The foot's underside must LIE IN the pad's top face -- that
+        coincident face is the whole join. A foot sunk into the pad
+        would be two conductors claiming one volume on the board and,
+        on the die, 25 um of gold inside 0.2 um of metal and the silicon
+        under it."""
+        modeler, _ = self.build(self.bonds())
+        pads = {round(STACK.pcb_copper_top, 9), round(STACK.chip_copper_top, 9)}
+        for orientation, origin, _radius, height in modeler.cylinders:
+            self.assertEqual(orientation, "Y", "the assembly is Y-up")
+            self.assertIn(round(origin[1], 9), pads)
+            self.assertGreater(height, 0.0, "the foot must rise off the pad, not sink in")
+
+    def test_the_contact_is_a_face_wider_than_the_wire(self):
+        modeler, _ = self.build(self.bonds())
+        for _o, _origin, radius, _h in modeler.cylinders:
+            self.assertGreater(radius, self.DIAMETER / 2.0)
+            # Ansys asks that a contact between objects be at least
+            # 0.001 model units across. Units here are mm, so 1 um.
+            self.assertGreater(2.0 * radius, 0.001)
+
+    def test_each_foot_is_concentric_with_the_arc_it_carries(self):
+        """A foot offset from the wire end is a foot the wire misses."""
+        modeler, _ = self.build(self.bonds())
+        ends = []
+        for points in modeler.polylines:
+            ends.extend([points[0], points[-1]])
+        for (_o, origin, _r, _h), end in zip(modeler.cylinders, ends):
+            self.assertAlmostEqual(origin[0], end[0], places=9)
+            self.assertAlmostEqual(origin[2], end[2], places=9)
+
+    def test_the_arc_ends_at_the_centre_of_its_foot(self):
+        """Not at the top face. The end cap is a disc of one wire radius
+        about the arc's last point, so putting that point at the centre
+        is what keeps the cap inside the foot however it is tilted -- and
+        putting it at the top face, which is what this did first, leaves
+        half the cap standing proud as a cut end of wire poking out of
+        the bond."""
+        modeler, _ = self.build(self.bonds())
+        _radius, height = cg.foot_of(self.DIAMETER)
+        for points in modeler.polylines:
+            self.assertAlmostEqual(points[0][1], STACK.pcb_copper_top + height / 2.0, places=9)
+            self.assertAlmostEqual(points[-1][1], STACK.chip_copper_top + height / 2.0, places=9)
+
+    def test_the_cut_end_of_the_wire_is_buried_in_the_foot(self):
+        """The one that matters, stated as geometry rather than as the
+        formula that produced it: sample the end cap all the way round
+        and put every point of it inside the foot, clear of both faces
+        and of the side."""
+        modeler, _ = self.build(self.bonds())
+        radius, height = cg.foot_of(self.DIAMETER)
+        feet = list(modeler.cylinders)
+        for wire, points in enumerate(modeler.polylines):
+            for end, inward, foot in ((0, 1, feet[2 * wire]),
+                                      (-1, -2, feet[2 * wire + 1])):
+                _o, origin, _r, _h = foot
+                for point in _cap_points(points[end], points[inward], self.DIAMETER / 2.0):
+                    across = math.hypot(point[0] - origin[0], point[2] - origin[2])
+                    self.assertLess(across, radius, "cap escapes through the side")
+                    self.assertGreater(point[1], origin[1], "cap escapes below, into the pad")
+                    self.assertLess(point[1], origin[1] + height, "cap escapes out of the top")
+
+    def test_the_foot_has_room_for_the_cap_at_any_angle(self):
+        """`foot_of`'s own rule, checked directly: a sphere of the wire's
+        radius about the foot's centre fits inside it with margin. The
+        cap lies on that sphere whatever the approach angle, so this is
+        what makes the test above hold for loop heights and spans nobody
+        has tried yet."""
+        for diameter in (0.018, 0.025, 0.050):
+            radius, height = cg.foot_of(diameter)
+            margin = diameter * cg.FOOT_MARGIN
+            self.assertGreaterEqual(height / 2.0, diameter / 2.0 + margin,
+                                    f"no headroom at d={diameter}")
+            self.assertGreaterEqual(radius, diameter / 2.0 + margin,
+                                    f"no side room at d={diameter}")
+
+    def test_the_wire_never_dips_below_the_pad_plane(self):
+        modeler, _ = self.build(self.bonds())
+        floor = min(STACK.pcb_copper_top, STACK.chip_copper_top)
+        for points in modeler.polylines:
+            for low in _tube_underside(points, self.DIAMETER / 2.0):
+                self.assertGreater(low, floor)
+
+    def test_a_flat_loop_clears_the_pad_rather_than_grazing_it(self):
+        """The worst case for the underside, and the case the old code
+        got exactly wrong: with no loop the wire runs level, the tube
+        dips a full radius below the centreline, and lifting it by one
+        radius left it tangent -- touching along a line of zero width.
+        A foot taller than a radius is what buys the clearance back."""
+        modeler, _ = self.build(self.bonds(), height=0.0)
+        floor = min(STACK.pcb_copper_top, STACK.chip_copper_top)
+        radius = self.DIAMETER / 2.0
+        clearance = cg.foot_of(self.DIAMETER)[1] / 2.0 - radius
+        self.assertGreater(clearance, 0.0, "the foot must have headroom over the cap")
+        for points in modeler.polylines:
+            for low in _tube_underside(points, radius):
+                self.assertGreaterEqual(low, floor + clearance - 1e-12)
+
+    def test_a_steep_short_loop_still_clears_the_pad(self):
+        """The other extreme: a tall loop over a short span comes down
+        almost vertically. The tube dips less, not more, so the foot
+        still holds -- but only because the clearance is derived from
+        the radius and not from the loop."""
+        short = [bond_mod.Bond(bond_mod.GROUND, -3.2, 0.0, -3.0, 0.0)]
+        modeler, _ = self.build(short, height=1.0)
+        floor = min(STACK.pcb_copper_top, STACK.chip_copper_top)
+        for points in modeler.polylines:
+            for low in _tube_underside(points, self.DIAMETER / 2.0):
+                self.assertGreater(low, floor)
+
+    def test_wires_and_feet_unite_into_the_one_named_body(self):
+        """The material rules match on the name, and only the first body
+        in a unite keeps its own -- so the first thing built has to be a
+        wire, not a foot."""
+        modeler, names = self.build(self.bonds())
+        self.assertEqual(names, ["wirebond"])
+        self.assertEqual(len(modeler.unites), 1)
+        self.assertEqual(len(modeler.unites[0]), 9)
+        self.assertEqual(modeler["poly1"].name, "wirebond")
