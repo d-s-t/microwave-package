@@ -270,18 +270,23 @@ Via Stitching/Shielding menu.** Those commands act on a selected *net*, and
 nothing this generator draws carries one (see `Announce`) — there is no net for
 them to select. They are also dialog-only, with no scriptable path found that
 skips showing it, and a dialog is exactly what a script with no headless mode
-cannot risk opening. `AddStitchingToNet` (the ring around the chip pocket) and
-`AddShieldingToNet` (the fence along the CPW) place vias one at a time through
-`TryVia`, which checks each candidate against the board itself — every pad,
-track and via already placed, via `IPCB_Primitive.BoundingRectangle` — rather
-than trusting a hand-derived clearance to still be right. Both run **last**,
-after the connector launch and the bond pads are on the board, precisely so
-that check has something real to check against; running them earlier is the
-mistake that let vias land on pads neither loop knew existed. `via_min_spacing`
-is the floor `TryVia` enforces between any two vias, on top of the nominal
-`via_pitch` the loops step by — it is what stops two accepted vias landing on
-top of each other at a pattern's own seam (the ring's corners, or the via right
-after one skipped for an obstacle).
+cannot risk opening. `AddStitchingToNet` (a grid filling the ground planes
+generally, to break up the parallel-plate cavity an unstitched pair of planes
+forms) and `AddShieldingToNet` (a fence along the CPW, from one connector's
+signal land to the other's) place vias one at a time through `TryVia`, which
+checks each candidate against the board itself — every pad, track and via
+already placed, via `IPCB_Primitive.BoundingRectangle`, restricted to
+eTopLayer/eBottomLayer/eMultiLayer so a footprint's silkscreen and courtyard
+outlines don't count as copper — rather than trusting a hand-derived shape or
+clearance to still be right. Both run **last**, after the connector launch and
+the bond pads are on the board, precisely so that check has something real to
+check against; running them earlier is the mistake that once let the fence
+land on pads neither it nor a via already placed knew existed.
+`via_min_spacing` is the floor `TryVia` enforces between any two vias, and
+`via_max_spacing` is the grid step both loops step by and so the practical
+ceiling on spacing in open copper — together they are what stops two accepted
+vias landing on top of each other at a pattern's own seam, and what a
+suppression target's wavelength sets a maximum spacing for.
 
 ## What the spikes settled
 
