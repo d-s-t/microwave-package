@@ -508,25 +508,28 @@ Begin
 End;
 
 { Whether a via of diameter Dia at (X, Y) would land closer than MinGap
-  to a track, pad, via or placed component already on the board --
-  checked against the BOARD ITSELF rather than a list this script
+  to a track, pad, via or component-owned region already on the board
+  -- checked against the BOARD ITSELF rather than a list this script
   keeps, so a bond finger, a connector pad or an earlier stitching/
   shielding via all count the moment they are really there. Nothing
   here can drift out of step with what actually got placed, which a
   hand-derived clearance can.
 
-  The connector is checked as a whole component, not just by its pads.
-  Its library footprint brings its own ground connection in as a
-  region -- real copper, several bars of it rather than a simple pad --
-  and a region is deliberately not an obstacle here, on the reasoning
-  that a region is exactly the ground plane a stitching via is meant to
-  land in. That reasoning is wrong for a footprint's OWN ground copper
-  specifically: a via drilled under a mounted SMD connector is not
-  landing in a plane, it is landing under the part, solder pads or not.
-  Checking Comp.BoundingRectangle -- the union Altium already tracks
-  over everything the launch replicated in, pads and regions and
-  silkscreen alike -- keeps the whole footprint's footprint clear
-  without having to enumerate which of its primitives count as copper.
+  A region belonging to a placed component is an obstacle; a bare
+  board-level one is not. The connector's library footprint brings its
+  own ground connection in as a region -- real copper, several bars of
+  it, not a simple pad -- and "regions are not an obstacle" is right
+  for AddGroundPlane's and AddRect's regions (that IS the plane a via
+  is meant to land in) and wrong for the connector's own, which is
+  copper belonging to the PART rather than the board's own plane. The
+  first version of this check treated the connector as a whole
+  Comp.BoundingRectangle instead, which is not this: a component's
+  bounding rectangle is one rectangle over every child it has, so it
+  also claimed the empty space between, say, its ground land and its
+  outermost pads -- which is most of a connector's footprint by area --
+  and a shielding fence run out to meet one found almost nothing free
+  near it. InComponent on the region itself is the tighter question:
+  only the shape that is actually there is the obstacle.
 
   Tracks and pads are only obstacles on eTopLayer or eBottomLayer --
   the only two copper layers a two-layer board has. Placing the
@@ -542,11 +545,12 @@ End;
   every via already on the board is a real obstacle regardless of
   layer, and needs no check here.
 
-  Regions are deliberately not checked at all: the ground planes are
-  exactly the copper a stitching or shielding via is meant to land in,
-  not an obstacle. What keeps a via out of the die's opening, the CPW's
-  own gap, a connector's void or off the board edge is the caller's own
-  bounds -- see TryVia.
+  A bare board-level region -- every plane, fill and cutout this file
+  draws itself -- is still not checked at all: that copper is exactly
+  where a stitching or shielding via is meant to land, not an obstacle.
+  What keeps a via out of the die's opening, the CPW's own gap, a
+  connector's void or off the board edge is the caller's own bounds --
+  see TryVia.
 
   The test is a bounding-box overlap, not exact outline geometry: it
   can refuse a via that would technically have squeezed past an
@@ -580,8 +584,26 @@ Begin
     While (Prim <> Nil) And (Not Result) Do
     Begin
         Relevant := False;
-        If (Prim.ObjectId = eViaObject) Or (Prim.ObjectId = eComponentObject) Then
+        If Prim.ObjectId = eViaObject Then
             Relevant := True
+        Else If Prim.ObjectId = eRegionObject Then
+        Begin
+            { False by default here, the opposite default from the
+              pad/track case below: board-level regions outnumber
+              component-owned ones on this board by roughly nine to
+              one (every AddGroundPlane, AddRect and AddCavity call
+              against, at most, the handful the connector brings in),
+              so if InComponent cannot be read at all the safer
+              default is to keep treating regions as not-an-obstacle,
+              same as before this check existed, rather than block
+              stitching out of every plane on the board over the one
+              region that needed the opposite answer. }
+            Relevant := False;
+            Try
+                Relevant := Prim.InComponent;
+            Except
+            End;
+        End
         Else If (Prim.ObjectId = eTrackObject) Or (Prim.ObjectId = ePadObject) Then
         Begin
             { eMultiLayer too, not just Top and Bottom: a through-hole

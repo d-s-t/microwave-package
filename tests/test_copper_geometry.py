@@ -1018,20 +1018,47 @@ class TestExportedLayoutIsSane(unittest.TestCase):
             f"via at ({via.x}, {via.y}) overlaps the pad at ({pad.x}, {pad.y})",
         )
 
-    def test_no_via_sits_under_the_connector(self):
-        """A via under the launch -- its ground land, not just its
-        pads -- is a hole under a solder joint or under the part
-        itself. Not a plain X threshold any more: the stitching fill
-        now legitimately reaches out to the board edge alongside each
-        launch (see test_ground_is_filled_behind_each_launch), so only
-        the launch's own rectangle, on both axes, is off limits."""
-        outer = self.smp.launch_origin(self.half_l, self.v["port_space"]) - self.smp.OUTER_V
-        half_y = self.smp.GROUND_LAND_HALF
-        under = [
-            v for v in self.pkg.vias
-            if (self.launch_inner - 1e-6 <= abs(v.x) <= outer + 1e-6)
-            and (abs(v.y) <= half_y + 1e-6)
+    def _launch_lands(self):
+        """The connector's own ground-land regions -- the shaped
+        copper its library footprint brings in, distinguished from
+        this generator's own planes and fills by their Y reach, which
+        matches the vendor's land half-width (smp.GROUND_LAND_HALF)
+        rather than the CPW gap or the board's own half-side.
+
+        A single rectangular threshold does not describe this shape:
+        the land's own edge sits at a different X than the signal
+        pad's inner edge (self.launch_inner), which reaches further
+        back onto the board but only across the pad's own narrow
+        width, not the land's full height. Using launch_inner as an X
+        bound across the land's whole Y reach is exactly what
+        overstated this footprint before -- a via well clear of the
+        land in fact, near its outer corner, still failed on X alone.
+        Reading the region's own bounding box sidesteps the question
+        of which named measurement corresponds to which edge."""
+        half = self.smp.GROUND_LAND_HALF
+        return [
+            r for r in self.pkg.regions
+            if r.layer == "top"
+            and abs(max(abs(p[1]) for p in r.points) - half) < 1e-3
         ]
+
+    def test_no_via_sits_under_the_connector(self):
+        """A via under the launch's own ground land -- real copper the
+        library footprint brings in, not drawn by this generator -- is
+        a hole under a solder joint. Checked against the land regions'
+        own bounding boxes rather than a hand-derived rectangle; see
+        _launch_lands for why a single rectangle does not describe it."""
+        lands = self._launch_lands()
+        self.assertEqual(len(lands), 2, "expected one ground land region per launch")
+        under = []
+        for via in self.pkg.vias:
+            r = via.diameter / 2.0
+            for land in lands:
+                xs = [p[0] for p in land.points]
+                ys = [p[1] for p in land.points]
+                if (min(xs) - r <= via.x <= max(xs) + r) and (min(ys) - r <= via.y <= max(ys) + r):
+                    under.append(via)
+                    break
         self.assertEqual(under, [], f"{len(under)} vias under the launch")
 
     def test_the_fence_does_not_cross_the_die_pocket(self):
