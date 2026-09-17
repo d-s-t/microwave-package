@@ -677,8 +677,7 @@
       var bar = row.querySelector('.progress');
       if (bar && r.phases) {
         bar.title = r.done + ' done · ' + r.failed + ' failed · ' + r.pending + ' to go' +
-          (r.skipped ? ' (' + r.skipped + ' skipped, not counted)' : '') + '
-' +
+          (r.skipped ? ' (' + r.skipped + ' skipped, not counted)' : '') + '\n' +
           r.phases.map(function (phase) {
             return phase.label + ' ' + phase.done + '/' + phase.total;
           }).join(', ');
