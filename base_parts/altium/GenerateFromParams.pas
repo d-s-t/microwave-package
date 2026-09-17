@@ -534,6 +534,14 @@ Begin
     Cy   := MMsToCoord(Y);
     Half := MMsToCoord(Dia / 2.0 + MinGap);
 
+    { AllObjects, filtered by ObjectId inside the loop, rather than a
+      narrower AddFilter_ObjectSet built from just these three kinds:
+      AllObjects and AllLayers are the two filter constants this file
+      has already confirmed exist (ReportCounts uses the same pair). A
+      set built from named object-id constants would very likely work
+      too, but it is untested here, and an untested identifier in this
+      API is a parse error -- the modal-dialog kind, not a catchable
+      one -- so it is not worth the saving. }
     It := Board.BoardIterator_Create;
     It.AddFilter_ObjectSet(AllObjects);
     It.AddFilter_LayerSet(AllLayers);
@@ -572,11 +580,24 @@ Function TryVia(Board : IPCB_Board; X, Y, Dia, MinGap,
 Begin
     Result := False;
     If (Abs(X) + Dia / 2.0 > HalfL) Or (Abs(Y) + Dia / 2.0 > HalfS) Then Exit;
-    If (CavHalfL > 0.0) And (Abs(X) < CavHalfL + Dia / 2.0 + MinGap)
+    If ((CavHalfL > 0.0) Or (CavHalfS > 0.0))
+       And (Abs(X) < CavHalfL + Dia / 2.0 + MinGap)
        And (Abs(Y) < CavHalfS + Dia / 2.0 + MinGap) Then Exit;
     If ViaObstructed(Board, X, Y, Dia, MinGap) Then Exit;
     AddVia(Board, X, Y, Dia, Dia / 2.0);
     Result := True;
+End;
+
+{ Counts one TryVia outcome into whichever total it belongs to. Only
+  exists to keep AddStitchingToNet and AddShieldingToNet from repeating
+  the same four-line If/Else at every candidate site -- each has
+  several. }
+Procedure Tally(Ok : Boolean; Var Placed, Skipped : Integer);
+Begin
+    If Ok Then
+        Placed := Placed + 1
+    Else
+        Skipped := Skipped + 1;
 End;
 
 Procedure AddPad(Board : IPCB_Board; X, Y, W, H : Double; Lay : TLayer);
@@ -962,38 +983,29 @@ Function AddStitchingToNet(Board : IPCB_Board;
                            HalfL, HalfS, CavHalfL, CavHalfS : Double;
                            Var Skipped : Integer) : Integer;
 Var
-    X, Y : Double;
+    X, Y     : Double;
+    Placed   : Integer;
 Begin
-    Result := 0;
+    Placed := 0;
     Skipped := 0;
 
     X := -HalfX;
     While X <= HalfX Do
     Begin
-        If TryVia(Board, X,  HalfY, ViaDia, MinGap, HalfL, HalfS, CavHalfL, CavHalfS) Then
-            Result := Result + 1
-        Else
-            Skipped := Skipped + 1;
-        If TryVia(Board, X, -HalfY, ViaDia, MinGap, HalfL, HalfS, CavHalfL, CavHalfS) Then
-            Result := Result + 1
-        Else
-            Skipped := Skipped + 1;
+        Tally(TryVia(Board, X,  HalfY, ViaDia, MinGap, HalfL, HalfS, CavHalfL, CavHalfS), Placed, Skipped);
+        Tally(TryVia(Board, X, -HalfY, ViaDia, MinGap, HalfL, HalfS, CavHalfL, CavHalfS), Placed, Skipped);
         X := X + ViaPitch;
     End;
 
     Y := -HalfY + ViaPitch;
     While Y < HalfY Do
     Begin
-        If TryVia(Board, -HalfX, Y, ViaDia, MinGap, HalfL, HalfS, CavHalfL, CavHalfS) Then
-            Result := Result + 1
-        Else
-            Skipped := Skipped + 1;
-        If TryVia(Board,  HalfX, Y, ViaDia, MinGap, HalfL, HalfS, CavHalfL, CavHalfS) Then
-            Result := Result + 1
-        Else
-            Skipped := Skipped + 1;
+        Tally(TryVia(Board, -HalfX, Y, ViaDia, MinGap, HalfL, HalfS, CavHalfL, CavHalfS), Placed, Skipped);
+        Tally(TryVia(Board,  HalfX, Y, ViaDia, MinGap, HalfL, HalfS, CavHalfL, CavHalfS), Placed, Skipped);
         Y := Y + ViaPitch;
     End;
+
+    Result := Placed;
 End;
 
 { A fence of shielding vias down both sides of the CPW trace, between
@@ -1017,9 +1029,10 @@ Function AddShieldingToNet(Board : IPCB_Board;
                            HalfL, HalfS, CavHalfL, CavHalfS : Double;
                            Var Skipped : Integer) : Integer;
 Var
-    X : Double;
+    X      : Double;
+    Placed : Integer;
 Begin
-    Result := 0;
+    Placed := 0;
     Skipped := 0;
 
     X := -FenceHalfL;
@@ -1027,17 +1040,13 @@ Begin
     Begin
         If Abs(X) >= FenceInnerL Then
         Begin
-            If TryVia(Board, X,  FenceY, ViaDia, MinGap, HalfL, HalfS, CavHalfL, CavHalfS) Then
-                Result := Result + 1
-            Else
-                Skipped := Skipped + 1;
-            If TryVia(Board, X, -FenceY, ViaDia, MinGap, HalfL, HalfS, CavHalfL, CavHalfS) Then
-                Result := Result + 1
-            Else
-                Skipped := Skipped + 1;
+            Tally(TryVia(Board, X,  FenceY, ViaDia, MinGap, HalfL, HalfS, CavHalfL, CavHalfS), Placed, Skipped);
+            Tally(TryVia(Board, X, -FenceY, ViaDia, MinGap, HalfL, HalfS, CavHalfL, CavHalfS), Placed, Skipped);
         End;
         X := X + ViaPitch;
     End;
+
+    Result := Placed;
 End;
 
 { Outline, centre conductor, coplanar grounds either side of the gap, a

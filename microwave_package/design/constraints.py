@@ -275,6 +275,21 @@ def check_layout(values: Dict[str, float]) -> Optional[str]:
     half_length = get("pcb_length") / 2.0
     via_dia = get("via_diameter")
 
+    # Both the ring and the fence step candidate vias by via_pitch and
+    # then keep only the ones via_min_spacing clears of the last one
+    # accepted (GenerateFromParams.pas's TryVia). If the spacing floor
+    # does not fit within a pitch step once the via's own diameter is
+    # taken out, that is not a corner case -- it is every other
+    # candidate along the whole ring and fence, landing as a pattern
+    # that is mostly gaps rather than the shielding it is there to be.
+    if get("via_min_spacing") > get("via_pitch") - via_dia:
+        return (
+            f"via_min_spacing ({_fmt(get('via_min_spacing'))} mm) leaves no room within "
+            f"via_pitch ({_fmt(get('via_pitch'))} mm) for a {_fmt(via_dia)} mm via -- "
+            f"most candidates along the ring and fence would be skipped for landing too "
+            f"close to the last one accepted; reduce via_min_spacing or widen via_pitch"
+        )
+
     # The CPW gap is solved rather than drawn, so the first thing that
     # can fail is the solve itself: too wide a trace over a thin
     # substrate is microstrip-dominated and cannot reach 50 ohm at any
@@ -377,8 +392,12 @@ def check_layout(values: Dict[str, float]) -> Optional[str]:
 
     # The shield ring goes OUTSIDE the bond fingers. Working inward from
     # the die the order is: die, opening, bond fingers, shield ring. Get
-    # that backwards and the ring's vias land on the fingers -- which the
-    # generator would build without complaint.
+    # that backwards and the ring's own vias would be the ones landing on
+    # the fingers -- GenerateFromParams.pas's TryVia now skips a via
+    # rather than placing it over a finger, so this is caught there too,
+    # but a ring built mostly of vias skipped for that reason is a worse
+    # defect than refusing to build it at all, which is what failing here
+    # up front is for.
     finger_outer = (get("chip_length") / 2.0
                     + finger_offset(get("bonding_clearence"), get("cavity_clearance"))
                     + get("bond_pad_length") / 2.0)
