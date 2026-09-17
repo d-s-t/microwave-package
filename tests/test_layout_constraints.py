@@ -29,16 +29,12 @@ class TestCheckLayout(unittest.TestCase):
         self.assertIn("via fence", reason)
         self.assertIn("pcb_side", reason)
 
-    def test_shield_ring_off_the_end_of_the_board_is_caught(self):
-        values = dict(defaults(), shield_ring_inset=12.0)
-        reason = constraints.check_layout(values)
-        self.assertIn("shield ring", reason)
-
-    def test_shield_ring_too_wide_is_caught_on_its_own_axis(self):
-        values = dict(defaults(), chip_side=9.5)
+    def test_via_min_spacing_wider_than_the_grid_step_is_caught(self):
+        values = dict(defaults(), via_min_spacing=1.0)
         reason = constraints.check_layout(values)
         self.assertIsNotNone(reason)
-        self.assertIn("across the feedline", reason)
+        self.assertIn("via_min_spacing", reason)
+        self.assertIn("via_max_spacing", reason)
 
     def test_unreachable_impedance_is_reported_as_such(self):
         """A trace too wide for the substrate is microstrip-dominated and
@@ -132,7 +128,7 @@ class TestTheDiesOpening(unittest.TestCase):
         names = set(defaults())
         for override in (
             {"pcb_side": 1.0},
-            {"shield_ring_inset": 12.0},
+            {"via_min_spacing": 1.0},
             {"bond_pad_length": constraints.CHIP_COPPER_INSET / 2},
             {"bonding_clearence": 9.0},
         ):

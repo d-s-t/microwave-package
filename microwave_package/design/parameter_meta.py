@@ -47,10 +47,9 @@ LABELS: Dict[str, str] = {
     # transmission line, shielding and bonds
     "cpw_trace_width": "CPW trace width",
     "via_diameter": "Via diameter",
-    "via_pitch": "Via fence pitch",
+    "via_max_spacing": "Maximum via spacing",
     "via_gnd_clearance": "Via fence setback from gap",
     "via_min_spacing": "Minimum via spacing",
-    "shield_ring_inset": "Shield ring inset",
     "bond_pad_length": "Bond pad length",
     "bond_pad_width": "Bond pad width",
     "bond_pad_pitch": "Bond pad pitch",
@@ -145,13 +144,14 @@ GROUPS: List[dict] = [
     },
     {
         "title": "Transmission line and shielding",
-        "hint": "The CPW itself, the via fence that shields it, and the bonds across to the "
-                "chip. The CPW gap is absent on purpose: it is solved for 50 ohm from the "
-                "trace width, substrate and copper thickness rather than typed.",
+        "hint": "The CPW itself, the vias that shield its fence and stitch the ground planes "
+                "elsewhere, and the bonds across to the chip. The CPW gap is absent on purpose: "
+                "it is solved for 50 ohm from the trace width, substrate and copper thickness "
+                "rather than typed.",
         "collapsed": False,
         "names": [
             "cpw_trace_width",
-            "via_diameter", "via_pitch", "via_gnd_clearance", "via_min_spacing", "shield_ring_inset",
+            "via_diameter", "via_max_spacing", "via_gnd_clearance", "via_min_spacing",
             "bond_pad_length", "bond_pad_width", "bond_pad_pitch",
             "bond_height", "bond_wire_diameter",
         ],

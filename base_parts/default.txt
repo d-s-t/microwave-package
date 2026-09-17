@@ -48,15 +48,13 @@
 
 "cpw_trace_width"= 0.2	' width of the CPW signal trace (the gap is solved for 50 ohm, not typed)
 
-"via_diameter"= 0.3	' finished diameter of the ground-stitching vias
+"via_diameter"= 0.3	' finished diameter of the stitching and shielding vias
 
-"via_pitch"= 0.8	' centre-to-centre spacing of vias along the fence
+"via_max_spacing"= 0.8	' grid step for the ground-plane fill, and the target spacing along the shield fence
 
 "via_gnd_clearance"= 0.15	' setback of the via fence from the edge of the CPW gap
 
 "via_min_spacing"= 0.2	' minimum clearance a placed via must keep from any pad, track or other via
-
-"shield_ring_inset"= 0.9	' shield ring setback from the die: must clear the bond fingers
 
 "bond_pad_length"= 0.3	' bonding pad size along the feedline
 

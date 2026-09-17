@@ -275,19 +275,20 @@ def check_layout(values: Dict[str, float]) -> Optional[str]:
     half_length = get("pcb_length") / 2.0
     via_dia = get("via_diameter")
 
-    # Both the ring and the fence step candidate vias by via_pitch and
-    # then keep only the ones via_min_spacing clears of the last one
-    # accepted (GenerateFromParams.pas's TryVia). If the spacing floor
-    # does not fit within a pitch step once the via's own diameter is
-    # taken out, that is not a corner case -- it is every other
-    # candidate along the whole ring and fence, landing as a pattern
-    # that is mostly gaps rather than the shielding it is there to be.
-    if get("via_min_spacing") > get("via_pitch") - via_dia:
+    # Both the ground-plane fill and the fence step candidate vias by
+    # via_max_spacing and then keep only the ones via_min_spacing clears
+    # of the last one accepted (GenerateFromParams.pas's TryVia). If the
+    # spacing floor does not fit within a grid step once the via's own
+    # diameter is taken out, that is not a corner case -- it is every
+    # other candidate across the whole fill and fence, landing as a
+    # pattern that is mostly gaps rather than the stitching and
+    # shielding it is there to be.
+    if get("via_min_spacing") > get("via_max_spacing") - via_dia:
         return (
             f"via_min_spacing ({_fmt(get('via_min_spacing'))} mm) leaves no room within "
-            f"via_pitch ({_fmt(get('via_pitch'))} mm) for a {_fmt(via_dia)} mm via -- "
-            f"most candidates along the ring and fence would be skipped for landing too "
-            f"close to the last one accepted; reduce via_min_spacing or widen via_pitch"
+            f"via_max_spacing ({_fmt(get('via_max_spacing'))} mm) for a {_fmt(via_dia)} mm via "
+            f"-- most candidates across the fill and fence would be skipped for landing too "
+            f"close to the last one accepted; reduce via_min_spacing or widen via_max_spacing"
         )
 
     # The CPW gap is solved rather than drawn, so the first thing that
@@ -348,22 +349,6 @@ def check_layout(values: Dict[str, float]) -> Optional[str]:
             f"cavity_clearance, or lengthen pcb_length"
         )
 
-    # The shield ring surrounds the chip pocket and must stay on the board.
-    ring_x = get("chip_length") / 2.0 + get("shield_ring_inset") + via_dia / 2.0
-    ring_y = get("chip_side") / 2.0 + get("shield_ring_inset") + via_dia / 2.0
-    if ring_x >= half_length:
-        return (
-            f"the shield ring reaches {_fmt(ring_x)} mm along the feedline but the PCB "
-            f"only offers {_fmt(half_length)} mm -- reduce shield_ring_inset or "
-            f"chip_length, or lengthen pcb_length"
-        )
-    if ring_y >= half_side:
-        return (
-            f"the shield ring reaches {_fmt(ring_y)} mm across the feedline but the PCB "
-            f"only offers {_fmt(half_side)} mm -- reduce shield_ring_inset or "
-            f"chip_side, or widen pcb_side"
-        )
-
     # The bond fingers sit on the board, so they have to be clear of the
     # opening -- not merely clear of the die. `finger_offset` already
     # centres them between the opening and the lid's limit, so what is
@@ -389,25 +374,6 @@ def check_layout(values: Dict[str, float]) -> Optional[str]:
                 f"{_fmt(pad + get('cavity_clearance'))} mm here; increase it, or reduce "
                 f"cavity_clearance or {pad_name}"
             )
-
-    # The shield ring goes OUTSIDE the bond fingers. Working inward from
-    # the die the order is: die, opening, bond fingers, shield ring. Get
-    # that backwards and the ring's own vias would be the ones landing on
-    # the fingers -- GenerateFromParams.pas's TryVia now skips a via
-    # rather than placing it over a finger, so this is caught there too,
-    # but a ring built mostly of vias skipped for that reason is a worse
-    # defect than refusing to build it at all, which is what failing here
-    # up front is for.
-    finger_outer = (get("chip_length") / 2.0
-                    + finger_offset(get("bonding_clearence"), get("cavity_clearance"))
-                    + get("bond_pad_length") / 2.0)
-    ring_inner = get("chip_length") / 2.0 + get("shield_ring_inset") - via_dia / 2.0
-    if ring_inner <= finger_outer:
-        return (
-            f"the shield ring reaches in to {_fmt(ring_inner)} mm but the bond fingers "
-            f"already extend to {_fmt(finger_outer)} mm, so its vias would land on them "
-            f"-- increase shield_ring_inset, or reduce bonding_clearence"
-        )
 
     # Bond fingers sit between the die and the launch, and must not run
     # into either. The launch extent comes from the connector's own land
