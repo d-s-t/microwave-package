@@ -570,16 +570,29 @@ Begin
             Relevant := True
         Else If (Prim.ObjectId = eTrackObject) Or (Prim.ObjectId = ePadObject) Then
         Begin
-            { Read defensively: Layer is read straight off IPCB_Primitive
-              with no cast, which every other read of it in this file
-              does only after casting to the concrete type first (see
-              ExportCopper.pas). If that turns out to matter and this
-              raises, the Except leaves Relevant at its safe default --
-              treated as an obstacle, which is what every candidate got
-              before this check existed at all. }
+            { eMultiLayer too, not just Top and Bottom: a through-hole
+              pad reports its Layer as eMultiLayer, not either copper
+              layer by name, and this same vendor's library ships a
+              through-hole variant of this connector family alongside
+              the SMD one this board places today (see README.md on
+              60124002122502) -- the SMP part this generator places is
+              a provisional stand-in, expected to change. Missing this
+              is exactly the trap MeasureFootprint.pas's IsCopper
+              already guards against for the same reason: a through-
+              hole pad excluded here would stop being an obstacle at
+              all, not fail loudly.
+
+              Read defensively: Layer is read straight off
+              IPCB_Primitive with no cast, which every other read of it
+              in this file does only after casting to the concrete type
+              first (see ExportCopper.pas). If that turns out to matter
+              and this raises, the Except leaves Relevant at its safe
+              default -- treated as an obstacle, which is what every
+              candidate got before this check existed at all. }
             Relevant := True;
             Try
-                Relevant := (Prim.Layer = eTopLayer) Or (Prim.Layer = eBottomLayer);
+                Relevant := (Prim.Layer = eTopLayer) Or (Prim.Layer = eBottomLayer)
+                            Or (Prim.Layer = eMultiLayer);
             Except
             End;
         End;
@@ -622,6 +635,15 @@ End;
   GenerateFromParams. LaunchX <= 0 disables the void check: the die has
   no connector, and nothing calls this with a real void needing one.
 
+  Corridor only applies out to CorridorHalfL, which the caller passes
+  as the signal's own real extent (TraceHalfL): the CPW's gap does not
+  exist beyond where the trace itself stops, and past each connector
+  the ground plane runs solid across the centreline (see BuildBoard's
+  FillHalfL). Without this bound, a whole-board sweep would refuse
+  every candidate along Y=0 for the board's full length, including the
+  solid ground strip behind each launch -- exactly the copper a
+  ground-plane fill exists to stitch.
+
   MinGap is enforced twice over: once here against the die's opening
   and the connector's void, and once inside ViaObstructed against every
   pad, track and via already on the board -- including ones this run
@@ -631,7 +653,7 @@ End;
   obstacle). }
 Function TryVia(Board : IPCB_Board; X, Y, Dia, MinGap,
                 HalfL, HalfS, CavHalfL, CavHalfS,
-                Corridor, LaunchX, VoidR : Double) : Boolean;
+                Corridor, CorridorHalfL, LaunchX, VoidR : Double) : Boolean;
 Var
     Reach : Double;
 Begin
@@ -640,7 +662,7 @@ Begin
     If ((CavHalfL > 0.0) Or (CavHalfS > 0.0))
        And (Abs(X) < CavHalfL + Dia / 2.0 + MinGap)
        And (Abs(Y) < CavHalfS + Dia / 2.0 + MinGap) Then Exit;
-    If Abs(Y) < Corridor + Dia / 2.0 Then Exit;
+    If (Abs(X) < CorridorHalfL) And (Abs(Y) < Corridor + Dia / 2.0) Then Exit;
     If LaunchX > 0.0 Then
     Begin
         Reach := VoidR + Dia / 2.0 + MinGap;
@@ -1063,7 +1085,8 @@ End;
   worth a human noticing in the report, which is what it is there for. }
 Function AddStitchingToNet(Board : IPCB_Board;
                            HalfL, HalfS, ViaDia, MaxSpacing, MinGap,
-                           CavHalfL, CavHalfS, Corridor, LaunchX, VoidR : Double;
+                           CavHalfL, CavHalfS, Corridor, CorridorHalfL,
+                           LaunchX, VoidR : Double;
                            Var Skipped : Integer) : Integer;
 Var
     X, Y     : Double;
@@ -1079,7 +1102,7 @@ Begin
         While X <= HalfL Do
         Begin
             Tally(TryVia(Board, X, Y, ViaDia, MinGap, HalfL, HalfS, CavHalfL, CavHalfS,
-                        Corridor, LaunchX, VoidR), Placed, Skipped);
+                        Corridor, CorridorHalfL, LaunchX, VoidR), Placed, Skipped);
             X := X + MaxSpacing;
         End;
         Y := Y + MaxSpacing;
@@ -1123,9 +1146,9 @@ Begin
     While X <= TraceHalfL Do
     Begin
         Tally(TryVia(Board, X,  FenceY, ViaDia, MinGap, HalfL, HalfS, CavHalfL, CavHalfS,
-                    Corridor, LaunchX, VoidR), Placed, Skipped);
+                    Corridor, TraceHalfL, LaunchX, VoidR), Placed, Skipped);
         Tally(TryVia(Board, X, -FenceY, ViaDia, MinGap, HalfL, HalfS, CavHalfL, CavHalfS,
-                    Corridor, LaunchX, VoidR), Placed, Skipped);
+                    Corridor, TraceHalfL, LaunchX, VoidR), Placed, Skipped);
         X := X + MaxSpacing;
     End;
 
@@ -1472,7 +1495,8 @@ Begin
     Try
         nStitch := AddStitchingToNet(Board,
                                      HalfL, HalfS, ViaDia, ViaMaxSpacing, ViaMinSpacing,
-                                     CavHalfL, CavHalfS, Corridor, SmpOrigin, VoidR,
+                                     CavHalfL, CavHalfS, Corridor, TraceHalfL,
+                                     SmpOrigin, VoidR,
                                      nStitchSkip);
         Say('package_stitching_vias=' + IntToStr(nStitch));
         Say('package_stitching_skipped=' + IntToStr(nStitchSkip));
