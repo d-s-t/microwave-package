@@ -1019,8 +1019,19 @@ class TestExportedLayoutIsSane(unittest.TestCase):
         )
 
     def test_no_via_sits_under_the_connector(self):
-        """A via under a land is a hole under a solder joint."""
-        under = [v for v in self.pkg.vias if abs(v.x) >= self.launch_inner]
+        """A via under the launch -- its ground land, not just its
+        pads -- is a hole under a solder joint or under the part
+        itself. Not a plain X threshold any more: the stitching fill
+        now legitimately reaches out to the board edge alongside each
+        launch (see test_ground_is_filled_behind_each_launch), so only
+        the launch's own rectangle, on both axes, is off limits."""
+        outer = self.smp.launch_origin(self.half_l, self.v["port_space"]) - self.smp.OUTER_V
+        half_y = self.smp.GROUND_LAND_HALF
+        under = [
+            v for v in self.pkg.vias
+            if (self.launch_inner - 1e-6 <= abs(v.x) <= outer + 1e-6)
+            and (abs(v.y) <= half_y + 1e-6)
+        ]
         self.assertEqual(under, [], f"{len(under)} vias under the launch")
 
     def test_the_fence_does_not_cross_the_die_pocket(self):

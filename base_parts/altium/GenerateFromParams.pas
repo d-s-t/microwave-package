@@ -508,11 +508,25 @@ Begin
 End;
 
 { Whether a via of diameter Dia at (X, Y) would land closer than MinGap
-  to a track, pad or via already on the board -- checked against the
-  BOARD ITSELF rather than a list this script keeps, so a bond finger,
-  a connector pad or an earlier stitching/shielding via all count the
-  moment they are really there. Nothing here can drift out of step
-  with what actually got placed, which a hand-derived clearance can.
+  to a track, pad, via or placed component already on the board --
+  checked against the BOARD ITSELF rather than a list this script
+  keeps, so a bond finger, a connector pad or an earlier stitching/
+  shielding via all count the moment they are really there. Nothing
+  here can drift out of step with what actually got placed, which a
+  hand-derived clearance can.
+
+  The connector is checked as a whole component, not just by its pads.
+  Its library footprint brings its own ground connection in as a
+  region -- real copper, several bars of it rather than a simple pad --
+  and a region is deliberately not an obstacle here, on the reasoning
+  that a region is exactly the ground plane a stitching via is meant to
+  land in. That reasoning is wrong for a footprint's OWN ground copper
+  specifically: a via drilled under a mounted SMD connector is not
+  landing in a plane, it is landing under the part, solder pads or not.
+  Checking Comp.BoundingRectangle -- the union Altium already tracks
+  over everything the launch replicated in, pads and regions and
+  silkscreen alike -- keeps the whole footprint's footprint clear
+  without having to enumerate which of its primitives count as copper.
 
   Tracks and pads are only obstacles on eTopLayer or eBottomLayer --
   the only two copper layers a two-layer board has. Placing the
@@ -566,7 +580,7 @@ Begin
     While (Prim <> Nil) And (Not Result) Do
     Begin
         Relevant := False;
-        If Prim.ObjectId = eViaObject Then
+        If (Prim.ObjectId = eViaObject) Or (Prim.ObjectId = eComponentObject) Then
             Relevant := True
         Else If (Prim.ObjectId = eTrackObject) Or (Prim.ObjectId = ePadObject) Then
         Begin
@@ -1089,16 +1103,32 @@ Function AddStitchingToNet(Board : IPCB_Board;
                            LaunchX, VoidR : Double;
                            Var Skipped : Integer) : Integer;
 Var
-    X, Y     : Double;
-    Placed   : Integer;
+    X, Y      : Double;
+    RowStart  : Double;
+    Stagger   : Boolean;
+    Placed    : Integer;
 Begin
     Placed := 0;
     Skipped := 0;
 
+    { Alternate rows start half a step over, the same "Stagger alternate
+      rows" option Altium's own Add Stitching to Net dialog offers.
+      A plain grid leaves every via with the same four neighbours at
+      the same four headings; staggering packs the same MaxSpacing
+      more densely (each via gets two more, closer, diagonal
+      neighbours) and, being a grid rather than a picket line in
+      either axis, better placed to break up a resonance that a
+      straight row of vias every MaxSpacing would have let pass
+      between them. }
+    Stagger := False;
     Y := -HalfS;
     While Y <= HalfS Do
     Begin
-        X := -HalfL;
+        If Stagger Then
+            RowStart := -HalfL + MaxSpacing / 2.0
+        Else
+            RowStart := -HalfL;
+        X := RowStart;
         While X <= HalfL Do
         Begin
             Tally(TryVia(Board, X, Y, ViaDia, MinGap, HalfL, HalfS, CavHalfL, CavHalfS,
@@ -1106,6 +1136,7 @@ Begin
             X := X + MaxSpacing;
         End;
         Y := Y + MaxSpacing;
+        Stagger := Not Stagger;
     End;
 
     Result := Placed;
@@ -1487,23 +1518,20 @@ Begin
       neither it nor the shield ring it used to run alongside knew
       existed. There is no ring any more: it stitched a boundary around
       the die specifically, where what is wanted is the ground planes
-      generally stitched, which is AddStitchingToNet's job now. }
+      generally stitched, which is AddStitchingToNet's job now.
+
+      The fence runs FIRST, before the general fill, and for the same
+      reason the fill runs after everything else: whichever one runs
+      second finds the other's vias already on the board and works
+      around them. The fence's own row sits close enough to a
+      MaxSpacing-stepped fill grid that many fill candidates land
+      within MinGap of it -- run the fill first and it claims most of
+      that row for itself, leaving the fence, run second, skipping
+      nearly everything it tries. The fence's placement is deliberate
+      (FenceY, right beside the trace); the fill's is not (any
+      unclaimed grid point), so the deliberate one goes first. }
     Corridor := Trace / 2.0 + Gap + ViaClear;
     FenceY   := Corridor + ViaDia / 2.0;
-
-    PCBServer.PreProcess;
-    Try
-        nStitch := AddStitchingToNet(Board,
-                                     HalfL, HalfS, ViaDia, ViaMaxSpacing, ViaMinSpacing,
-                                     CavHalfL, CavHalfS, Corridor, TraceHalfL,
-                                     SmpOrigin, VoidR,
-                                     nStitchSkip);
-        Say('package_stitching_vias=' + IntToStr(nStitch));
-        Say('package_stitching_skipped=' + IntToStr(nStitchSkip));
-    Except
-        Say('package_stitching_vias=FAIL');
-    End;
-    PCBServer.PostProcess;
 
     PCBServer.PreProcess;
     Try
@@ -1521,6 +1549,20 @@ Begin
         Say('package_shielding_skipped=' + IntToStr(nShieldSkip));
     Except
         Say('package_shielding_vias=FAIL');
+    End;
+    PCBServer.PostProcess;
+
+    PCBServer.PreProcess;
+    Try
+        nStitch := AddStitchingToNet(Board,
+                                     HalfL, HalfS, ViaDia, ViaMaxSpacing, ViaMinSpacing,
+                                     CavHalfL, CavHalfS, Corridor, TraceHalfL,
+                                     SmpOrigin, VoidR,
+                                     nStitchSkip);
+        Say('package_stitching_vias=' + IntToStr(nStitch));
+        Say('package_stitching_skipped=' + IntToStr(nStitchSkip));
+    Except
+        Say('package_stitching_vias=FAIL');
     End;
     PCBServer.PostProcess;
 
