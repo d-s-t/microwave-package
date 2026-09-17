@@ -54,6 +54,8 @@
 
 "via_gnd_clearance"= 0.15	' setback of the via fence from the edge of the CPW gap
 
+"via_min_spacing"= 0.2	' minimum clearance a placed via must keep from any pad, track or other via
+
 "shield_ring_inset"= 0.9	' shield ring setback from the die: must clear the bond fingers
 
 "bond_pad_length"= 0.3	' bonding pad size along the feedline

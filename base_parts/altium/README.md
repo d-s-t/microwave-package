@@ -265,6 +265,24 @@ than `MIN_FLOOR` of laminate under the die cannot be milled, so it becomes a
 cutout instead — and with the shipped defaults the two thicknesses are the same
 number, sitting exactly on that knife edge.
 
+**Stitching and shielding vias are placed directly, not via Altium's Tools ▸
+Via Stitching/Shielding menu.** Those commands act on a selected *net*, and
+nothing this generator draws carries one (see `Announce`) — there is no net for
+them to select. They are also dialog-only, with no scriptable path found that
+skips showing it, and a dialog is exactly what a script with no headless mode
+cannot risk opening. `AddStitchingToNet` (the ring around the chip pocket) and
+`AddShieldingToNet` (the fence along the CPW) place vias one at a time through
+`TryVia`, which checks each candidate against the board itself — every pad,
+track and via already placed, via `IPCB_Primitive.BoundingRectangle` — rather
+than trusting a hand-derived clearance to still be right. Both run **last**,
+after the connector launch and the bond pads are on the board, precisely so
+that check has something real to check against; running them earlier is the
+mistake that let vias land on pads neither loop knew existed. `via_min_spacing`
+is the floor `TryVia` enforces between any two vias, on top of the nominal
+`via_pitch` the loops step by — it is what stops two accepted vias landing on
+top of each other at a pattern's own seam (the ring's corners, or the via right
+after one skipped for an obstacle).
+
 ## What the spikes settled
 
 `spikes/s1_launch.pas` — Altium can be driven from the command line at all.

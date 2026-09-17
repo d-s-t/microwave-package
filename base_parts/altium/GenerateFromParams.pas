@@ -37,6 +37,21 @@
     leaves no stack trace, no exit code and no dialog for a runtime
     error. The report file is the only diagnostic there is.
 
+  * Nothing drawn here carries a NET. This is copper for a field solve,
+    not a design ExportCopper's reader ever routes or fabricates, so no
+    pad, track, via or region is ever assigned one -- see Announce and
+    everything it is called after. That is also why the stitching and
+    shielding vias are placed directly (AddStitchingToNet,
+    AddShieldingToNet) rather than by calling Altium's own Tools -> Via
+    Stitching/Shielding commands: those act on a selected NET, and a
+    board with none has nothing for them to select. They are also
+    dialog-driven, with no scriptable parameter path found for them
+    that skips showing it -- and a dialog is exactly what this script
+    cannot risk opening. Altium has no headless mode (see
+    microwave_package/design/altium_generation.py): a dialog left on
+    screen waits for a human forever, and every run behind it in the
+    same sweep along with it.
+
   DelphiScript traps this file has already fallen into:
 
   * Block comments do not nest. An inner closing brace ends the header
@@ -492,6 +507,99 @@ Begin
     Announce(Board, V);
 End;
 
+{ Whether a via of diameter Dia at (X, Y) would land closer than MinGap
+  to a track, pad or via already on the board -- checked against the
+  BOARD ITSELF rather than a list this script keeps, so a bond finger,
+  a connector pad or an earlier stitching/shielding via all count the
+  moment they are really there. Nothing here can drift out of step
+  with what actually got placed, which a hand-derived clearance can.
+
+  Regions are deliberately not checked: the ground planes are exactly
+  the copper a stitching or shielding via is meant to land in, not an
+  obstacle. What keeps a via out of the die's opening or off the board
+  edge is the caller's own bounds -- see TryVia.
+
+  The test is a bounding-box overlap, not exact outline geometry: it
+  can refuse a via that would technically have squeezed past an
+  irregular shape's corner, never the reverse. For a via, erring
+  toward more clearance than strictly required is the safe direction. }
+Function ViaObstructed(Board : IPCB_Board; X, Y, Dia, MinGap : Double) : Boolean;
+Var
+    It   : IPCB_BoardIterator;
+    Prim : IPCB_Primitive;
+    Cx, Cy, Half : TCoord;
+Begin
+    Result := False;
+    Cx   := MMsToCoord(X);
+    Cy   := MMsToCoord(Y);
+    Half := MMsToCoord(Dia / 2.0 + MinGap);
+
+    { AllObjects, filtered by ObjectId inside the loop, rather than a
+      narrower AddFilter_ObjectSet built from just these three kinds:
+      AllObjects and AllLayers are the two filter constants this file
+      has already confirmed exist (ReportCounts uses the same pair). A
+      set built from named object-id constants would very likely work
+      too, but it is untested here, and an untested identifier in this
+      API is a parse error -- the modal-dialog kind, not a catchable
+      one -- so it is not worth the saving. }
+    It := Board.BoardIterator_Create;
+    It.AddFilter_ObjectSet(AllObjects);
+    It.AddFilter_LayerSet(AllLayers);
+    It.AddFilter_Method(eProcessAll);
+    Prim := It.FirstPCBObject;
+    While (Prim <> Nil) And (Not Result) Do
+    Begin
+        If (Prim.ObjectId = eTrackObject) Or (Prim.ObjectId = ePadObject)
+           Or (Prim.ObjectId = eViaObject) Then
+        Begin
+            If (Cx + Half >= Prim.BoundingRectangle.Left)   And
+               (Cx - Half <= Prim.BoundingRectangle.Right)  And
+               (Cy + Half >= Prim.BoundingRectangle.Bottom) And
+               (Cy - Half <= Prim.BoundingRectangle.Top) Then
+                Result := True;
+        End;
+        Prim := It.NextPCBObject;
+    End;
+    Board.BoardIterator_Destroy(It);
+End;
+
+{ Places a via at (X, Y) unless it would land outside the board, in
+  the die's opening, or too close to something already there -- this
+  is the one place that decides whether a candidate site is safe, so
+  AddStitchingToNet and AddShieldingToNet both route every via through
+  it rather than trusting their own loops to stay clear.
+
+  MinGap is enforced twice over: once here against the die's opening,
+  and once inside ViaObstructed against every pad, track and via
+  already on the board -- including ones this run placed a moment ago,
+  so two accepted vias are never closer than MinGap even where the
+  nominal pitch alone would have allowed it (a pattern's own corner,
+  or the via right after one skipped for an obstacle). }
+Function TryVia(Board : IPCB_Board; X, Y, Dia, MinGap,
+                HalfL, HalfS, CavHalfL, CavHalfS : Double) : Boolean;
+Begin
+    Result := False;
+    If (Abs(X) + Dia / 2.0 > HalfL) Or (Abs(Y) + Dia / 2.0 > HalfS) Then Exit;
+    If ((CavHalfL > 0.0) Or (CavHalfS > 0.0))
+       And (Abs(X) < CavHalfL + Dia / 2.0 + MinGap)
+       And (Abs(Y) < CavHalfS + Dia / 2.0 + MinGap) Then Exit;
+    If ViaObstructed(Board, X, Y, Dia, MinGap) Then Exit;
+    AddVia(Board, X, Y, Dia, Dia / 2.0);
+    Result := True;
+End;
+
+{ Counts one TryVia outcome into whichever total it belongs to. Only
+  exists to keep AddStitchingToNet and AddShieldingToNet from repeating
+  the same four-line If/Else at every candidate site -- each has
+  several. }
+Procedure Tally(Ok : Boolean; Var Placed, Skipped : Integer);
+Begin
+    If Ok Then
+        Placed := Placed + 1
+    Else
+        Skipped := Skipped + 1;
+End;
+
 Procedure AddPad(Board : IPCB_Board; X, Y, W, H : Double; Lay : TLayer);
 Var
     Pd : IPCB_Pad;
@@ -850,39 +958,95 @@ Begin
     Board.BoardOutline.Rebuild;
 End;
 
-{ A ring of stitching vias around the chip pocket.
+{ A ring of stitching vias around the chip pocket, tying the package's
+  top and bottom ground copper together all the way round it.
 
-  The ring deliberately BREAKS where the CPW crosses it. A via dropped
-  into the signal corridor would short the line to ground while the
-  generator cheerfully reported success. Corridor is the half-height of
-  the keep-out: trace plus gap plus a via radius of margin. }
-Function AddShieldRing(Board : IPCB_Board;
-                       HalfX, HalfY, ViaDia, ViaPitch, Corridor : Double) : Integer;
+  This is the scripted equivalent of Altium's own Tools -> Via
+  Stitching/Shielding -> Add Stitching to Net, not a call to it: that
+  command stitches copper carried on a NAMED NET, and nothing this
+  generator draws carries one -- see the file header's note on nets.
+  Same intent -- a closed loop of vias tying the two ground layers
+  together -- reached by placing the vias directly through TryVia,
+  which checks each one against the board itself instead of trusting a
+  hand-derived corridor to still be right. The CPW trace is a real
+  track on the board by the time this runs, so a candidate that would
+  have landed on it is refused there, the same as landing on a bond
+  finger or a connector pad would be -- no separate corridor check
+  needed here for it.
+
+  Skipped is a count, not a flag: a handful of skips where the trace or
+  a fence via already claimed a corner is normal and not worth failing
+  the run over, but a ring that skipped nearly everything it tried is
+  worth a human noticing in the report. }
+Function AddStitchingToNet(Board : IPCB_Board;
+                           HalfX, HalfY, ViaDia, ViaPitch, MinGap,
+                           HalfL, HalfS, CavHalfL, CavHalfS : Double;
+                           Var Skipped : Integer) : Integer;
 Var
-    X, Y : Double;
+    X, Y     : Double;
+    Placed   : Integer;
 Begin
-    Result := 0;
+    Placed := 0;
+    Skipped := 0;
 
     X := -HalfX;
     While X <= HalfX Do
     Begin
-        AddVia(Board, X,  HalfY, ViaDia, ViaDia / 2.0);
-        AddVia(Board, X, -HalfY, ViaDia, ViaDia / 2.0);
-        Result := Result + 2;
+        Tally(TryVia(Board, X,  HalfY, ViaDia, MinGap, HalfL, HalfS, CavHalfL, CavHalfS), Placed, Skipped);
+        Tally(TryVia(Board, X, -HalfY, ViaDia, MinGap, HalfL, HalfS, CavHalfL, CavHalfS), Placed, Skipped);
         X := X + ViaPitch;
     End;
 
     Y := -HalfY + ViaPitch;
     While Y < HalfY Do
     Begin
-        If Abs(Y) > Corridor Then
-        Begin
-            AddVia(Board, -HalfX, Y, ViaDia, ViaDia / 2.0);
-            AddVia(Board,  HalfX, Y, ViaDia, ViaDia / 2.0);
-            Result := Result + 2;
-        End;
+        Tally(TryVia(Board, -HalfX, Y, ViaDia, MinGap, HalfL, HalfS, CavHalfL, CavHalfS), Placed, Skipped);
+        Tally(TryVia(Board,  HalfX, Y, ViaDia, MinGap, HalfL, HalfS, CavHalfL, CavHalfS), Placed, Skipped);
         Y := Y + ViaPitch;
     End;
+
+    Result := Placed;
+End;
+
+{ A fence of shielding vias down both sides of the CPW trace, between
+  the die pocket and the connector launch.
+
+  The scripted equivalent of Add Shielding to Net, for the same reason
+  AddStitchingToNet is one rather than a call to it -- see that
+  function's header.
+
+  FenceHalfL and FenceInnerL still say WHERE the fence belongs: clear
+  of the connector's land at one end (FenceHalfL) and of the die pocket
+  and its bond fingers at the other (FenceInnerL), exactly as the
+  caller worked out before. What changed is that those two numbers are
+  no longer trusted to be the whole answer -- TryVia checks every
+  candidate against the board that actually exists, so a finger or a
+  pad landing slightly off where FenceInnerL expected it skips that one
+  via instead of sitting under it. }
+Function AddShieldingToNet(Board : IPCB_Board;
+                           FenceY, FenceHalfL, FenceInnerL,
+                           ViaDia, ViaPitch, MinGap,
+                           HalfL, HalfS, CavHalfL, CavHalfS : Double;
+                           Var Skipped : Integer) : Integer;
+Var
+    X      : Double;
+    Placed : Integer;
+Begin
+    Placed := 0;
+    Skipped := 0;
+
+    X := -FenceHalfL;
+    While X <= FenceHalfL Do
+    Begin
+        If Abs(X) >= FenceInnerL Then
+        Begin
+            Tally(TryVia(Board, X,  FenceY, ViaDia, MinGap, HalfL, HalfS, CavHalfL, CavHalfS), Placed, Skipped);
+            Tally(TryVia(Board, X, -FenceY, ViaDia, MinGap, HalfL, HalfS, CavHalfL, CavHalfS), Placed, Skipped);
+        End;
+        X := X + ViaPitch;
+    End;
+
+    Result := Placed;
 End;
 
 { Outline, centre conductor, coplanar grounds either side of the gap, a
@@ -900,14 +1064,12 @@ End;
   it goes right through -- which decides only whether the plane on the
   far face has to go round it. Both zero on the die itself. }
 Procedure BuildBoard(Board : IPCB_Board; HalfL, HalfS, CopperHalfL, CopperHalfS,
-                     Trace, Gap, ViaDia, ViaPitch, ViaClear, TraceHalfL,
-                     FenceHalfL, FenceInnerL, FillHalfL,
+                     Trace, Gap, TraceHalfL, FillHalfL,
                      LaunchX, VoidR, SlotHalf, LandHalf,
                      CavHalfL, CavHalfS : Double; CavThrough : Boolean;
-                     WantVias : Boolean; WantBackPlane : Boolean;
-                     Var nVias : Integer);
+                     WantBackPlane : Boolean);
 Var
-    GndInner, FenceY, X : Double;
+    GndInner : Double;
 Begin
     SetOutline(Board, HalfL, HalfS);
 
@@ -983,35 +1145,6 @@ Begin
         Else
             AddBackPlane(Board, CopperHalfL, CopperHalfS, 0.0, 0.0);
     End;
-
-    nVias := 0;
-    If WantVias Then
-    Begin
-        FenceY := GndInner + ViaClear + ViaDia / 2.0;
-        If FenceY + ViaDia / 2.0 < HalfS Then
-        Begin
-            { The fence runs between the die and each launch, and
-              nowhere else.
-
-              It stops at FenceHalfL because beyond that is the
-              connector, and a via under its land is a hole under a
-              solder joint. It stops again at FenceInnerL because inside
-              that is the die pocket -- there is no board there to
-              stitch, and the bond fingers are, which is where the fence
-              was landing vias straight on top of them. }
-            X := -FenceHalfL;
-            While X <= FenceHalfL Do
-            Begin
-                If Abs(X) >= FenceInnerL Then
-                Begin
-                    AddVia(Board, X,  FenceY, ViaDia, ViaDia / 2.0);
-                    AddVia(Board, X, -FenceY, ViaDia, ViaDia / 2.0);
-                    nVias := nVias + 2;
-                End;
-                X := X + ViaPitch;
-            End;
-        End;
-    End;
 End;
 
 { Count what is actually on the board, in memory, before it is saved.
@@ -1059,13 +1192,13 @@ Var
     BondPath     : String;
     HalfL, HalfS, Trace, Gap : Double;
     ChipHalfL, ChipHalfS, ChipGap : Double;
-    ViaDia, ViaPitch, ViaClear : Double;
+    ViaDia, ViaPitch, ViaClear, ViaMinSpacing, FenceY : Double;
     PadW, PadH : Double;
     PortCount, PortSpace : Double;
     ShieldInset, SmpOrigin, BondSpan : Double;
     CavHalfL, CavHalfS, CavDepth : Double;
     CavThrough : Boolean;
-    nVias, nRing, nBonds, nLaunch, i : Integer;
+    nStitch, nStitchSkip, nShield, nShieldSkip, nBonds, nLaunch, i : Integer;
 Begin
     Rpt := TStringList.Create;
     Rpt.Add('stage=start');
@@ -1091,6 +1224,7 @@ Begin
     ViaDia    := ParamOf(P, 'via_diameter', 0.3);
     ViaPitch  := ParamOf(P, 'via_pitch', 0.8);
     ViaClear  := ParamOf(P, 'via_gnd_clearance', 0.15);
+    ViaMinSpacing := ParamOf(P, 'via_min_spacing', 0.2);
     PadW      := ParamOf(P, 'bond_pad_length', 0.3);
     PadH      := ParamOf(P, 'bond_pad_width', 0.15);
     PortCount := ParamOf(P, 'port_count', 2);
@@ -1145,22 +1279,15 @@ Begin
 
     PCBServer.PreProcess;
     Try
-        { The fence and the ground fill both stop where the launch
-          begins -- its innermost land. The board's own copper runs to
-          the real board edge (CopperHalfL/S = HalfL/S), unlike the
-          die's. }
+        { The ground fill stops where the launch begins -- its innermost
+          land. The board's own copper runs to the real board edge
+          (CopperHalfL/S = HalfL/S), unlike the die's. Vias are not
+          placed here at all any more -- see AddStitchingToNet and
+          AddShieldingToNet, called once everything they need to check
+          themselves against (the launch, the bond fingers) is actually
+          on the board. }
         BuildBoard(Board, HalfL, HalfS, HalfL, HalfS, Trace, Gap,
-                   ViaDia, ViaPitch, ViaClear,
                    SmpOrigin - ParamOf(P, 'smp_sig_v', 2.9),
-                   SmpOrigin - ParamOf(P, 'smp_inner_v', 3.6),
-                   { clear of the bond fingers at the die. The finger
-                     sits midway between the opening (CavHalfL) and the
-                     limit bonding_clearence sets for the lid, because
-                     that limit is the lid's and not the finger's --
-                     MUST MATCH finger_offset in microwave_package/
-                     design/constraints.py, which places the bonds.txt
-                     this reads its pad positions from. }
-                   (CavHalfL + ChipHalfL + BondSpan) / 2.0 + PadW / 2.0 + ViaDia,
                    { ground fill starts at the OUTER edge of the
                      connector's own ground land, so it butts against
                      that land -- both are ground -- and leaves the
@@ -1178,8 +1305,7 @@ Begin
                    { the die's opening, which the trace and both planes
                      have to keep out of }
                    CavHalfL, CavHalfS, CavThrough,
-                   True, True, nVias);
-        Say('package_vias=' + IntToStr(nVias));
+                   True);
         Say('package_body=ok');
     Except
         Say('package_body=FAIL');
@@ -1231,22 +1357,61 @@ Begin
 
     PCBServer.PreProcess;
     Try
-        nRing := AddShieldRing(Board,
-                               ChipHalfL + ShieldInset, ChipHalfS + ShieldInset,
-                               ViaDia, ViaPitch,
-                               Trace / 2.0 + Gap + ViaDia / 2.0);
-        Say('package_shield_vias=' + IntToStr(nRing));
+        nBonds := AddBondPads(Board, BondPath, PadW, PadH, Trace, False);
+        Say('package_bond_pads=' + IntToStr(nBonds));
     Except
-        Say('package_shield_vias=FAIL');
+        Say('package_bond_pads=FAIL');
+    End;
+    PCBServer.PostProcess;
+
+    { Stitching and shielding both run LAST, now that the launch and
+      the bond fingers are really on the board: TryVia checks every
+      candidate against the board as it stands, so placing vias any
+      earlier would have it checking against a board that was not
+      finished yet -- which is how the fence and the ring used to land
+      on pads neither of them knew existed. }
+    PCBServer.PreProcess;
+    Try
+        nStitch := AddStitchingToNet(Board,
+                                     ChipHalfL + ShieldInset, ChipHalfS + ShieldInset,
+                                     ViaDia, ViaPitch, ViaMinSpacing,
+                                     HalfL, HalfS, CavHalfL, CavHalfS,
+                                     nStitchSkip);
+        Say('package_stitching_vias=' + IntToStr(nStitch));
+        Say('package_stitching_skipped=' + IntToStr(nStitchSkip));
+    Except
+        Say('package_stitching_vias=FAIL');
     End;
     PCBServer.PostProcess;
 
     PCBServer.PreProcess;
     Try
-        nBonds := AddBondPads(Board, BondPath, PadW, PadH, Trace, False);
-        Say('package_bond_pads=' + IntToStr(nBonds));
+        nShield := 0;
+        nShieldSkip := 0;
+        FenceY := Trace / 2.0 + Gap + ViaClear + ViaDia / 2.0;
+        If FenceY + ViaDia / 2.0 < HalfS Then
+        Begin
+            nShield := AddShieldingToNet(Board, FenceY,
+                       { clear of the connector's land: a via under it
+                         would be a hole under a solder joint }
+                       SmpOrigin - ParamOf(P, 'smp_inner_v', 3.6),
+                       { clear of the bond fingers at the die. The
+                         finger sits midway between the opening
+                         (CavHalfL) and the limit bonding_clearence
+                         sets for the lid, because that limit is the
+                         lid's and not the finger's -- MUST MATCH
+                         finger_offset in microwave_package/design/
+                         constraints.py, which places the bonds.txt
+                         this reads its pad positions from. }
+                       (CavHalfL + ChipHalfL + BondSpan) / 2.0 + PadW / 2.0 + ViaDia,
+                       ViaDia, ViaPitch, ViaMinSpacing,
+                       HalfL, HalfS, CavHalfL, CavHalfS,
+                       nShieldSkip);
+        End;
+        Say('package_shielding_vias=' + IntToStr(nShield));
+        Say('package_shielding_skipped=' + IntToStr(nShieldSkip));
     Except
-        Say('package_bond_pads=FAIL');
+        Say('package_shielding_vias=FAIL');
     End;
     PCBServer.PostProcess;
 
@@ -1292,14 +1457,14 @@ Begin
               than its copper extent leaves the fill unbuilt. }
             BuildBoard(Board, ChipHalfL, ChipHalfS,
                        ChipHalfL - ChipCopperInset, ChipHalfS - ChipCopperInset,
-                       Trace, ChipGap, ViaDia, ViaPitch, ViaClear,
-                       ChipHalfL - ChipCopperInset, ChipHalfL, 0.0, ChipHalfL,
+                       Trace, ChipGap,
+                       ChipHalfL - ChipCopperInset, ChipHalfL,
                        { no connector on the die, so no anti-pad either --
                          its ground planes stay plain rectangles }
                        0.0, 0.0, 0.0, 0.0,
                        { and no opening: the die is what goes IN one }
                        0.0, 0.0, False,
-                       False, False, nVias);
+                       False);
             Say('chip_body=ok');
         Except
             Say('chip_body=FAIL');
