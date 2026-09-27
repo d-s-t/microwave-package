@@ -360,6 +360,12 @@ DEFAULT_ANALYSIS_SETTINGS = {
         # the fact that it has no perfect-E boundary are fixed in
         # model_builder -- it is vendor geometry, not a run setting.
         # See github.com/d-s-t/wr-smp-connector.
+        #
+        # See model_builder.MATERIAL_FALLBACKS for why aluminum is the
+        # wirebond default. Turning include_wirebonds off skips only the
+        # bond wires themselves -- see build_layout's docstring.
+        "mat_wirebond": model_builder.MATERIAL_FALLBACKS["mat_wirebond"],
+        "include_wirebonds": True,
     },
 }
 
@@ -393,6 +399,8 @@ def build_analysis_settings(args: argparse.Namespace) -> dict:
             "mat_conductor_pcb": args.mat_conductor_pcb,
             "mat_conductor_chip": args.mat_conductor_chip,
             "perfect_e_conductors": args.perfect_e_conductors,
+            "mat_wirebond": args.mat_wirebond,
+            "include_wirebonds": args.include_wirebonds,
         },
     }
 
@@ -451,6 +459,13 @@ def parse_args() -> argparse.Namespace:
                         action="store_false", default=True,
                         help="Use the named conductor materials instead of perfect E. "
                              "Only meaningful with a proper cryogenic surface impedance.")
+    parser.add_argument("--mat-wirebond", type=str, choices=model_builder.WIREBOND_MATERIALS,
+                        default=model_builder.MATERIAL_FALLBACKS["mat_wirebond"])
+    parser.add_argument("--no-wirebonds", dest="include_wirebonds", action="store_false",
+                        default=True,
+                        help="Build the model with no wire bonds -- the die is left "
+                             "unbonded. Everything else (including the bond pads) is "
+                             "unchanged.")
     return parser.parse_args()
 
 

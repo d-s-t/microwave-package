@@ -368,6 +368,48 @@ def _solve_settings_from_form(form) -> dict:
     return settings
 
 
+def _material_choice(form, key: str) -> str:
+    """One material dropdown's value off the form.
+
+    The form posts `model_builder.CUSTOM_MATERIAL` for "Custom..." and the
+    typed name in `<key>_custom` alongside it -- see the `material_field`
+    macro in index.html. Anything else is one of the curated options
+    (or, for an older submission bypassing the dropdown entirely, any
+    other string) and is used as-is. A blank submission falls back to
+    the material model_builder would fall back to anyway.
+    """
+    raw = form.get(key)
+    if raw == model_builder.CUSTOM_MATERIAL:
+        raw = form.get(f"{key}_custom", "")
+    return (raw or "").strip() or model_builder.MATERIAL_FALLBACKS[key]
+
+
+def _materials_from_form(form) -> dict:
+    """Every material/boundary setting the form carries, by key.
+
+    Split out from `new_run` so the dropdown-vs-custom-box handling can
+    be tested without going through the route -- the same reasoning as
+    `_solve_settings_from_form` below.
+    """
+    wirebond = form.get("mat_wirebond")
+    if wirebond not in model_builder.WIREBOND_MATERIALS:
+        wirebond = model_builder.MATERIAL_FALLBACKS["mat_wirebond"]
+    return {
+        "mat_box": _material_choice(form, "mat_box"),
+        "mat_pcb": _material_choice(form, "mat_pcb"),
+        "mat_chip": _material_choice(form, "mat_chip"),
+        "mat_vacuum": _material_choice(form, "mat_vacuum"),
+        "perfect_e_box": "perfect_e_box" in form,
+        "mat_conductor_pcb": _material_choice(form, "mat_conductor_pcb"),
+        "mat_conductor_chip": _material_choice(form, "mat_conductor_chip"),
+        "perfect_e_conductors": "perfect_e_conductors" in form,
+        # Closed choice (see model_builder.WIREBOND_MATERIALS), so there is
+        # no matching "<key>_custom" box for this one.
+        "mat_wirebond": wirebond,
+        "include_wirebonds": "include_wirebonds" in form,
+    }
+
+
 def _runs_for_display(runs: list) -> list:
     """`Run.list_runs()` rows with the run-list's presentation fields added:
     a friendly name, a relative time, a humanised stage, and the one-line
@@ -429,6 +471,9 @@ def index():
         },
         shared_solve_fields=registry.SHARED,
         current_solution_type=registry.solution_type_of(settings),
+        material_options=model_builder.MATERIAL_OPTIONS,
+        wirebond_materials=model_builder.WIREBOND_MATERIALS,
+        custom_material=model_builder.CUSTOM_MATERIAL,
     )
 
 
@@ -512,16 +557,7 @@ def new_run():
         "graphical": "graphical" in request.form,
         "poll_seconds": float(request.form.get("poll_seconds", 10.0)),
         "use_altium": "use_altium" in request.form,
-        "materials": {
-            "mat_box": request.form.get("mat_box") or "aluminum",
-            "mat_pcb": request.form.get("mat_pcb") or "Rogers TMM 10i (tm)",
-            "mat_chip": request.form.get("mat_chip") or "silicon",
-            "mat_vacuum": request.form.get("mat_vacuum") or "vacuum",
-            "perfect_e_box": "perfect_e_box" in request.form,
-            "mat_conductor_pcb": request.form.get("mat_conductor_pcb") or "copper",
-            "mat_conductor_chip": request.form.get("mat_conductor_chip") or "niobium",
-            "perfect_e_conductors": "perfect_e_conductors" in request.form,
-        },
+        "materials": _materials_from_form(request.form),
     }
     run = Run.create(sweep_params, settings, parameter_defaults)
     label = request.form.get("label", "").strip()[:80]

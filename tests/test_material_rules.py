@@ -51,6 +51,7 @@ SETTINGS = {
     "mat_vacuum": "vacuum",
     "mat_conductor_pcb": "copper",
     "mat_conductor_chip": "niobium",
+    "mat_wirebond": "gold",
     "perfect_e_box": True,
     "perfect_e_conductors": True,
 }
@@ -126,7 +127,7 @@ class TestCopperDoesNotBecomeSubstrate(unittest.TestCase):
         self.assertEqual(got["pcb_vias"], "copper")
         self.assertEqual(got["chip_substrate"], "silicon")
         self.assertEqual(got["chip_conductor"], "niobium")
-        self.assertEqual(got["wirebond_1"], "copper")
+        self.assertEqual(got["wirebond_1"], "gold")
         # All three connector bodies get their material in place_connectors
         # (brass conductors, LCP bead), not from the rules, so the rule
         # layer leaves them untouched here.
@@ -279,11 +280,53 @@ class TestChipCopperIsAConductor(unittest.TestCase):
             "chip_substrate": "silicon",
             "chip_copper_top": "niobium",
             "chip_copper_bottom": "niobium",
-            "wirebond": "copper",
+            "wirebond": "gold",
         }
         hfss, _ = assign(produced)
         got = {o.name: o.material_name for o in hfss.modeler.solid_objects}
         self.assertEqual(got, expected)
+
+
+class TestWirebondMaterial(unittest.TestCase):
+    """The wirebond's own material setting, separate from the PCB
+    conductor it used to piggyback on.
+
+    Before this, a wirebond matched the bare "wirebond" rule with
+    `mat_conductor_pcb` as its material key -- so there was no way to set
+    a bond's material without also changing the board's copper. Gold and
+    aluminum are the only two a bonder actually loads (see
+    model_builder.WIREBOND_MATERIALS), so `mat_wirebond` is the closed
+    setting for it.
+    """
+
+    def test_wirebond_uses_its_own_setting_not_the_pcb_conductor(self):
+        settings = dict(SETTINGS, mat_conductor_pcb="copper", mat_wirebond="aluminum")
+        hfss, _ = assign(["wirebond_1", "pcb_copper_top"], settings)
+        got = {o.name: o.material_name for o in hfss.modeler.solid_objects}
+        self.assertEqual(got["wirebond_1"], "aluminum")
+        self.assertEqual(got["pcb_copper_top"], "copper")
+
+    def test_changing_the_pcb_conductor_does_not_move_the_wirebond(self):
+        settings = dict(SETTINGS, mat_conductor_pcb="gold", mat_wirebond="aluminum")
+        hfss, _ = assign(["wirebond_1"], settings)
+        self.assertEqual(hfss.modeler.solid_objects[0].material_name, "aluminum")
+
+    def test_both_real_options_are_settable(self):
+        for material in model_builder.WIREBOND_MATERIALS:
+            hfss, _ = assign(["wirebond_1"], dict(SETTINGS, mat_wirebond=material))
+            self.assertEqual(hfss.modeler.solid_objects[0].material_name, material)
+
+    def test_an_unset_wirebond_material_falls_back_to_aluminum(self):
+        """Matches model_builder.MATERIAL_FALLBACKS["mat_wirebond"]:
+        aluminum superconducts at millikelvin, gold does not, so silently
+        landing on gold would be the wrong direction to fail in."""
+        settings = {k: v for k, v in SETTINGS.items() if k != "mat_wirebond"}
+        hfss, _ = assign(["wirebond_1"], settings)
+        self.assertEqual(hfss.modeler.solid_objects[0].material_name, "aluminum")
+
+    def test_the_wirebond_still_gets_perfect_e_like_any_other_conductor(self):
+        hfss, _ = assign(["wirebond_1"])
+        self.assertEqual(hfss.perfect_e, ["wirebond_1"])
 
 
 class TestMaterialFallbacks(unittest.TestCase):
@@ -353,6 +396,35 @@ class TestRuleTableIsSane(unittest.TestCase):
             rule = next(r for r in model_builder.MATERIAL_RULES if r[0] == pattern)
             self.assertIsNone(rule[2], f"the {pattern} rule must not name a material")
             self.assertIsNone(rule[3], f"the {pattern} rule must not add a perfect-E boundary")
+
+
+class TestMaterialCatalogsAreSane(unittest.TestCase):
+    """The web form's dropdown catalogs (model_builder.MATERIAL_OPTIONS /
+    WIREBOND_MATERIALS) -- structural checks so a future edit cannot
+    quietly break what webapp.py and index.html both assume about them.
+    """
+
+    def test_wirebond_materials_is_exactly_the_two_real_choices(self):
+        self.assertEqual(set(model_builder.WIREBOND_MATERIALS), {"gold", "aluminum"})
+
+    def test_the_wirebond_fallback_is_one_of_the_two_choices(self):
+        self.assertIn(
+            model_builder.MATERIAL_FALLBACKS["mat_wirebond"], model_builder.WIREBOND_MATERIALS
+        )
+
+    def test_every_curated_material_key_has_a_fallback_among_its_own_options(self):
+        """The fallback is what a blank/missing setting resolves to (see
+        TestMaterialFallbacks), so it would be a silent trap for it to be
+        something the form's own dropdown doesn't offer."""
+        for key, options in model_builder.MATERIAL_OPTIONS.items():
+            self.assertIn(
+                model_builder.MATERIAL_FALLBACKS[key], options,
+                f"{key}'s fallback is not among its own MATERIAL_OPTIONS",
+            )
+
+    def test_no_curated_option_list_is_empty(self):
+        for key, options in model_builder.MATERIAL_OPTIONS.items():
+            self.assertTrue(options, f"{key} has no options")
 
 
 class TestCavityFrame(unittest.TestCase):
