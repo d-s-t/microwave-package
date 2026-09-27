@@ -866,7 +866,8 @@ def _results_frame(run):
 def _plot_filters(args) -> Dict[str, list]:
     """The results filter, read out of the plot URL.
 
-    One `f_<column>` per swept parameter, holding the values still
+    One `f_<column>` per swept parameter (and `f_mode` for a run with
+    several modes), holding the values still
     ticked (`f_distortion_radius=0.25,0.5`). A parameter with no entry is
     not filtered, which is what leaving every box ticked means.
     """

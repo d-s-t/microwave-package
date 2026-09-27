@@ -84,14 +84,29 @@ def solution_type_of(df: pd.DataFrame) -> Optional[str]:
     return None
 
 
+# An eigenmode run solves several modes per combination, one row each.
+# The mode number then varies within the run just like a swept parameter
+# does, so it is offered wherever they are -- but only when there is more
+# than one, since a single mode has nothing to plot against or pick apart.
+MODE_COLUMN = "mode"
+MODE_LABEL = "Mode"
+
+
+def _has_several_modes(df: pd.DataFrame) -> bool:
+    return MODE_COLUMN in df.columns and df[MODE_COLUMN].dropna().nunique() > 1
+
+
 def axis_options(df: pd.DataFrame, sweep_param_names: List[str]) -> List[Dict[str, str]]:
     """Everything either axis can be set to, for this run's data:
-    its swept parameters first, then whichever results exist."""
+    its swept parameters first, then the mode number when a run solved
+    several, then whichever results exist."""
     options = []
     for name in sweep_param_names:
         column = parameter_meta.column_name(name)
         if column in df.columns:
             options.append({"value": column, "label": parameter_meta.axis_label(name), "kind": "parameter"})
+    if _has_several_modes(df):
+        options.append({"value": MODE_COLUMN, "label": MODE_LABEL, "kind": "parameter"})
     for column, label in result_fields().items():
         if column in df.columns and df[column].notna().any():
             options.append({"value": column, "label": label, "kind": "result"})
@@ -107,6 +122,8 @@ def label_for_column(column: str, sweep_param_names: List[str]) -> str:
     fields = result_fields()
     if column in fields:
         return fields[column]
+    if column == MODE_COLUMN:
+        return MODE_LABEL
     return "Combination" if column == "combo_id" else column
 
 
@@ -126,10 +143,11 @@ def _as_key(value) -> str:
 def filter_options(df: pd.DataFrame, sweep_param_names: List[str]) -> List[Dict]:
     """The distinct value of each swept parameter, for the filter panel.
 
-    Only swept parameters get one: they are what a run varies, so they
-    are what there is any point picking apart. Values come back in
-    numeric order with the key the filter matches on alongside the label
-    the form shows.
+    Only swept parameters -- and the mode number, when a run solved
+    several -- get one: they are what a run varies, so they are what
+    there is any point picking apart. Values come back in numeric order
+    with the key the filter matches on alongside the label the form
+    shows.
     """
     options = []
     for name in sweep_param_names:
@@ -142,6 +160,13 @@ def filter_options(df: pd.DataFrame, sweep_param_names: List[str]) -> List[Dict]
         options.append({
             "column": column,
             "label": parameter_meta.axis_label(name),
+            "values": [{"key": _as_key(v), "label": _as_key(v)} for v in values],
+        })
+    if _has_several_modes(df):
+        values = sorted(df[MODE_COLUMN].dropna().unique().tolist())
+        options.append({
+            "column": MODE_COLUMN,
+            "label": MODE_LABEL,
             "values": [{"key": _as_key(v), "label": _as_key(v)} for v in values],
         })
     return options
@@ -217,7 +242,8 @@ def figure_html(
     figure = draw(
         df.sort_values(x) if as_curve else df,
         x=x, y=y, color=color,
-        hover_data=[c for c in ("combo_id", "mode", *options) if c in df.columns and c not in (x, y)],
+        hover_data=list(dict.fromkeys(
+            c for c in ("combo_id", MODE_COLUMN, *options) if c in df.columns and c not in (x, y))),
         # always first in each point's customdata, whatever hover_data
         # holds -- the run page reads it back to tell which combination
         # was clicked (see the click bridge below).
