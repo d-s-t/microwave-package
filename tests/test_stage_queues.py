@@ -11,6 +11,8 @@ being retried once per combination.
 Run: python -m unittest discover -s tests
 """
 import logging
+import os
+import tempfile
 import threading
 import unittest
 
@@ -286,12 +288,25 @@ class TestResumingARunFromBeforeTheSplitParts(unittest.TestCase):
         self.assertTrue(stage.build("c1"))
         self.assertEqual(stage._session.built, [])
 
-    def test_a_built_model_is_left_alone(self):
+    def test_a_built_model_that_will_be_reused_is_left_alone(self):
+        with tempfile.NamedTemporaryFile(suffix=".aedt", delete=False) as project:
+            pass
+        self.addCleanup(os.remove, project.name)
         run = FakeRun("c1", step_status="done", step_path="c1.STEP", params={},
-                      model_status="built")
+                      model_status="built", object_names={"vacuum": "vacuum"},
+                      project_path=project.name)
         stage = self._stage(run)
         self.assertTrue(stage.build("c1"))
         self.assertEqual(stage._session.built, [])
+
+    def test_a_built_model_whose_project_is_gone_is_re_exported(self):
+        """The AEDT stage will rebuild it, and needs STEP files it can use."""
+        run = FakeRun("c1", step_status="done", step_path="c1.STEP", params={},
+                      model_status="built", object_names={"vacuum": "vacuum"},
+                      project_path="no/such/project.aedt")
+        stage = self._stage(run)
+        self.assertTrue(stage.build("c1"))
+        self.assertEqual(stage._session.built, ["c1"])
 
     def test_a_current_combination_is_not_re_exported(self):
         run = FakeRun("c1", step_status="done", params={},

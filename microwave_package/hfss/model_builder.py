@@ -449,9 +449,16 @@ def cavity_frame(hfss, fallback_x: float, fallback_z: float, log=logger.info):
     is the datum -- and measuring it beats computing it. The equations
     give box_length as pcb_length + 2*wall_width, but the assembly also
     carries mounting wings that extend it, so anything derived from
-    those two numbers alone lands half a wing out. Reading the imported
-    vacuum's bounding box gets it right without this code having to know
-    what else the mechanical design grew.
+    those two numbers alone lands half a wing out. Measuring the imported
+    body gets it right without this code having to know what else the
+    mechanical design grew.
+
+    That body is box now: vacuum is built later, from this very frame
+    (see build_vacuum), so there is none to measure yet. box's bounding
+    box includes its mounting wings, so its centre is the cavity's only
+    while the wings are symmetric -- which box.SLDPRT's are (it is drawn
+    about its own origin). "vacuum" is still looked for first, for a
+    STEP that brings its own.
 
     Falls back to the computed values, loudly, if the cavity is not
     there to measure.

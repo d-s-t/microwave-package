@@ -249,15 +249,15 @@ class _AltiumStage:
         return ok
 
 
-def _needs_new_step_files(combo) -> bool:
+def _needs_new_step_files(run, combo_id: str) -> bool:
     """Whether a combination still has a model to build from STEP files.
 
-    One already handed to the worker, or whose model is built and kept,
-    never reads them again (see model_builder.reusable_model) -- so a run
-    from before the STEP files were split resumes without re-exporting
-    geometry nothing will look at.
+    Asks the AEDT stage's own question (model_builder.reusable_model): a
+    model it will reuse never reads the STEP files again, so a run from
+    before they were split resumes without re-exporting geometry nothing
+    will look at -- and one it will rebuild gets files it can use.
     """
-    return not (combo.get("task_id") or combo.get("model_status") == "built")
+    return model_builder.reusable_model(run, combo_id, log=lambda _m: None) is None
 
 
 class _SolidWorksStage:
@@ -284,7 +284,7 @@ class _SolidWorksStage:
         run = self._run
         combo = run.state["combos"][combo_id]
         if combo.get("step_status") == "done":
-            if combo.get("step_paths") or not _needs_new_step_files(combo):
+            if combo.get("step_paths") or not _needs_new_step_files(run, combo_id):
                 return True
             # Exported before box and lid_inside became separate files:
             # one assembly STEP, which the model builder can no longer use.
