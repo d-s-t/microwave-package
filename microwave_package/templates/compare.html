@@ -376,10 +376,12 @@
     var baseId = runs.some(function (r) { return r.id === baseline.value; })
       ? baseline.value : (runs[0] && runs[0].id);
 
+    // The plot's own rule (plotting.apply_filters): a point with no value
+    // for a column is at none of its values, so no chip hides it.
     var inFilter = data.rows.filter(function (row) {
       return data.key_columns.every(function (key, i) {
         var allowed = state[key.column];
-        return !allowed || allowed.indexOf(row.key[i]) !== -1;
+        return !allowed || row.key[i] === "" || allowed.indexOf(row.key[i]) !== -1;
       });
     });
     var counted = inFilter.map(function (row) {

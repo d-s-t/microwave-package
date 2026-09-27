@@ -161,8 +161,11 @@ def _run_letter(name: str) -> str:
 def axis_options(df: pd.DataFrame, sweep_param_names: List[str]) -> List[Dict[str, str]]:
     """Everything either axis can be set to, for this run's data:
     its swept parameters first, then the mode number when a run solved
-    several, the run itself when the table holds more than one, then
-    whichever results exist."""
+    several, the run itself in a comparison's table, then whichever
+    results exist.
+
+    The run is offered even when only one compared run has results: it
+    is still the colour that run is known by on the rest of the page."""
     options = []
     for name in sweep_param_names:
         column = parameter_meta.column_name(name)
@@ -170,7 +173,7 @@ def axis_options(df: pd.DataFrame, sweep_param_names: List[str]) -> List[Dict[st
             options.append({"value": column, "label": parameter_meta.axis_label(name), "kind": "parameter"})
     if has_several_modes(df):
         options.append({"value": MODE_COLUMN, "label": MODE_LABEL, "kind": "parameter"})
-    if _has_several_runs(df):
+    if RUN_COLUMN in df.columns:
         options.append({"value": RUN_COLUMN, "label": RUN_LABEL, "kind": "parameter"})
     for column, label in result_fields().items():
         if column in df.columns and df[column].notna().any():
@@ -258,12 +261,17 @@ def apply_filters(df: pd.DataFrame, filters: Dict[str, List[str]]) -> pd.DataFra
     not mentioned is not filtered at all; a column with nothing ticked
     genuinely means "none of them", and the empty result is what the
     plot then says.
+
+    A row with no value in the column at all is not at any of its
+    values, so no choice among them hides it: unticking one distortion
+    radius hides the points at that radius, not a compared run -- or an
+    undistorted combination -- that never had a distortion.
     """
     for column, allowed in filters.items():
         if column not in df.columns:
             continue
         wanted = set(allowed)
-        df = df[df[column].map(filter_key).isin(wanted)]
+        df = df[df[column].map(filter_key).isin(wanted) | df[column].isna()]
     return df
 
 

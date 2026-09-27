@@ -1267,7 +1267,7 @@ def compare_runs():
     if len(entries) == 1:
         notes.append("There is only one run here -- tick another on the run list to compare it with.")
 
-    differing, shared = compare.setting_rows(runs)
+    differing, shared = compare.setting_rows(runs, held=[entry.held for entry in entries])
     axes = (compare.default_axes(df, swept, solution_types[0]) if not df.empty
             else {"x": None, "y": None, "color": None})
     table, table_note = compare.side_by_side(df, entries, swept)
@@ -1357,8 +1357,10 @@ def compare_results_csv():
         first = [plotting.RUN_ID_COLUMN, plotting.RUN_COLUMN]
         df = df[first + [column for column in df.columns if column not in first]]
     name = "comparison_" + "-".join(entry.run_id.removeprefix("run_") for entry in entries)
+    # With a byte-order mark, because Excel reads a CSV without one in the
+    # system code page -- and every run's name here has a "·" in it.
     return Response(
-        df.to_csv(index=False), mimetype="text/csv",
+        "﻿" + df.to_csv(index=False), mimetype="text/csv",
         headers={"Content-Disposition": f'attachment; filename="{name}.csv"'},
     )
 

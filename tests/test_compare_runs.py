@@ -173,6 +173,16 @@ class WhatDiffersTests(RunsOnDisk):
         row = next(row for row in differing if row.label == "PCB width (across feedline)")
         self.assertEqual(row.values, ["20 mm", "15 mm"])
 
+    def test_a_one_value_sweep_is_the_value_it_held(self):
+        """The oldest runs stored a pinned value as a sweep of one."""
+        old = make_run(SWEEP_ONE, sweep=[("pedestal_depth", [0.0])], results=modes([3.2]),
+                       combos={"pedestal_depth-0": {"params": {"pedestal_depth": 0.0}}})
+        new = make_run(SWEEP_TWO, results=modes([3.2]), dimensions={"pedestal_depth": 0.0})
+        differing, shared = compare.setting_rows([old, new])
+        self.assertNotIn("Pedestal depth", [row.label for row in differing])
+        row = next(row for row in shared if row.label == "Pedestal depth")
+        self.assertEqual(row.values, ["0 mm", "0 mm"])
+
     def test_distortion_geometry_does_not_apply_to_a_run_without_one(self):
         distorted = make_run(SWEEP_ONE, sweep=[("distortion_radius", [0.5, 1.0])],
                              pinned={"no_distortion": 0}, results=modes([10.0]))
@@ -202,6 +212,24 @@ class LiningUpTests(RunsOnDisk):
         self.assertEqual(set(by_key[("2", "1")]), {SWEEP_ONE, SWEEP_TWO})
         self.assertEqual(set(by_key[("0", "1")]), {SWEEP_ONE})
         self.assertEqual(len(table["rows"]), 4)
+
+    def test_a_micrometre_sweep_from_before_its_column_had_a_unit_lines_up(self):
+        """Old results hold a micrometre parameter in millimetres under its
+        bare name; it still lines up with a run that wrote `_um`."""
+        old = make_run(SWEEP_ONE, sweep=[("pcb_width", [0.381, 0.5])], results=[
+            {"mode": 1, "freq_ghz": 4.0 + w, "pcb_width": w, "combo_id": f"w{w}"} for w in (0.381, 0.5)])
+        new = make_run(SWEEP_TWO, sweep=[("pcb_width", [0.381, 0.635])], results=[
+            {"mode": 1, "freq_ghz": 4.1 + w / 1000, "pcb_width_um": w, "combo_id": f"w{w}"} for w in (381.0, 635.0)])
+        entries = entries_for(old, new)
+        table, why = compare.side_by_side(compare.combined_results(entries), entries, ["pcb_width"])
+        self.assertIsNone(why)
+        by_key = {tuple(row["key"]): row["values"]["freq_ghz"] for row in table["rows"]}
+        self.assertEqual(set(by_key[("381", "1")]), {SWEEP_ONE, SWEEP_TWO})
+
+    def test_results_with_nothing_to_line_up_by_are_not_a_table(self):
+        rows = [{"freq_ghz": 5.0, "q": 100.0}]
+        entries = entries_for(make_run(SWEEP_ONE, results=rows), make_run(SWEEP_TWO, results=rows))
+        self.assertEqual(compare.side_by_side(compare.combined_results(entries), entries, []), (None, None))
 
     def test_curves_are_not_lined_up_as_points(self):
         rows = [{"freq_ghz": f, "s11_db": -10.0, "combo_id": "default"} for f in (1.0, 2.0, 3.0)]
@@ -257,6 +285,19 @@ class PlottingSeveralRunsTests(RunsOnDisk):
     def test_filtering_by_run_keeps_only_its_rows(self):
         kept = plotting.apply_filters(self.df, {plotting.RUN_ID_COLUMN: [WITHOUT_BONDS]})
         self.assertEqual(kept[plotting.RUN_ID_COLUMN].unique().tolist(), [WITHOUT_BONDS])
+
+    def test_filtering_a_parameter_keeps_the_runs_that_never_had_it(self):
+        """Unticking one distortion radius hides the points at that radius
+        -- not a run built without any distortion at all."""
+        distorted = make_run(SWEEP_ONE, sweep=[("distortion_radius", [0.5, 1.0])],
+                             pinned={"no_distortion": 0},
+                             results=[{"mode": 1, "freq_ghz": 10.0, "distortion_radius": r, "combo_id": f"r{r}"}
+                                      for r in (0.5, 1.0)])
+        clean = Run.load(WITH_BONDS)
+        df = compare.combined_results(entries_for(distorted, clean))
+        kept = plotting.apply_filters(df, {"distortion_radius": ["1"]})
+        self.assertEqual(sorted(kept[plotting.RUN_ID_COLUMN].unique()), [SWEEP_ONE, WITH_BONDS])
+        self.assertEqual(kept.loc[kept[plotting.RUN_ID_COLUMN] == SWEEP_ONE, "distortion_radius"].tolist(), [1.0])
 
     def test_a_run_keeps_its_colour_when_the_others_are_filtered_out(self):
         colours = plotting.run_colours([entry.name for entry in self.entries])
@@ -317,9 +358,21 @@ class ComparePageTests(RunsOnDisk):
     def test_the_csv_holds_every_run_and_says_which(self):
         self.wire_bond_pair()
         response = self.client.get(f"/compare/results.csv?runs={WITH_BONDS},{WITHOUT_BONDS}")
-        lines = response.get_data(as_text=True).splitlines()
+        text = response.get_data(as_text=True)
+        # marked as UTF-8 for Excel, which otherwise garbles the names' "·"
+        self.assertTrue(text.startswith("﻿"))
+        lines = text.lstrip("﻿").splitlines()
         self.assertTrue(lines[0].startswith("run_id,run,"))
         self.assertEqual(len(lines), 1 + 6)
+
+    def test_a_lone_run_with_results_is_still_drawn_in_its_own_colour(self):
+        make_run(SWEEP_ONE)  # A: no results yet
+        make_run(WITHOUT_BONDS, results=modes([5.8984, 5.9076]), label="without bonds")
+        page = self.page(f"runs={SWEEP_ONE},{WITHOUT_BONDS}")
+        self.assertRegex(page, rf'<option value="{plotting.RUN_COLUMN}"\s+selected')
+        plot = self.client.get(f"/compare/plot?runs={SWEEP_ONE},{WITHOUT_BONDS}&x=mode&y=freq_ghz"
+                               f"&color={plotting.RUN_COLUMN}").get_data(as_text=True)
+        self.assertIn(plotting.RUN_COLOURS["light"][1], plot)
 
     def test_a_run_without_results_cannot_be_ticked(self):
         self.wire_bond_pair()

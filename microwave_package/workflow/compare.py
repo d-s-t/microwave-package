@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from functools import cached_property
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 import pandas as pd
@@ -79,6 +80,11 @@ class Compared:
     @property
     def has_results(self) -> bool:
         return self.results is not None and not self.results.empty
+
+    @cached_property
+    def held(self) -> Dict[str, float]:
+        """This run's `held_values`, read once for everything that asks."""
+        return held_values(self.run)
 
 
 def compared(runs: Sequence[Run], titles: Sequence[str],
@@ -157,9 +163,14 @@ def combined_results(entries: Sequence[Compared]) -> pd.DataFrame:
         if not entry.has_results:
             continue
         df = entry.results.copy()
-        held = held_values(entry.run)
+        held = entry.held
         for name in swept:
             column = parameter_meta.column_name(name)
+            if column not in df.columns and column != name and name in df.columns:
+                # Results from before a micrometre parameter's column was
+                # named for its unit hold it in millimetres, under its
+                # bare name.
+                df[column] = pd.to_numeric(df[name], errors="coerce") * parameter_meta.MICRONS_PER_MM
             if column in df.columns or name not in held:
                 continue
             value = parameter_meta.to_display(name, held[name])
@@ -243,16 +254,21 @@ class SettingRow:
         return len(recorded) > 1
 
 
-def setting_rows(runs: Sequence[Run]) -> Tuple[List[SettingRow], List[SettingRow]]:
+def setting_rows(runs: Sequence[Run], held: Optional[Sequence[Dict[str, float]]] = None,
+                 ) -> Tuple[List[SettingRow], List[SettingRow]]:
     """What the runs were made with, one row per setting, split into the
     rows where their records disagree and the rest.
 
     Only what shapes the result is listed: how the solve was set up, what
     it was built from and of, and every dimension of the geometry. Where
     the solve ran, and how often the page polled it, are left out.
+
+    `held` is each run's `held_values`, when the caller has them already.
     """
+    if held is None:
+        held = [held_values(run) for run in runs]
     rows = (_solve_rows(runs) + _source_rows(runs)
-            + _material_rows(runs) + _parameter_rows(runs))
+            + _material_rows(runs) + _parameter_rows(runs, held))
     return [row for row in rows if row.differs], [row for row in rows if not row.differs]
 
 
@@ -321,7 +337,12 @@ def _material_rows(runs: Sequence[Run]) -> List[SettingRow]:
 
 
 def _swept_text(name: str, values: List[float]) -> str:
-    shown = [parameter_meta.format_value(name, value) for value in sorted(values)]
+    distinct = sorted(set(values))
+    if len(distinct) == 1:
+        # The oldest runs stored a pinned value as a one-value sweep. It
+        # is still one value, and reads like any other run holding it.
+        return _value_text(name, distinct[0])
+    shown = [parameter_meta.format_value(name, value) for value in distinct]
     unit = parameter_meta.unit_for(name)
     suffix = f" {unit}" if unit else ""
     if len(shown) <= 6:
@@ -334,8 +355,7 @@ def _value_text(name: str, value: float) -> str:
     return parameter_meta.format_value(name, value) + (f" {unit}" if unit else "")
 
 
-def _parameter_rows(runs: Sequence[Run]) -> List[SettingRow]:
-    held = [held_values(run) for run in runs]
+def _parameter_rows(runs: Sequence[Run], held: Sequence[Dict[str, float]]) -> List[SettingRow]:
     swept = [{p["name"]: p.get("values", []) for p in run.config.get("sweep_params", [])}
              for run in runs]
 
@@ -402,6 +422,8 @@ def side_by_side(df: pd.DataFrame, entries: Sequence[Compared],
     if plotting.MODE_COLUMN in df.columns:
         key_columns.append(plotting.MODE_COLUMN)
     if not key_columns:
+        if "combo_id" not in df.columns:
+            return None, None  # nothing says which rows are the same point
         key_columns = ["combo_id"]
 
     numbers = {column: pd.to_numeric(df[column], errors="coerce").tolist() for column, _ in quantities}

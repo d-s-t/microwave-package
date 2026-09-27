@@ -124,13 +124,16 @@ class TestTheFormItself(unittest.TestCase):
         import re
 
         html = self.client.get("/").get_data(as_text=True)
-        names = re.findall(r"<(?:input|select)[^>]*name=\"([a-z_0-9]+)\"", html)
+        # The run list's compare tick boxes share one name on purpose --
+        # a checkbox group, submitted by a form of their own -- so they
+        # are not this form's settings and are not counted.
+        tags = [tag for tag in re.findall(r"<(?:input|select)[^>]*>", html)
+                if 'form="compare-form"' not in tag]
+        names = [m.group(1) for m in (re.search(r'name="([a-z_0-9]+)"', tag) for tag in tags) if m]
         counts = collections.Counter(names)
-        # Radio groups legitimately share a name, and so do the run list's
-        # compare tick boxes -- one `runs` per ticked run, submitted by
-        # their own form rather than this one. Nothing else may.
-        groups = {"solution_type", "distortion_mode", "runs"}
-        repeated = {n for n, k in counts.items() if k > 1} - groups
+        # Radio groups legitimately share a name; nothing else may.
+        radios = {"solution_type", "distortion_mode"}
+        repeated = {n for n, k in counts.items() if k > 1} - radios
         self.assertEqual(repeated, set())
 
 
