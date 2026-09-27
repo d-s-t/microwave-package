@@ -138,16 +138,14 @@ def write_params(path: str, values: Dict[str, float], extra: Optional[Dict[str, 
 def read_sentinel(path: str) -> Dict[str, str]:
     """Parse the script's `key=value` report. Missing -> empty.
 
-    Read in one go and closed at once, and a file that cannot be read is
-    treated exactly like a missing one -- see `_settled` for why holding
-    this file open for any longer than it takes to read it is something
-    to avoid rather than to retry.
+    Never opened where it lies: the report is copied, and the copy read
+    (see `_snapshot`). A file that cannot be copied is treated exactly
+    like a missing one -- see `run_script` for why holding this file open
+    for any longer than that is something to avoid rather than to retry.
     """
     result: Dict[str, str] = {}
-    try:
-        with open(path, "r", encoding="utf-8", errors="replace") as f:
-            content = f.read()
-    except OSError:
+    content = _snapshot(path)
+    if content is None:
         return result
     for line in content.splitlines():
         line = line.strip()
@@ -156,6 +154,46 @@ def read_sentinel(path: str) -> Dict[str, str]:
         key, _, value = line.partition("=")
         result[key.strip()] = value.strip()
     return result
+
+
+def _snapshot(path: str) -> Optional[str]:
+    """What the file holds, read without this process ever holding it open.
+
+    Delphi's SaveToFile takes the report EXCLUSIVELY, so a handle open on
+    it as the script writes a progress line fails that write, and a
+    failed write inside Altium is a modal dialog ("EFCreateError: Cannot
+    create file ...generate_report.txt"). An `open()` and `read()` hold
+    the file for microseconds -- unless the thread doing it is held up
+    between opening and closing. PyAEDT drives AEDT through a PyDLL,
+    which keeps Python's lock for the whole of each call, so while the
+    AEDT stage is inside one, a read that has just opened the report
+    cannot get back to close it, and the file stays open for as long as
+    that call lasts: seconds. That is the dialog a sweep hit.
+
+    CopyFileW opens, copies and closes the file within one call that
+    needs none of Python's locks, so nothing on this side can stretch
+    that. The copy is this call's own, and is read at leisure.
+    """
+    if os.name != "nt":
+        try:
+            with open(path, "rb") as f:
+                return f.read().decode("utf-8", errors="replace")
+        except OSError:
+            return None
+
+    import ctypes
+    import tempfile
+
+    handle, copy = tempfile.mkstemp(prefix="altium_report_", suffix=".txt")
+    os.close(handle)
+    try:
+        if not ctypes.windll.kernel32.CopyFileW(os.fspath(path), copy, False):
+            return None  # missing, a directory, or the script writing it
+        with open(copy, "rb") as f:
+            return f.read().decode("utf-8", errors="replace")
+    finally:
+        with contextlib.suppress(OSError):
+            os.remove(copy)
 
 
 def _fingerprint(path: str):
