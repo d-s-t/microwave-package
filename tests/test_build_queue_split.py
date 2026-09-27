@@ -140,5 +140,48 @@ class TestTheSplitItself(unittest.TestCase):
         self.assertIn("analysis_settings", params)
 
 
+class FakeDesktop:
+    def __init__(self, on=True, fails=False):
+        self.on = on
+        self.fails = fails
+
+    def GetAutoSaveEnabled(self):
+        if self.fails:
+            raise RuntimeError("no such method")
+        return 1 if self.on else 0
+
+    def EnableAutoSave(self, value):
+        self.on = bool(value)
+
+
+class TestAutosaveDuringABuild(unittest.TestCase):
+    """Autosave is off while a model is built -- it rewrites the whole
+    project every few edits -- and it is an AEDT-wide option, so it has
+    to come back exactly as it was found."""
+
+    def test_it_is_off_during_the_build_and_back_on_after(self):
+        desktop = FakeDesktop(on=True)
+        was_on = model_builder._pause_autosave(desktop, log=lambda _m: None)
+        self.assertFalse(desktop.on)
+        model_builder._resume_autosave(desktop, was_on)
+        self.assertTrue(desktop.on)
+
+    def test_a_user_who_had_it_off_keeps_it_off(self):
+        desktop = FakeDesktop(on=False)
+        was_on = model_builder._pause_autosave(desktop, log=lambda _m: None)
+        model_builder._resume_autosave(desktop, was_on)
+        self.assertFalse(desktop.on)
+
+    def test_a_state_it_cannot_read_is_left_alone(self):
+        desktop = FakeDesktop(on=True, fails=True)
+        messages = []
+        was_on = model_builder._pause_autosave(desktop, log=messages.append)
+        self.assertIsNone(was_on)
+        self.assertTrue(desktop.on, "never switch off what cannot be switched back")
+        model_builder._resume_autosave(desktop, was_on)
+        self.assertTrue(desktop.on)
+        self.assertTrue(messages)
+
+
 if __name__ == "__main__":
     unittest.main()

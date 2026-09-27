@@ -26,8 +26,8 @@ from __future__ import annotations
 
 import logging
 import math
-from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Sequence, Tuple
+from dataclasses import dataclass, field, replace
+from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
 from .cavity import Cavity
 
@@ -217,6 +217,12 @@ class Frame:
         """One Altium point in assembly coordinates."""
         return [u + self.x_offset, w, -v + self.z_offset]
 
+    def vector(self, du: float, dv: float, dw: float = 0.0) -> List[float]:
+        """One Altium displacement in assembly coordinates: `point`
+        without the offsets, which move points but not the steps
+        between them."""
+        return [du, dw, -dv]
+
     def box(self, u1: float, v1: float, u2: float, v2: float,
             w_base: float, w_height: float) -> Tuple[List[float], List[float]]:
         """A slab in the board plane, as (origin, sizes) for a box.
@@ -361,29 +367,43 @@ def build(
             parts.append(_extrude_polygon(modeler, region.points, base, height, frame))
         for track in tracks:
             parts.extend(_extrude_track(modeler, track, base, height, frame, log=log))
-        for pad in pads:
+        for (xsize, ysize, rotation), where in _positions_by(
+                pads, lambda p: (p.xsize, p.ysize, p.rotation)).items():
             # Built from its corners rather than its extents, so a
             # rotated land comes out at its real angle. _extrude_polygon
             # still makes a plain box of anything axis-aligned, which is
             # every pad the generator draws itself and every connector
             # land at a quarter turn -- the sweep is only reached by a
             # pad at some other angle.
-            parts.append(
-                _extrude_polygon(modeler, pad.corners(), base, height, frame)
-            )
+            #
+            # Pads of one shape are copies of each other, and built a
+            # block at a time: a row of bond fingers is one pad.
+            def pad_at(u, v, xsize=xsize, ysize=ysize, rotation=rotation,
+                       layer=layer, base=base, height=height):
+                corners = Pad(layer, u, v, xsize, ysize, rotation).corners()
+                return _extrude_polygon(modeler, corners, base, height, frame)
+
+            parts.extend(_replicate(modeler, frame, where, pad_at, log=log))
 
         name = f"{prefix}_copper_{layer}"
         created[name] = _unite_as(modeler, parts, name)
 
     if copper.vias:
         # Vias run along the up axis, which is Y here rather than Z, and
-        # each is a hollow plated barrel, not a slug -- see `_via_barrel`.
-        parts = [
-            _via_barrel(modeler, via, frame, bottom_face, top_face)
-            for via in copper.vias
-        ]
+        # each is a solid post -- see `_via_post`. A stitching grid is
+        # thousands of them, so they are built a block at a time (see
+        # `blocks`), and each block is left a body of its own: joining
+        # them is a boolean over every post at once, which on the dense
+        # boards is itself one of the long AEDT calls this avoids.
+        parts = []
+        for (diameter,), where in _positions_by(copper.vias, lambda v: (v.diameter,)).items():
+            def post_at(u, v, diameter=diameter):
+                return _via_post(modeler, Via(u, v, diameter, 0.0), frame,
+                                 bottom_face, top_face)
+
+            parts.extend(_replicate(modeler, frame, where, post_at, log=log))
         name = f"{prefix}_vias"
-        created[name] = _unite_as(modeler, parts, name)
+        created[name] = _name_each(modeler, parts, name)
 
     log(
         f"Built {len(copper)} copper records for {copper.name} as "
@@ -392,41 +412,34 @@ def build(
     return created
 
 
-def _via_barrel(modeler, via: Via, frame: Frame, bottom_face: float,
-                top_face: float) -> str:
-    """One plated-through via, as a hollow copper barrel.
+def _via_post(modeler, via: Via, frame: Frame, bottom_face: float,
+              top_face: float) -> str:
+    """One plated-through via, as a solid copper post through the board.
 
-    A real via is a drilled hole with copper plated onto its wall -- not
-    a solid post. So this is an annulus: copper out to `via.diameter / 2`
-    (the extent it has on the layers), with `via.hole` diameter of clear
-    space down the middle. Altium exports both numbers; only the outer
-    one was ever used, which put solid metal where the hole is.
+    A real via is a drilled hole with copper plated on its wall, and it
+    used to be built that way: a hollow barrel, the board drilled out
+    round it, and the hole carried on through the copper on both layers.
+    Every one of those is a cut through thousands of holes at once, and
+    AEDT's cost for such a cut grows with the square of the count -- the
+    densest boards spent over ten minutes in it, during which PyAEDT
+    held Python's lock and froze the whole web app.
 
-    The bore is cut a little proud of both faces, so the barrel finishes
-    as a clean ring instead of keeping a skin of copper across the mouth
-    from a boolean that stopped exactly flush. A via with no hole (a
-    filled or a tented via, `hole` = 0) stays a solid post.
+    None of it reaches the fields. The bore is a round waveguide a tenth
+    of a millimetre across, cut off near 1.8 THz, so at these frequencies
+    no field goes in, and the current runs on the outside of the barrel,
+    which the post keeps. `via.hole` is read and deliberately not used.
 
-    The board still has to lose the whole footprint, not just this ring;
-    that is `drill_vias`, with its own solid tool.
+    The board is not drilled for it either: the post overlaps the
+    substrate, and the model's material override lets the metal win
+    there (see `model_builder.build_model`). Nor is it carved out of the
+    vacuum, which it never reaches -- see `model_builder.carve_vacuum`.
     """
-    span = top_face - bottom_face
-    outer = modeler.create_cylinder(
+    return modeler.create_cylinder(
         orientation="Y",
         origin=frame.point(via.x, via.y, bottom_face),
         radius=via.diameter / 2.0,
-        height=span,
-    )
-    if 0.0 < via.hole < via.diameter:
-        proud = max(span, via.diameter) * 0.05
-        bore = modeler.create_cylinder(
-            orientation="Y",
-            origin=frame.point(via.x, via.y, bottom_face - proud),
-            radius=via.hole / 2.0,
-            height=span + 2.0 * proud,
-        )
-        modeler.subtract(outer.name, [bore.name], keep_originals=False)
-    return outer.name
+        height=top_face - bottom_face,
+    ).name
 
 
 # Two vertices closer than this are the same vertex. 0.1 um is orders
@@ -602,6 +615,212 @@ def _unite_as(modeler, parts: Sequence[str], name: str) -> List[str]:
     return [name]
 
 
+def _name_each(modeler, parts: Sequence[str], name: str) -> List[str]:
+    """Name `parts` `name`, `name_2`, `name_3`... without uniting them.
+
+    For bodies that need a name the material rules match, but have no
+    need to be one body -- the via blocks in `build`.
+    """
+    names: List[str] = []
+    for part in (p for p in parts if p):
+        names.append(name if not names else f"{name}_{len(names) + 1}")
+        modeler[part].name = names[-1]
+    return names
+
+
+# --- many copies at once ----------------------------------------------
+#
+# A board carries thousands of copies of a few features: a stitching
+# grid of vias, rows of bond fingers, a fan of bond wires. Building each
+# copy with a call of its own is what made a model take hours -- a
+# 7654-via board was still building after two. Every call is a round
+# trip to AEDT, and every boolean makes PyAEDT re-list the whole model
+# and check its own cache against it, which costs more the more bodies
+# the model already holds, so each via cost more than the last.
+#
+# The layouts are regular, though. The generator steps every grid by a
+# fixed pitch, so the positions fall into a few rectangular blocks -- that
+# 7654-via board is 22 of them -- and AEDT can lay a block out itself:
+# build one copy, then DuplicateAlongLine along each side of the block
+# with "attach to original", which puts the clones into the SAME body.
+# A block of any size costs one copy and two calls, and the model never
+# holds more than a handful of bodies.
+
+
+@dataclass(frozen=True)
+class Block:
+    """A rectangular array of positions on the board.
+
+    `count` positions `step` apart make a row, and the row repeats `rows`
+    times, `row_step` apart. A lone position is a 1 x 1 block.
+    """
+    u: float
+    v: float
+    step: Tuple[float, float] = (0.0, 0.0)
+    count: int = 1
+    row_step: Tuple[float, float] = (0.0, 0.0)
+    rows: int = 1
+
+    def __len__(self) -> int:
+        return self.count * self.rows
+
+    def points(self) -> List[Tuple[float, float]]:
+        return [
+            (self.u + i * self.step[0] + j * self.row_step[0],
+             self.v + i * self.step[1] + j * self.row_step[1])
+            for j in range(self.rows)
+            for i in range(self.count)
+        ]
+
+
+def blocks(points: Sequence[Tuple[float, float]]) -> List[Block]:
+    """Cover `points` with as few blocks as the layout allows.
+
+    Every point lands in exactly one block, within a few COINCIDENT_MM of
+    where it was: a block puts its copies on a perfect lattice, and
+    Altium's coordinate quantum leaves the real ones nanometres off it.
+    Rows are tried both ways round, along u and along v, and whichever
+    needs fewer blocks wins. Points with no pattern at all still come out
+    right, one block each -- no worse than building them one at a time.
+    """
+    points = [(float(u), float(v)) for u, v in points]
+    if not points:
+        return []
+    return min((_blocks_along(points, axis) for axis in (0, 1)), key=len)
+
+
+def _blocks_along(points: List[Tuple[float, float]], along: int) -> List[Block]:
+    """`blocks`, with the rows running along axis `along` (0 = u, 1 = v)."""
+    across = 1 - along
+
+    def pair(a: float, c: float) -> Tuple[float, float]:
+        return (a, c) if along == 0 else (c, a)
+
+    # Rows: each line of points, split into evenly spaced runs.
+    runs = []  # (points in order along the row, step)
+    for line in _lines(points, across):
+        line.sort(key=lambda p: p[along])
+        for first, count, step in _even_runs([p[along] for p in line]):
+            runs.append((line[first:first + count], step))
+
+    # Runs that are the same row moved sideways stack into one block. The
+    # bucket only narrows the search; the test that decides is the one
+    # below, which keeps every point within two COINCIDENT_MM of its copy.
+    stacks: Dict[Tuple[int, int, int], List[list]] = {}
+    for row, step in runs:
+        start, span = row[0][along], step * (len(row) - 1)
+        key = (len(row), round(start / (10 * COINCIDENT_MM)), round(span / (10 * COINCIDENT_MM)))
+        for stack in stacks.setdefault(key, []):
+            first_row, first_step = stack[0]
+            if (abs(first_row[0][along] - start) <= COINCIDENT_MM
+                    and abs(first_step * (len(row) - 1) - span) <= COINCIDENT_MM):
+                stack.append((row, step))
+                break
+        else:
+            stacks[key].append([(row, step)])
+
+    out = []
+    for stack in (s for bucket in stacks.values() for s in bucket):
+        stack.sort(key=lambda r: r[0][0][across])
+        for first, rows, row_step in _even_runs([r[0][0][across] for r in stack]):
+            row, step = stack[first]
+            out.append(Block(
+                u=row[0][0], v=row[0][1],
+                step=pair(step, 0.0), count=len(row),
+                row_step=pair(0.0, row_step), rows=rows,
+            ))
+    return out
+
+
+def _lines(points, across: int) -> List[List[Tuple[float, float]]]:
+    """`points` gathered into lines of equal `across` coordinate, where
+    equal means within COINCIDENT_MM of the first point on the line."""
+    lines: List[List[Tuple[float, float]]] = []
+    for point in sorted(points, key=lambda p: p[across]):
+        if lines and point[across] - lines[-1][0][across] <= COINCIDENT_MM:
+            lines[-1].append(point)
+        else:
+            lines.append([point])
+    return lines
+
+
+def _even_runs(values: Sequence[float]) -> List[Tuple[int, int, float]]:
+    """Ascending `values`, split greedily into evenly spaced runs.
+
+    Returns (first index, count, step) for each run. Every value in a run
+    is within COINCIDENT_MM of `values[first] + k * step`: each new value
+    narrows the range of steps that still fits all of them, and the run
+    ends when none would -- so a gentle drift cannot creep in a little at
+    a time. Two values closer than COINCIDENT_MM are the same value, and
+    never become a step of their own.
+    """
+    runs = []
+    i = 0
+    while i < len(values):
+        low, high = -math.inf, math.inf
+        j = i + 1
+        while j < len(values):
+            gap, k = values[j] - values[i], j - i
+            if k == 1 and gap <= COINCIDENT_MM:
+                break
+            low_k = max(low, (gap - COINCIDENT_MM) / k)
+            high_k = min(high, (gap + COINCIDENT_MM) / k)
+            if low_k > high_k:
+                break
+            low, high = low_k, high_k
+            j += 1
+        count = j - i
+        step = 0.0
+        if count > 1:
+            step = min(max((values[j - 1] - values[i]) / (count - 1), low), high)
+        runs.append((i, count, step))
+        i = j
+    return runs
+
+
+def _replicate(modeler, frame: Frame, points: Sequence[Tuple[float, float]],
+               make: Callable[[float, float], str], log=logger.info) -> List[str]:
+    """Build `make(u, v)` at every one of `points`, a block at a time.
+
+    `make` builds one copy anchored at board position (u, v) and returns
+    its body's name. Each block's first copy is built by `make`, and AEDT
+    clones it along the block's two sides, attached to the original -- so
+    the clones join its body instead of each becoming a body of its own.
+    Returns one body per block, carrying every copy in it.
+    """
+    bodies = []
+    for block in blocks(points):
+        body = make(block.u, block.v)
+        try:
+            for step, clones in ((block.step, block.count), (block.row_step, block.rows)):
+                if clones > 1 and not modeler.duplicate_along_line(
+                        body, frame.vector(*step), clones=clones,
+                        attach=True, duplicate_assignment=False):
+                    raise RuntimeError("DuplicateAlongLine reported failure")
+        except Exception as exc:
+            # Slow and right beats fast and wrong: a block without its
+            # clones is a patch of missing vias nothing downstream sees.
+            log(f"WARNING: AEDT would not clone a block of {len(block)} ({exc}); "
+                "building them one at a time instead.")
+            modeler.delete(body)
+            bodies.extend(make(u, v) for u, v in block.points())
+            continue
+        bodies.append(body)
+    return bodies
+
+
+def _positions_by(items, shape) -> Dict[tuple, List[Tuple[float, float]]]:
+    """Where each shape of feature sits: `shape(item)` -> [(x, y), ...].
+
+    Only features of one shape can be copies of each other; `blocks`
+    then finds the pattern in where they are.
+    """
+    grouped: Dict[tuple, List[Tuple[float, float]]] = {}
+    for item in items:
+        grouped.setdefault(shape(item), []).append((item.x, item.y))
+    return grouped
+
+
 # --- wire bonds -------------------------------------------------------
 #
 # Built here rather than in Altium. AD26 models bond wires -- it has
@@ -718,33 +937,62 @@ def build_bond_wires(modeler, bond_list, frame: Frame, pcb_top: float,
     rules match on the name. The union is only with itself; the join to
     the pad is the coincident face, which is why nothing here has to
     know which copper body it came down on.
+
+    Bonds that span the same way are one wire moved sideways -- a row of
+    ground bonds down one side of the die -- so like the vias they are
+    built a block at a time (see `blocks`): one bond, cloned along the row.
     """
     foot_radius, foot_height = foot_of(diameter)
     bury = foot_height / 2.0
 
-    made = []
-    wires = 0
-    for bond in bond_list:
-        # The wire first, so `made[0]` is a wire: unite takes the name
-        # of the first body in the list, and that is the one renamed.
-        wire = modeler.create_polyline(
+    def bond_body(bond) -> str:
+        # The wire first: unite takes the name of the first body in its
+        # list, so every body this makes carries a wire's name.
+        parts = [modeler.create_polyline(
             points=wire_path(bond, frame,
                              pcb_top + bury, chip_top + bury, height),
             xsection_type="Circle",
             xsection_width=diameter,
-        )
-        made.append(wire.name)
-        wires += 1
-
+        ).name]
         for x, y, pad_top in ((bond.pcb_x, bond.pcb_y, pcb_top),
                               (bond.chip_x, bond.chip_y, chip_top)):
-            foot = modeler.create_cylinder(
+            parts.append(modeler.create_cylinder(
                 orientation="Y",
                 origin=frame.point(x, y, pad_top),
                 radius=foot_radius,
                 height=foot_height,
-            )
-            made.append(foot.name)
+            ).name)
+        modeler.unite(parts)
+        return parts[0]
+
+    # Grouped by span: the vector from the board end to the die end. Only
+    # bonds with the same one are the same wire.
+    spans: Dict[Tuple[float, float], list] = {}
+    for bond in bond_list:
+        span = (round(bond.chip_x - bond.pcb_x, 9), round(bond.chip_y - bond.pcb_y, 9))
+        spans.setdefault(span, []).append(bond)
+
+    made = []
+    for group in spans.values():
+        first = group[0]
+        du, dv = first.chip_x - first.pcb_x, first.chip_y - first.pcb_y
+
+        def bond_at(u, v, first=first, du=du, dv=dv):
+            return bond_body(replace(first, pcb_x=u, pcb_y=v, chip_x=u + du, chip_y=v + dv))
+
+        made.extend(_replicate(modeler, frame, [(b.pcb_x, b.pcb_y) for b in group],
+                               bond_at, log=log))
+
+    # Feet that touch. The two signal wires at each end of the line land
+    # side by side on pads that tile the trace, and at FOOT_WIDTH their
+    # feet meet along a single line -- the tangent contact described
+    # above, and one the modeller cannot cut: carving the vacuum around
+    # it leaves no vacuum at all ("Null body found for part vacuum"). Two
+    # ball bonds that touch are one blob on the bench, so the waist
+    # between them is filled in.
+    bridges = _bridge_touching_feet(modeler, bond_list, frame, pcb_top, chip_top,
+                                    foot_radius, foot_height, log)
+    made.extend(bridges)
 
     if not made:
         return []
@@ -752,10 +1000,49 @@ def build_bond_wires(modeler, bond_list, frame: Frame, pcb_top: float,
         modeler.unite(made)
     modeler[made[0]].name = name
 
+    wires = len(bond_list)
     signal = sum(1 for b in bond_list if b.kind == "signal")
-    log(f"Built {wires} bond wires on {len(made) - wires} feet as {name!r} "
-        f"({signal} signal, {wires - signal} ground)")
+    log(f"Built {wires} bond wires on {2 * wires} feet as {name!r} "
+        f"({signal} signal, {wires - signal} ground"
+        + (f"; {len(bridges)} pairs of touching feet bridged)" if bridges else ")"))
     return [name]
+
+
+# How wide the bridge between two touching feet is, as a fraction of a
+# foot's width. Narrower than the feet, so the bridge's sides cut into
+# both of them: a bridge exactly as wide would only trade the one
+# tangent contact between the feet for two between bridge and feet.
+FOOT_BRIDGE = 0.8
+
+
+def _bridge_touching_feet(modeler, bond_list, frame: Frame, pcb_top: float,
+                          chip_top: float, radius: float, height: float,
+                          log=logger.info) -> List[str]:
+    """Fill the waist between every two feet that touch or overlap.
+
+    Only between feet of the same kind. A signal foot touching a ground
+    one is a short in the layout itself, and bridging it would build that
+    short in solid metal instead of saying so.
+    """
+    bridges = []
+    for end, pad_top in (("pcb", pcb_top), ("chip", chip_top)):
+        feet = [((getattr(b, f"{end}_x"), getattr(b, f"{end}_y")), b.kind) for b in bond_list]
+        for i, (a, kind_a) in enumerate(feet):
+            for b, kind_b in feet[i + 1:]:
+                apart = math.dist(a, b)
+                if apart <= COINCIDENT_MM or apart > 2.0 * radius + COINCIDENT_MM:
+                    continue
+                if kind_a != kind_b:
+                    log(f"WARNING: a {kind_a} and a {kind_b} bond foot touch on the {end} "
+                        f"at {a} and {b} -- a short in the layout. Not bridged.")
+                    continue
+                # Unit vector along the bridge, and its half-width across.
+                tu, tv = (b[0] - a[0]) / apart, (b[1] - a[1]) / apart
+                nu, nv = -tv * radius * FOOT_BRIDGE, tu * radius * FOOT_BRIDGE
+                corners = [(a[0] + nu, a[1] + nv), (b[0] + nu, b[1] + nv),
+                           (b[0] - nu, b[1] - nv), (a[0] - nu, a[1] - nv)]
+                bridges.append(_extrude_polygon(modeler, corners, pad_top, height, frame))
+    return bridges
 
 
 def clear_cavity_area(
@@ -801,107 +1088,3 @@ def clear_cavity_area(
     tool.name = "cavity_area_cut"
     modeler.subtract(list(targets), ["cavity_area_cut"], keep_originals=False)
     log(f"Cleared the die's opening out of {', '.join(targets)}.")
-
-
-def drill_vias(modeler, substrate: str, vias: Sequence[Via], frame: Frame,
-               top_face: float, bottom_face: float, log=logger.info) -> None:
-    """Cut a clear hole through the substrate for every via.
-
-    Without this the board and the barrels claim the same volume. HFSS
-    either errors or resolves the overlap by material priority, and the
-    quiet case is the dangerous one: the model still solves, with copper
-    and dielectric occupying one region.
-
-    The barrels are now hollow (`_via_barrel`), so subtracting them would
-    leave a plug of dielectric standing inside each one -- right where
-    the hole is meant to be -- and `carve_vacuum` would then fill that
-    same space, two materials in one region. So the drill is its own
-    solid tool, the via's full outer diameter, run right through the
-    board and consumed by the cut. The barrels are left untouched; the
-    bore down their middle becomes vacuum when the cavity is carved.
-    """
-    if not vias:
-        return
-
-    span = top_face - bottom_face
-    proud = max(span, max(v.diameter for v in vias)) * 0.05
-    holes = [
-        modeler.create_cylinder(
-            orientation="Y",
-            origin=frame.point(v.x, v.y, bottom_face - proud),
-            radius=v.diameter / 2.0,
-            height=span + 2.0 * proud,
-        ).name
-        for v in vias
-    ]
-    if len(holes) > 1:
-        modeler.unite(holes)
-    # Named, not left anonymous: if the cut below fails to consume it, a
-    # stray NewObject_* with no material is how that hides in the tree.
-    modeler[holes[0]].name = "via_drill_tool"
-
-    try:
-        modeler.subtract(substrate, ["via_drill_tool"], keep_originals=False)
-        log(f"Drilled {len(holes)} via holes clear through {substrate}.")
-    except Exception as exc:
-        log(
-            f"WARNING: could not drill the via holes out of {substrate} ({exc}). "
-            "The board and its vias overlap and the model should not be trusted."
-        )
-
-
-def open_via_holes(modeler, coppers: Sequence[str], vias: Sequence[Via],
-                   frame: Frame, top_face: float, bottom_face: float,
-                   copper_thickness: float, log=logger.info) -> None:
-    """Carry each via's drilled hole on through the copper it lands in.
-
-    `_via_barrel` bores the hole down the barrel and `drill_vias` takes
-    the whole footprint out of the substrate -- but the lands and planes
-    on the top and bottom layers are still solid across the via. That
-    leaves a plated through-hole capped at each end by a copper disc,
-    where a real one is open: the drill passes through the annular ring
-    on every layer.
-
-    Only the drilled diameter (`via.hole`) comes out, never the barrel OD
-    (`via.diameter`). Copper out to the land radius is the annular ring --
-    real metal, the via's tie into the plane -- and cutting the OD here
-    would sink a clearance into every ground plane the board does not
-    have. A stray anti-pad on a stitching via is the quiet kind of wrong
-    this model keeps guarding against.
-
-    A via with no hole (`hole` = 0, a filled or a tented via) keeps solid
-    copper over it, matching the solid post `_via_barrel` leaves.
-    """
-    coppers = [c for c in coppers if c]
-    bores = [v for v in vias if 0.0 < v.hole < v.diameter]
-    if not coppers or not bores:
-        return
-
-    span = top_face - bottom_face
-    # Start below the bottom layer and finish above the top one, so
-    # neither keeps a skin of copper across the via mouth.
-    reach = copper_thickness + max(span, max(v.hole for v in bores)) * 0.05
-    tools = [
-        modeler.create_cylinder(
-            orientation="Y",
-            origin=frame.point(v.x, v.y, bottom_face - reach),
-            radius=v.hole / 2.0,
-            height=span + 2.0 * reach,
-        ).name
-        for v in bores
-    ]
-    if len(tools) > 1:
-        modeler.unite(tools)
-    # Named for the same reason as via_drill_tool: a cut that fails to
-    # consume it leaves a material-less NewObject_* hiding in the tree.
-    modeler[tools[0]].name = "via_hole_tool"
-
-    try:
-        modeler.subtract(list(coppers), ["via_hole_tool"], keep_originals=False)
-        log(f"Opened {len(bores)} via holes through {', '.join(coppers)}.")
-    except Exception as exc:
-        log(
-            f"WARNING: could not open the via holes through {', '.join(coppers)} "
-            f"({exc}). The plated through-holes stay capped by copper and the "
-            "model should not be trusted."
-        )
