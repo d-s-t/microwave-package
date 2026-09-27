@@ -200,6 +200,20 @@ def _equation_file_values() -> Dict[str, float]:
         return {}
 
 
+def _skip_reason(values: Dict[str, float], use_altium: bool) -> Optional[str]:
+    """Why a combination will not be built, decided when its run is
+    created, or None when it will be.
+
+    The via grid is only checked when the run draws a layout. Without
+    Altium there are no vias to place, so the via parameters cannot make
+    a combination unbuildable.
+    """
+    reason = constraints.check_combination(values)
+    if reason is None and use_altium:
+        reason = constraints.check_via_grid(values)
+    return reason
+
+
 def parameter_values_for(name: str, sweep_params, parameter_defaults) -> List[float]:
     """Every value `name` takes across the combinations a run would build.
 
@@ -274,6 +288,7 @@ class Run:
         # cannot physically fit is marked here and skipped later rather
         # than failing somewhere inside SolidWorks.
         base_values = _equation_file_values()
+        use_altium = (analysis_settings or {}).get("use_altium", True)
         run.state = {
             "stage": "created",
             "combos": {
@@ -284,8 +299,8 @@ class Run:
                     "step_error": None,
                     # Why this combination will not be built, or None when
                     # it is buildable (see constraints.py).
-                    "skip_reason": constraints.check_combination(
-                        {**base_values, **(parameter_defaults or {}), **combo}
+                    "skip_reason": _skip_reason(
+                        {**base_values, **(parameter_defaults or {}), **combo}, use_altium
                     ),
                     "task_id": None,
                     "queue_status": None,

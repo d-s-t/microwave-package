@@ -223,6 +223,52 @@ def check_combination(values: Dict[str, float]) -> Optional[str]:
 # reminder to change the other.
 CHIP_COPPER_INSET = 0.15
 
+# How far short of via_min_spacing a gap may fall and still count as
+# meeting it -- MUST MATCH GapTolerance in base_parts/altium/
+# GenerateFromParams.pas, duplicated for the same reason as
+# CHIP_COPPER_INSET above. Without it the rule below would disagree with
+# the generator on exactly the boards that meet it exactly: 0.4 + 0.2
+# comes out a hair over 0.6 in floating point, so 0.4 mm vias, 0.2 mm
+# apart, every 0.6 mm would be refused here and built fine there.
+VIA_GAP_TOLERANCE = 0.001
+
+
+def check_via_grid(values: Dict[str, float]) -> Optional[str]:
+    """Why this combination's via grid would come out sparser than asked
+    for, or None if it will not.
+
+    The ground-plane fill and the shield fence both step candidate vias
+    every via_max_spacing, and the generator refuses any candidate that
+    would sit closer than via_min_spacing, edge to edge, to a via already
+    placed (TryVia and ViaObstructed in GenerateFromParams.pas). So two
+    neighbouring grid points can both be placed only if
+
+        via_diameter + via_min_spacing  <=  via_max_spacing
+
+    When they cannot, the generator does not fail. It skips every other
+    candidate across the whole fill and fence and carries on, and the
+    board comes out with at least twice the spacing its parameters say.
+    Nothing in the results would show that anything went wrong.
+
+    Checked when a run is created, as well as by `check_layout` just
+    before Altium, so a sweep over the via parameters skips these
+    combinations up front rather than building their solids first.
+    """
+    dia = values.get("via_diameter", 0.0)
+    step = values.get("via_max_spacing", 0.0)
+    min_gap = values.get("via_min_spacing", 0.0)
+    needed = dia + min_gap
+    if step - dia < min_gap - VIA_GAP_TOLERANCE:
+        return (
+            f"a {_fmt(dia)} mm via (via_diameter) plus the {_fmt(min_gap)} mm between vias "
+            f"(via_min_spacing) needs grid points {_fmt(needed)} mm apart, but "
+            f"via_max_spacing is {_fmt(step)} mm -- the generator would skip every other via "
+            f"across the ground fill and shield fence, at least doubling the real spacing. "
+            f"Raise via_max_spacing to at least {_fmt(needed)} mm, or reduce via_diameter "
+            f"or via_min_spacing"
+        )
+    return None
+
 
 def finger_offset(bonding_clearence: float, cavity_clearance: float) -> float:
     """How far past the die's edge the board's bond finger sits.
@@ -275,21 +321,12 @@ def check_layout(values: Dict[str, float]) -> Optional[str]:
     half_length = get("pcb_length") / 2.0
     via_dia = get("via_diameter")
 
-    # Both the ground-plane fill and the fence step candidate vias by
-    # via_max_spacing and then keep only the ones via_min_spacing clears
-    # of the last one accepted (GenerateFromParams.pas's TryVia). If the
-    # spacing floor does not fit within a grid step once the via's own
-    # diameter is taken out, that is not a corner case -- it is every
-    # other candidate across the whole fill and fence, landing as a
-    # pattern that is mostly gaps rather than the stitching and
-    # shielding it is there to be.
-    if get("via_min_spacing") > get("via_max_spacing") - via_dia:
-        return (
-            f"via_min_spacing ({_fmt(get('via_min_spacing'))} mm) leaves no room within "
-            f"via_max_spacing ({_fmt(get('via_max_spacing'))} mm) for a {_fmt(via_dia)} mm via "
-            f"-- most candidates across the fill and fence would be skipped for landing too "
-            f"close to the last one accepted; reduce via_min_spacing or widen via_max_spacing"
-        )
+    # Already checked when the run was created. Checked again here so
+    # a run from before that check, or a combination that reaches the
+    # generator some other way, still cannot quietly build a sparse grid.
+    reason = check_via_grid(values)
+    if reason:
+        return reason
 
     # The CPW gap is solved rather than drawn, so the first thing that
     # can fail is the solve itself: too wide a trace over a thin
