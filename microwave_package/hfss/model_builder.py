@@ -78,7 +78,45 @@ MATERIAL_FALLBACKS = {
     "mat_vacuum": "vacuum",
     "mat_conductor_pcb": "copper",
     "mat_conductor_chip": "niobium",
+    # Aluminum superconducts at the millikelvin temperatures this package
+    # is meant for; gold (the other real option a bonder loads) does not,
+    # so it is the one to reach for deliberately rather than the default.
+    "mat_wirebond": "aluminum",
 }
+
+
+# The web form's dropdown for each material setting below: common, real
+# HFSS library names for the role that setting plays, so picking one is a
+# click rather than a remembered exact library string. Not exhaustive --
+# the library has hundreds of entries -- so the form pairs this with a
+# "Custom..." choice that falls back to a free-text box (see
+# CUSTOM_MATERIAL and webapp._materials_from_form), which is what keeps an
+# existing run's material -- whatever it is -- always representable.
+#
+# The wirebond is deliberately not here: its choices are closed, not
+# curated -- see WIREBOND_MATERIALS below.
+MATERIAL_OPTIONS: Dict[str, List[str]] = {
+    "mat_box": ["aluminum", "copper", "brass", "gold"],
+    "mat_pcb": [
+        "Rogers TMM 10i (tm)", "Rogers RT/duroid 5880 (tm)",
+        "Rogers RT/duroid 6010LM (tm)", "FR4_epoxy", "sapphire",
+    ],
+    "mat_chip": ["silicon", "sapphire", "GaAs", "SiC"],
+    "mat_vacuum": ["vacuum", "air"],
+    "mat_conductor_pcb": ["copper", "gold", "silver", "aluminum"],
+    "mat_conductor_chip": ["niobium", "aluminum", "tantalum"],
+}
+
+# What the web form posts back for "Custom...", in place of one of the
+# curated options above. Can't collide with a real HFSS material name --
+# those never start with two underscores.
+CUSTOM_MATERIAL = "__custom__"
+
+# The wirebond's material, unlike the ones above, is not a curated pick
+# from an open-ended library -- a bonder loads one wire at a time, and
+# this package's process only ever loads one of these two, so the form
+# offers exactly these two and nothing else.
+WIREBOND_MATERIALS = ["gold", "aluminum"]
 
 
 # The SMP connector's materials. All of it is vendor geometry, not a
@@ -135,7 +173,7 @@ MATERIAL_RULES = [
     ("pcb_copper",      "pcb_copper",      "mat_conductor_pcb",   "perfect_e_conductors"),
     ("pcb_via",         "pcb_vias",        "mat_conductor_pcb",   "perfect_e_conductors"),
     ("pcb_substrate",   "pcb",             "mat_pcb",             None),
-    ("wirebond",        "wirebond",        "mat_conductor_pcb",   "perfect_e_conductors"),
+    ("wirebond",        "wirebond",        "mat_wirebond",        "perfect_e_conductors"),
     # The SMP connector imports as three bodies, and place_connectors sets
     # the material on all three (LCP bead, brass conductors) -- hence None
     # for both rules. The bead rule must precede the bare "connector" one.
@@ -415,8 +453,17 @@ class LayoutContext:
 
 
 def build_layout(hfss, combo_dir: str, dimensions_txt_content: str,
+                 include_wirebonds: bool = True,
                  log=logger.info) -> Optional["LayoutContext"]:
     """Rebuild the boards from the layout: substrates, copper and bonds.
+
+    `include_wirebonds=False` skips only the bond wires themselves --
+    everything else in this function runs exactly as it would otherwise,
+    including the pads the wires would have landed on (those are ordinary
+    copper on the board and the die, drawn by Altium either way). That is
+    what makes a "with bonds" and a "without bonds" run of the same
+    combination comparable: the two models differ by the wire and nothing
+    else.
 
     Returns where it put them, or None when there is no copper file --
     a run built from a SolidWorks-only assembly is still perfectly valid,
@@ -560,7 +607,9 @@ def build_layout(hfss, combo_dir: str, dimensions_txt_content: str,
     from ..design import bonds as bond_layout
 
     bonds_path = os.path.join(combo_dir, "bonds.txt")
-    if os.path.isfile(bonds_path):
+    if not include_wirebonds:
+        log("Wire bonds turned off for this run -- the die is not bonded.")
+    elif os.path.isfile(bonds_path):
         cg.build_bond_wires(
             hfss.modeler,
             bond_layout.read_file(bonds_path),
@@ -938,7 +987,11 @@ def build_model(
         # die can be pocketed into the board and everything shares one
         # frame. Must happen BEFORE materials are assigned, or the new
         # bodies exist without any.
-        layout = build_layout(hfss, combo_dir, dimensions_txt_content, log=log)
+        layout = build_layout(
+            hfss, combo_dir, dimensions_txt_content,
+            include_wirebonds=analysis_settings["materials"].get("include_wirebonds", True),
+            log=log,
+        )
 
         objects_dict = assign_materials_and_boundaries(hfss, analysis_settings["materials"], log=log)
         carve_vacuum(hfss, objects_dict, log=log)
