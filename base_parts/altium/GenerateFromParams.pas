@@ -116,6 +116,16 @@ Const
       far below anything the mesh resolves. }
     VoidSteps = 32;
 
+    { How far short of MinGap a gap may fall and still count as meeting
+      it. A via on a grid step of exactly its own diameter plus MinGap
+      (0.3 mm vias, 0.2 mm apart, every 0.5 mm) meets the rule exactly,
+      and whether "exactly" came out as a hair over or a hair under
+      after converting to Altium's integer units was left to rounding:
+      alternate grid points were refused at random, and a 0.5 mm fill
+      came out with 1 mm holes in it. One micron is far below anything
+      a board house holds, and far above the rounding. }
+    GapTolerance = 0.001;
+
     { ArcTan is relied on below; Pi is spelled out rather than assumed to
       exist, in keeping with the rest of this file's API caution. }
     PiVal = 3.14159265358979;
@@ -558,7 +568,7 @@ End;
   toward more clearance than strictly required is the safe direction. }
 Function ViaObstructed(Board : IPCB_Board; X, Y, Dia, MinGap : Double) : Boolean;
 Var
-    It       : IPCB_BoardIterator;
+    It       : IPCB_SpatialIterator;
     Prim     : IPCB_Primitive;
     Cx, Cy, Half : TCoord;
     Relevant : Boolean;
@@ -566,9 +576,22 @@ Begin
     Result := False;
     Cx   := MMsToCoord(X);
     Cy   := MMsToCoord(Y);
-    Half := MMsToCoord(Dia / 2.0 + MinGap);
+    Half := MMsToCoord(Dia / 2.0 + MinGap - GapTolerance);
 
-    { AllObjects, filtered by ObjectId inside the loop, rather than a
+    { A SPATIAL iterator, asked only for what lies within reach of this
+      one candidate, rather than a board iterator walking every object
+      on the board. The fill calls this once per grid point and the
+      board gains a via at most of them, so walking the whole board
+      each time costs candidates x objects -- both of which grow with
+      the board's area. On the default 26 x 10 mm board that was about
+      half a minute; on a 70 x 30 mm one it ran for well over ten
+      minutes without finishing, long past the point the pipeline gave
+      up on Altium and moved on. The answer is the same either way: the
+      bounding-box test below still decides, and the area handed to the
+      iterator is exactly the box that test uses, so nothing that could
+      pass it is left out.
+
+      AllObjects, filtered by ObjectId inside the loop, rather than a
       narrower AddFilter_ObjectSet built from just these three kinds:
       AllObjects and AllLayers are the two filter constants this file
       has already confirmed exist (ReportCounts uses the same pair). A
@@ -576,10 +599,10 @@ Begin
       too, but it is untested here, and an untested identifier in this
       API is a parse error -- the modal-dialog kind, not a catchable
       one -- so it is not worth the saving. }
-    It := Board.BoardIterator_Create;
+    It := Board.SpatialIterator_Create;
     It.AddFilter_ObjectSet(AllObjects);
     It.AddFilter_LayerSet(AllLayers);
-    It.AddFilter_Method(eProcessAll);
+    It.AddFilter_Area(Cx - Half, Cy - Half, Cx + Half, Cy + Half);
     Prim := It.FirstPCBObject;
     While (Prim <> Nil) And (Not Result) Do
     Begin
@@ -643,7 +666,7 @@ Begin
         End;
         Prim := It.NextPCBObject;
     End;
-    Board.BoardIterator_Destroy(It);
+    Board.SpatialIterator_Destroy(It);
 End;
 
 { Places a via at (X, Y) unless it would land outside the board, in
