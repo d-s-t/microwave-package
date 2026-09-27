@@ -185,7 +185,7 @@ def _run_stages(run: Run, queue: "queue_common.QueuePaths", log=logger.info, sto
         )
         resilient_io.call_with_retry(
             model_builder.queue_model,
-            combo_id, run.state["combos"][combo_id]["step_path"], run, queue, object_names,
+            combo_id, run.state["combos"][combo_id]["step_paths"], run, queue, object_names,
             queue_root=queue.root, log=log, stop_event=stop_event,
         )
 
@@ -224,7 +224,7 @@ def _run_stages(run: Run, queue: "queue_common.QueuePaths", log=logger.info, sto
         resilient_io.call_with_retry(
             stages.run_local_stages, run,
             equations_path=str(paths.DEFAULT_EQUATIONS_FILE),
-            assembly_path=str(paths.DEFAULT_ASSEMBLY_FILE),
+            part_paths={name: str(p) for name, p in paths.SOLIDWORKS_PART_FILES.items()},
             analysis_settings=analysis_settings,
             parameter_defaults=parameter_defaults,
             handoff=handoff, log=log, stop_event=stop_event,

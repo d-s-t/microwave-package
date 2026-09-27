@@ -309,8 +309,19 @@ partially exposed interface rather than eight unlucky guesses.
 
 Hence the current plan: read the primitives out of Altium (which works — the
 probe enumerated 262 vias on the reference board) and rebuild copper directly in
-HFSS with PyAEDT. SolidWorks keeps building the box, lid, vacuum and substrates,
-and keeps its mates; only copper moves.
+HFSS with PyAEDT. SolidWorks kept building the box, lid, vacuum and substrates,
+and kept its mates, for a while; only copper moved at first. The substrates
+moved to PyAEDT next (see `copper_geometry.build_substrates`), and later still
+the lid did too — `lid_inside` replaces the old lid/chip_lid pair, is exported
+from its own part with no assembly involved, and is positioned in AEDT by
+measuring its imported geometry (`model_builder.place_lid_inside`), the same
+way `place_connectors` already positions the SMP connector. The vacuum fill
+followed for the same reason: `vacuum.SLDPRT` turned out not to be linked to
+`default.txt` at all, so `model_builder.build_vacuum` now builds it from box's
+own measured envelope instead. SolidWorks' only remaining job is rebuilding
+box.SLDPRT and lid_inside.SLDPRT per combination and exporting each straight to
+its own STEP file (`step_generation.py`) — there is no assembly and no mate in
+this pipeline any more.
 
 ### Wire bonds are modelled but not scriptable
 

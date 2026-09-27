@@ -16,7 +16,16 @@ PROJECT_ROOT = PACKAGE_DIR.parent
 
 BASE_PARTS_DIR = PROJECT_ROOT / "base_parts"
 DEFAULT_EQUATIONS_FILE = BASE_PARTS_DIR / "default.txt"
-DEFAULT_ASSEMBLY_FILE = BASE_PARTS_DIR / "all_components.SLDASM"
+
+# The two parts the AEDT stage assembles itself (see model_builder.place_lid_inside
+# and model_builder.build_vacuum) -- each rebuilt and exported to its own STEP
+# file straight from the part, with no assembly and no mates involved. Keyed
+# the same way step_generation.Session.build and model_builder.build_model key
+# their STEP paths ("box", "lid_inside"), so the two stay in step.
+SOLIDWORKS_PART_FILES = {
+    "box": BASE_PARTS_DIR / "box.SLDPRT",
+    "lid_inside": BASE_PARTS_DIR / "lid_inside.SLDPRT",
+}
 
 # Everything the Altium stage reads and writes. The generator and the
 # copper exporter are source; the parameter file, the reports and the
