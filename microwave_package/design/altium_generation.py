@@ -23,17 +23,34 @@ launching X2.EXE with a ScriptingSystem process. Three facts learned in
     than replaced. The first call of a sweep gets a much longer budget
     than the rest.
 
+And one learned from a sweep that lost its first combination to a script
+an earlier run had given up on:
+
+  * Giving up on a script does not stop it, and Altium does not hold a
+    new one back until it ends. A script launched while another is
+    running waits in its launcher only until the running one next lets
+    Windows messages through -- closing a document is enough -- and is
+    then run right there, nested inside it. Watched on AD26: a second
+    generator started as the first closed its package board, drew and
+    saved its own, and handed back to the first, which finished by
+    saving over the second's chip. So nothing new is launched until the
+    earlier script's report says it has ended -- see `_wait_until_idle`.
+
 Parameters cross the boundary as a flat `key=value` text file.
 DelphiScript has no JSON parser, and inventing one in Pascal to save a
 few characters would be the wrong trade.
 """
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 import subprocess
+import threading
 import time
 from typing import Callable, Dict, Optional, Tuple
+
+import psutil
 
 logger = logging.getLogger("microwave_package")
 
@@ -48,6 +65,27 @@ _ALTIUM_ROOTS = (
 COLD_START_TIMEOUT = 420.0
 WARM_TIMEOUT = 120.0
 POLL_SECONDS = 2.0
+
+# How long a launch waits for Altium to finish a script launched before
+# it: the same budget that script had to run in, over again. Past that it
+# is sitting on a dialog more often than it is merely slow. A report
+# nobody has written for this long is taken to belong to a script that
+# is no longer running at all -- stopped by hand at a dialog, say.
+BUSY_TIMEOUT = WARM_TIMEOUT
+# How often that wait asks again with a fresh launcher -- see
+# `_wait_until_idle` for why it is not left to one.
+PROBE_RETRY = 30.0
+# A free Altium takes the ping in about a second; a wait longer than
+# this is worth a line in the run log.
+PING_PATIENCE = 5.0
+
+# One Altium job at a time within this process. The web app runs each
+# run's pipeline in a thread of its own, and two runs drawing layouts at
+# once share one params.txt, one set of reports and one generated/
+# folder: the second's parameters land while the first's script has yet
+# to read them. Reentrant, because a job holds it across `run_script`,
+# which takes it as well.
+_ALTIUM_IN_USE = threading.RLock()
 
 
 def find_altium_exe() -> Optional[str]:
@@ -68,16 +106,12 @@ def find_altium_exe() -> Optional[str]:
 
 def altium_is_running() -> bool:
     """Whether a session is already up -- decides the timeout budget, and
-    nothing else. Never used to skip a launch: the process forwards
-    itself either way."""
+    whether there can be an earlier script to wait for. Never used to
+    skip a launch: the process forwards itself either way."""
     try:
-        out = subprocess.run(
-            ["tasklist", "/FI", "IMAGENAME eq X2.EXE", "/NH"],
-            capture_output=True, text=True, timeout=30,
-        ).stdout
+        return bool(_altium_processes())
     except Exception:
         return False
-    return "X2.EXE" in out
 
 
 def write_params(path: str, values: Dict[str, float], extra: Optional[Dict[str, str]] = None) -> None:
@@ -143,9 +177,12 @@ def _clear_sentinel(path: str, timeout: float = 30.0) -> bool:
     A stale sentinel would be read as this call's result within
     microseconds of starting, so it has to go -- but the script that
     wrote it may still have it open, and on Windows that refuses the
-    delete. Waiting for the delete to go through is also how this knows
-    the previous script really has finished with the file: while a
-    handle is open, Windows will not let it be deleted.
+    delete.
+
+    A delete going through does NOT show that script has finished: it
+    only holds the file for the instant each progress line is written,
+    and writes it again, whole, on the next. That is `_wait_until_idle`'s
+    job, and it has been done before this is called.
     """
     deadline = time.monotonic() + timeout
     while True:
@@ -157,6 +194,197 @@ def _clear_sentinel(path: str, timeout: float = 30.0) -> bool:
             if time.monotonic() >= deadline:
                 return False
             time.sleep(0.25)
+
+
+def _launch(exe: str, script_path: str, procedure: str) -> subprocess.Popen:
+    """Hand `procedure` from `script_path` to Altium. Returns the launcher.
+
+    With Altium already running, what comes back is a stub that forwards
+    the request and exits once Altium takes it: at once if Altium is
+    free, and otherwise not before a running script next lets messages
+    through, or a dialog closes. With Altium not running, it is Altium
+    itself, and it does not exit at all.
+    """
+    argument = (
+        f'-RScriptingSystem:RunScriptFile(FileName="{script_path}"'
+        f'|ProcName="{procedure}")'
+    )
+    # Passed as ONE verbatim command string, not as a list. Given a
+    # list, Windows applies MSVC quoting rules and escapes the quotes
+    # this argument depends on; Altium then sees a broken FileName and
+    # resolves the wreckage against its working directory, producing a
+    # doubled drive letter. It fails as a modal dialog, so the mistake
+    # costs a full timeout every time.
+    return subprocess.Popen('"' + exe + '" ' + argument, close_fds=True)
+
+
+def _altium_processes() -> Dict[int, Optional[float]]:
+    """Every X2.EXE running, as pid -> start time (epoch seconds), or
+    None for one whose start time could not be read."""
+    return {
+        p.pid: p.info["create_time"]
+        for p in psutil.process_iter(["name", "create_time"])
+        if (p.info["name"] or "").upper() == "X2.EXE"
+    }
+
+
+def _is_launcher_stub(launcher: subprocess.Popen) -> bool:
+    """Whether `launcher` is a stub forwarding to an Altium that was
+    already running, rather than Altium itself.
+
+    Only a stub may ever be killed: killing Altium would take whatever
+    the operator has open in it along with it. Told apart by age, since a
+    stub always has an older X2.EXE to forward to and Altium never does.
+    A start time that cannot be read proves nothing, so it never makes
+    anything a stub.
+    """
+    processes = _altium_processes()
+    born = processes.get(launcher.pid)
+    if born is None:
+        return False
+    return any(
+        started is not None and started < born
+        for pid, started in processes.items()
+        if pid != launcher.pid
+    )
+
+
+def _withdraw(launcher: subprocess.Popen) -> bool:
+    """Take back a request Altium has not started yet. True if it did.
+
+    Killing a stub that is still waiting withdraws its request: tried
+    against AD26, the script it carried never ran. A stub that has
+    already exited has handed its script over, and nothing takes that
+    back.
+    """
+    if launcher.poll() is not None or not _is_launcher_stub(launcher):
+        return False
+    launcher.kill()
+    try:
+        launcher.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        pass
+    return True
+
+
+def _still_running(report: str) -> bool:
+    """Whether the script that writes `report` may not have finished.
+
+    Every script here writes `stage=start` the moment it starts and
+    `stage=end` as its very last act, so a report without the end is a
+    script still going -- or one that never will be: stopped by hand at a
+    dialog, or run by an Altium that has since closed. Those two are told
+    apart by age. One nobody has written for BUSY_TIMEOUT is taken to be
+    from a script that is no longer running, and one written before this
+    Altium started cannot be from a script in it.
+
+    A report written in the last POLL_SECONDS is being written, and is
+    not opened -- see `run_script` for why that matters.
+    """
+    try:
+        written = os.stat(report).st_mtime
+    except OSError:
+        return False
+    age = time.time() - written
+    if age < POLL_SECONDS:
+        return True
+    if read_sentinel(report).get("stage") == "end" or age >= BUSY_TIMEOUT:
+        return False
+    # The oldest X2.EXE is Altium itself; every other one is a stub. No
+    # Altium, nothing running; one whose start is unknown, assume it may be.
+    processes = _altium_processes()
+    if not processes:
+        return False
+    known = [started for started in processes.values() if started is not None]
+    return not known or written >= min(known)
+
+
+def _wait_until_idle(
+    exe: str, reports, timeout: float, log: Callable[[str], None],
+) -> Optional[str]:
+    """Wait for Altium to finish whatever it is already running.
+
+    Returns None once it has, or a sentence saying why it has not.
+
+    Asked in two halves, because neither is enough alone.
+
+    First, the reports. A script given up on carries on inside Altium,
+    and one launched behind it does not wait for it to end: it runs the
+    moment the first lets a message through, nested inside it. Its own
+    report is the only thing that says when it has really finished.
+
+    Then Ping.pas, which does nothing: its stub exits only once Altium
+    takes it, and Altium takes nothing while it is sitting on a dialog --
+    or running a script that has no report yet, such as one that failed
+    to parse. About a second when Altium is free.
+
+    Every PROBE_RETRY seconds the ping's stub is withdrawn and a fresh one
+    sent. A stub already waiting when a dialog in Altium was closed was
+    seen to stay stuck for a minute and a half after it had gone -- and
+    to hold up a second stub behind it -- while one sent after the dialog
+    closed got through at once. A ping, being a no-op, is also the one
+    request that costs nothing if a withdrawal comes too late to stop it.
+    """
+    from .. import paths
+
+    started = time.monotonic()
+    deadline = started + timeout
+    # Said once for each half, so a dialog found after a long wait on a
+    # report still gets named in the log.
+    said = set()
+
+    def waiting(half, what):
+        if half not in said:
+            log(f"{what} -- waiting up to {timeout:.0f}s before launching another.")
+            said.add(half)
+
+    while True:
+        running = [r for r in reports if _still_running(r)]
+        if not running:
+            break
+        names = " and ".join(os.path.basename(r) for r in running)
+        if time.monotonic() >= deadline:
+            return (
+                f"an earlier Altium script was still running after {timeout:.0f}s "
+                f"({names} has not reached its end). Nothing was launched; if "
+                "Altium is showing a dialog, it is waiting for you."
+            )
+        waiting("reports", f"An earlier Altium script is still running ({names} has not reached its end)")
+        time.sleep(POLL_SECONDS)
+
+    # However long that took, the ping gets one full try.
+    deadline = max(deadline, time.monotonic() + PROBE_RETRY)
+    while True:
+        probe = _launch(exe, str(paths.ALTIUM_PING), "Ping")
+        retry_at = min(time.monotonic() + PROBE_RETRY, deadline)
+        while probe.poll() is None and time.monotonic() < retry_at:
+            if time.monotonic() - started > PING_PATIENCE:
+                waiting("ping", "Altium is not taking scripts yet")
+            time.sleep(0.25)
+        # A stub that exited by itself was taken; one that is not a stub
+        # at all started a fresh Altium, which has nothing before it.
+        if not _withdraw(probe):
+            if said:
+                log(f"Altium is free again after {time.monotonic() - started:.0f}s.")
+            return None
+        if time.monotonic() >= deadline:
+            return (
+                f"Altium would not take a script for {time.monotonic() - started:.0f}s "
+                "-- most likely it is showing a dialog, which is waiting for you. "
+                "Nothing was launched."
+            )
+
+
+@contextlib.contextmanager
+def _one_at_a_time(log: Callable[[str], None]):
+    """Hold Altium for one job -- see `_ALTIUM_IN_USE`."""
+    if not _ALTIUM_IN_USE.acquire(blocking=False):
+        log("Altium is drawing another run's layout -- waiting for it to finish.")
+        _ALTIUM_IN_USE.acquire()
+    try:
+        yield
+    finally:
+        _ALTIUM_IN_USE.release()
 
 
 def run_script(
@@ -174,6 +402,14 @@ def run_script(
     dies on a modal dialog leaves a partial sentinel, and that partial
     content is returned, because how far it got is the only diagnostic
     Altium leaves behind.
+
+    Nothing is launched until Altium has finished what it was already
+    running. A script this gave up on is still running, and one launched
+    behind it runs nested inside it, against the same parameter file,
+    report and boards -- while this side reads the first one's report as
+    its own. From the sweep that prompted it: a first combination failed
+    with no output at all because the previous run's script was still
+    going, and every launch after it piled up behind that one.
     """
     exe = find_altium_exe()
     if exe is None:
@@ -181,69 +417,92 @@ def run_script(
             "Altium Designer not found -- looked for X2.EXE under "
             + " and ".join(_ALTIUM_ROOTS)
         )
-    if not os.path.isfile(script_path):
-        raise FileNotFoundError(f"Altium script not found: {script_path}")
+    from .. import paths
 
-    if not _clear_sentinel(sentinel_path):
-        return False, {"error": (
-            f"the previous script still has {os.path.basename(sentinel_path)} open. "
-            "Altium is most likely sitting on a dialog -- look at its window."
-        )}
+    # The ping is launched too, and a script Altium cannot find is a
+    # dialog -- the very thing the ping is there to catch.
+    for script in (script_path, paths.ALTIUM_PING):
+        if not os.path.isfile(script):
+            raise FileNotFoundError(f"Altium script not found: {script}")
 
-    if timeout is None:
-        timeout = WARM_TIMEOUT if altium_is_running() else COLD_START_TIMEOUT
+    with _one_at_a_time(log):
+        warm = altium_is_running()
+        if warm:
+            # Every script of ours, not just this one: an export launched
+            # while an abandoned generator is still drawing reads a board
+            # that is half one combination and half the next.
+            reports = {sentinel_path} | {str(p) for p in (
+                paths.ALTIUM_GENERATE_REPORT, paths.ALTIUM_COPPER_REPORT,
+                paths.ALTIUM_MEASURE_REPORT,
+            )}
+            busy = _wait_until_idle(exe, sorted(reports), BUSY_TIMEOUT, log)
+            if busy:
+                log(busy)
+                return False, {"error": busy}
 
-    argument = (
-        f'-RScriptingSystem:RunScriptFile(FileName="{script_path}"'
-        f'|ProcName="{procedure}")'
-    )
-    log(f"Launching Altium: {procedure} (timeout {timeout:.0f}s)")
-    # Passed as ONE verbatim command string, not as a list. Given a
-    # list, Windows applies MSVC quoting rules and escapes the quotes
-    # this argument depends on; Altium then sees a broken FileName and
-    # resolves the wreckage against its working directory, producing a
-    # doubled drive letter. It fails as a modal dialog, so the mistake
-    # costs a full timeout every time.
-    subprocess.Popen('"' + exe + '" ' + argument, close_fds=True)
+        if not _clear_sentinel(sentinel_path):
+            return False, {"error": (
+                f"the previous script still has {os.path.basename(sentinel_path)} open. "
+                "Altium is most likely sitting on a dialog -- look at its window."
+            )}
 
-    # The report is only opened once it has stopped changing, and this
-    # is the reason why. The script rewrites it from scratch on every
-    # progress line (`Say`), and Delphi's SaveToFile takes the file
-    # EXCLUSIVELY: a handle held on this side at that moment does not
-    # slow the script down, it fails its write -- and a failed write
-    # inside Altium is a modal dialog waiting for a human who is not
-    # there. So while the script is working the file is left alone
-    # entirely, and what eventually gets read is a file nobody is
-    # writing. It costs one poll interval to notice the end, which is
-    # nothing next to what it avoids.
-    #
-    # It matters more than it used to: with Altium, SolidWorks and AEDT
-    # all working at once, a read that used to take microseconds can sit
-    # behind the other two's disk traffic for far longer.
-    deadline = time.monotonic() + timeout
-    written = None
-    while time.monotonic() < deadline:
-        time.sleep(POLL_SECONDS)
-        fingerprint = _fingerprint(sentinel_path)
-        settled = fingerprint is not None and fingerprint == written
-        written = fingerprint
-        if not settled:
-            continue
-        report = read_sentinel(sentinel_path)
-        if report.get("stage") == "end":
-            ok = report.get("ok", "1") == "1"
-            log(f"Altium script finished ({'ok' if ok else 'reported a failure'}).")
-            return ok, report
+        if timeout is None:
+            timeout = WARM_TIMEOUT if warm else COLD_START_TIMEOUT
 
-    partial = read_sentinel(sentinel_path)
-    if partial:
-        log(
-            "Altium script timed out. It got as far as: "
-            + ", ".join(f"{k}={v}" for k, v in partial.items())
-        )
-    else:
-        log("Altium script timed out having written nothing at all.")
-    return False, partial
+        log(f"Launching Altium: {procedure} (timeout {timeout:.0f}s)")
+        launcher = _launch(exe, script_path, procedure)
+
+        # The report is only opened once it has stopped changing, and this
+        # is the reason why. The script rewrites it from scratch on every
+        # progress line (`Say`), and Delphi's SaveToFile takes the file
+        # EXCLUSIVELY: a handle held on this side at that moment does not
+        # slow the script down, it fails its write -- and a failed write
+        # inside Altium is a modal dialog waiting for a human who is not
+        # there. So while the script is working the file is left alone
+        # entirely, and what eventually gets read is a file nobody is
+        # writing. It costs one poll interval to notice the end, which is
+        # nothing next to what it avoids.
+        #
+        # It matters more than it used to: with Altium, SolidWorks and AEDT
+        # all working at once, a read that used to take microseconds can sit
+        # behind the other two's disk traffic for far longer.
+        deadline = time.monotonic() + timeout
+        written = None
+        while time.monotonic() < deadline:
+            time.sleep(POLL_SECONDS)
+            fingerprint = _fingerprint(sentinel_path)
+            settled = fingerprint is not None and fingerprint == written
+            written = fingerprint
+            if not settled:
+                continue
+            report = read_sentinel(sentinel_path)
+            if report.get("stage") == "end":
+                ok = report.get("ok", "1") == "1"
+                log(f"Altium script finished ({'ok' if ok else 'reported a failure'}).")
+                return ok, report
+
+        # Only a script that never started can be taken back. One that
+        # did carries on after this returns; the next launch waits for it.
+        # And only when Altium was already up: otherwise what was launched
+        # is Altium itself, however old any other X2.EXE looks.
+        if warm and _withdraw(launcher):
+            reason = (
+                f"Altium never started {procedure} -- it was busy with something "
+                f"else for all {timeout:.0f}s, so the request was withdrawn."
+            )
+            log(reason)
+            return False, {"error": reason}
+
+        partial = read_sentinel(sentinel_path)
+        if partial:
+            log(
+                "Altium script timed out. It got as far as: "
+                + ", ".join(f"{k}={v}" for k, v in partial.items())
+            )
+        else:
+            log("Altium script timed out having written nothing at all.")
+        log("Altium is still running it; the next launch will wait for it to finish.")
+        return False, partial
 
 
 # --- assembling what the generator needs -------------------------------
@@ -341,25 +600,26 @@ def measure_footprint(
     if not os.path.isfile(source):
         return False, f"no connector library at {source}"
 
-    # The measurer reads its inputs from the same parameter file as
-    # everything else, so there is one wire format across this boundary
-    # rather than a second one for this script alone.
-    write_params(
-        str(paths.ALTIUM_PARAMS_FILE), {},
-        extra={
-            "smp_library": source,
-            "smp_footprint": target,
-            "smp_measured": out or str(paths.ALTIUM_SMP_FOOTPRINT_FILE),
-        },
-    )
+    with _one_at_a_time(log):
+        # The measurer reads its inputs from the same parameter file as
+        # everything else, so there is one wire format across this boundary
+        # rather than a second one for this script alone.
+        write_params(
+            str(paths.ALTIUM_PARAMS_FILE), {},
+            extra={
+                "smp_library": source,
+                "smp_footprint": target,
+                "smp_measured": out or str(paths.ALTIUM_SMP_FOOTPRINT_FILE),
+            },
+        )
 
-    log(f"Measuring {target} in {os.path.basename(source)}...")
-    ok, report = run_script(
-        str(paths.ALTIUM_FOOTPRINT_MEASURER), "MeasureFootprint",
-        str(paths.ALTIUM_MEASURE_REPORT), log=log,
-    )
-    if not ok:
-        return False, _describe(report, "Altium footprint measurement")
+        log(f"Measuring {target} in {os.path.basename(source)}...")
+        ok, report = run_script(
+            str(paths.ALTIUM_FOOTPRINT_MEASURER), "MeasureFootprint",
+            str(paths.ALTIUM_MEASURE_REPORT), log=log,
+        )
+        if not ok:
+            return False, _describe(report, "Altium footprint measurement")
 
     log(
         f"Measured {report.get('pads', '?')} pads, "
@@ -408,66 +668,69 @@ def generate_for_combo(
     )
     from . import smp
 
-    write_params(
-        str(paths.ALTIUM_PARAMS_FILE), params,
-        extra={
-            "out_dir": str(paths.ALTIUM_OUT_DIR),
-            # The launch is placed from the vendor library rather than
-            # drawn, so the generator needs to be told where that library
-            # is and which of its nine footprints this part is.
-            "smp_library": str(paths.ALTIUM_SMP_LIBRARY),
-            "smp_footprint": smp.FOOTPRINT,
-        },
-    )
+    # Held from the parameter file to the copy out of generated/:
+    # every file in between is shared with whichever job runs next.
+    with _one_at_a_time(log):
+        write_params(
+            str(paths.ALTIUM_PARAMS_FILE), params,
+            extra={
+                "out_dir": str(paths.ALTIUM_OUT_DIR),
+                # The launch is placed from the vendor library rather than
+                # drawn, so the generator needs to be told where that library
+                # is and which of its nine footprints this part is.
+                "smp_library": str(paths.ALTIUM_SMP_LIBRARY),
+                "smp_footprint": smp.FOOTPRINT,
+            },
+        )
 
-    # The bond layout is computed once and shared: Altium places the pads
-    # from it and HFSS builds the wires from it, so the two cannot drift
-    # apart when a parameter changes.
-    from . import bonds as bond_layout
+        # The bond layout is computed once and shared: Altium places the pads
+        # from it and HFSS builds the wires from it, so the two cannot drift
+        # apart when a parameter changes.
+        from . import bonds as bond_layout
 
-    os.makedirs(paths.ALTIUM_OUT_DIR, exist_ok=True)
-    bond_layout.write_file(
-        str(paths.ALTIUM_BONDS_FILE),
-        bond_layout.layout(values, params["pcb_cpw_gap"]),
-    )
+        os.makedirs(paths.ALTIUM_OUT_DIR, exist_ok=True)
+        bond_layout.write_file(
+            str(paths.ALTIUM_BONDS_FILE),
+            bond_layout.layout(values, params["pcb_cpw_gap"]),
+        )
 
-    ok, report = run_script(
-        str(paths.ALTIUM_GENERATOR), "GenerateFromParams",
-        str(paths.ALTIUM_GENERATE_REPORT), log=log,
-    )
-    if not ok:
-        return False, _describe(report, "Altium layout generation")
+        ok, report = run_script(
+            str(paths.ALTIUM_GENERATOR), "GenerateFromParams",
+            str(paths.ALTIUM_GENERATE_REPORT), log=log,
+        )
+        if not ok:
+            return False, _describe(report, "Altium layout generation")
 
-    incomplete = _missing_features(report)
-    if incomplete:
-        return False, f"Altium built an incomplete board: {incomplete}"
+        incomplete = _missing_features(report)
+        if incomplete:
+            return False, f"Altium built an incomplete board: {incomplete}"
 
-    ok, report = run_script(
-        str(paths.ALTIUM_COPPER_EXPORTER), "ExportCopper",
-        str(paths.ALTIUM_COPPER_REPORT), log=log,
-    )
-    if not ok:
-        return False, _describe(report, "Altium copper export")
+        ok, report = run_script(
+            str(paths.ALTIUM_COPPER_EXPORTER), "ExportCopper",
+            str(paths.ALTIUM_COPPER_REPORT), log=log,
+        )
+        if not ok:
+            return False, _describe(report, "Altium copper export")
 
-    source = paths.ALTIUM_OUT_DIR / "copper.txt"
-    if not source.is_file():
-        return False, "Altium reported success but wrote no copper.txt"
+        source = paths.ALTIUM_OUT_DIR / "copper.txt"
+        if not source.is_file():
+            return False, "Altium reported success but wrote no copper.txt"
 
-    os.makedirs(combo_dir, exist_ok=True)
-    for name, path in (("copper.txt", source), ("bonds.txt", paths.ALTIUM_BONDS_FILE)):
-        if not os.path.isfile(path):
-            continue
-        with open(path, "r", encoding="utf-8") as src:
-            content = src.read()
-        with open(os.path.join(combo_dir, name), "w", encoding="utf-8") as dst:
-            dst.write(content)
-    destination = os.path.join(combo_dir, "copper.txt")
+        os.makedirs(combo_dir, exist_ok=True)
+        for name, path in (("copper.txt", source), ("bonds.txt", paths.ALTIUM_BONDS_FILE)):
+            if not os.path.isfile(path):
+                continue
+            with open(path, "r", encoding="utf-8") as src:
+                content = src.read()
+            with open(os.path.join(combo_dir, name), "w", encoding="utf-8") as dst:
+                dst.write(content)
+        destination = os.path.join(combo_dir, "copper.txt")
 
-    # The copper belongs to this combination, so it is kept with it
-    # rather than left in the shared output folder to be overwritten by
-    # the next combination.
-    log(f"Copper for this combination written to {destination}")
-    return True, ""
+        # The copper belongs to this combination, so it is kept with it
+        # rather than left in the shared output folder to be overwritten by
+        # the next combination.
+        log(f"Copper for this combination written to {destination}")
+        return True, ""
 
 
 def _missing_features(report: Dict[str, str]) -> str:

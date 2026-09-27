@@ -15,6 +15,7 @@ run to establish.
 | `GenerateFromParams.pas` | The generator. Creates both boards from `params.txt`. |
 | `MeasureFootprint.pas` | Reads a connector footprint out of a PcbLib into `vendor/footprint.txt`. |
 | `VerifyGenerated.pas` | Reads the saved files back and counts what is in them. |
+| `Ping.pas` | Does nothing. Launched ahead of each script to see whether Altium will take one (item 6). |
 | `params.txt` | Written by `eigen_mode_analyze.altium_generation`. Not source — regenerated each run. |
 | `generated/` | Output boards. Not tracked; recreated from `default.txt` every run. |
 | `spikes/` | The feasibility probes, kept for their findings. |
@@ -26,15 +27,16 @@ run to establish.
 ```
 
 From Python, use `eigen_mode_analyze.altium_generation.run_script`, which handles
-the timeout and sentinel polling described below.
+the timeout and sentinel polling described below, and waits for Altium to be
+free before it launches anything (item 6).
 
-## The five things that will bite you
+## The six things that will bite you
 
 **1. The launcher is not the script.** Altium is single-instance. `X2.EXE`
-forwards the request to the session already running and the stub exits
-immediately, so its exit code says nothing about whether your script ran, or
-even started. The only trustworthy completion signal is a sentinel file the
-script writes itself. Poll for it; never wait on the process.
+forwards the request to the session already running and the stub exits as soon
+as the session takes it, so its exit code says nothing about whether your script
+ran, let alone finished. The only trustworthy completion signal is a sentinel
+file the script writes itself. Poll for it; never wait on the process.
 
 **2. There is no headless mode, and errors are silent-but-blocking.** A *parse*
 error raises a modal dialog that waits for a human indefinitely. A *runtime*
@@ -88,6 +90,44 @@ The general lesson: **measure the file, not the session.** `GenerateFromParams`
 counts its own primitives in memory before saving and `VerifyGenerated` counts
 them again from disk, because "the objects were never added" and "they were added
 but something else was read back" look identical from the outside.
+
+**6. Giving up on a script does not stop it — and the next one runs inside it.**
+A timeout on the Python side is only Python giving up. Altium carries on, and a
+script launched meanwhile does not wait for it to end: its stub waits only until
+the running script next lets Windows messages through, and Altium then runs the
+new script right there, nested inside the old one. Closing a document is enough
+to let it in. Watched on 2026-09-27 with a 70 × 30 mm board given an 8 s timeout
+and the default board launched straight after: the second generator started as
+the first closed its package board, drew and saved its own, and handed back to
+the first, which finished by saving over the chip. The second call then read the
+first one's report as its own (2839 stitching vias, on a board that has 169).
+That is how a sweep lost its first combination to the previous run's script with
+"produced no output at all", and why later launches piled up behind it.
+
+Established against AD26 on the way to the fix:
+
+- A script that never lets messages through (a plain busy loop) *does* hold
+  later requests back until it ends, in order. That is why this looked like a
+  queue at first, and it is not what the generator does.
+- A stub that has not been taken yet can be killed, and that withdraws its
+  request: the script never runs.
+- While a script sits on a modal dialog, no stub is taken. One already waiting
+  when the dialog closed stayed stuck for about 90 s, and held up a second stub
+  behind it. One sent after the dialog closed got through at once.
+- When Altium is free, a stub is taken in about a second.
+
+So `run_script` never launches until two things hold. **Every report of ours has
+reached `stage=end`**, which is the only thing that says a script has really
+finished. A report written in the last two seconds is being written and is not
+opened (see the comment in `run_script`: a read that collides with
+`SaveToFile` is a modal dialog). A report nobody has written for the whole
+waiting budget, or written before this Altium session started, belongs to a
+script that is no longer running. **And `Ping.pas`, which does nothing, gets
+through.** That is what catches a dialog. The ping's stub is withdrawn and
+re-sent every 30 s, so a closed dialog is noticed promptly. At the timeout, a
+script whose stub was never taken is withdrawn rather than left to run later.
+Within one process (the web app runs every run's pipeline in its own thread),
+a lock keeps two runs' Altium jobs from interleaving too.
 
 ## API spellings that work
 

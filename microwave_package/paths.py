@@ -36,6 +36,9 @@ ALTIUM_COPPER_EXPORTER = ALTIUM_DIR / "ExportCopper.pas"
 ALTIUM_PARAMS_FILE = ALTIUM_DIR / "params.txt"
 ALTIUM_GENERATE_REPORT = ALTIUM_DIR / "generate_report.txt"
 ALTIUM_OUT_DIR = ALTIUM_DIR / "generated"
+# A script that does nothing, launched ahead of each real one to find out
+# whether Altium will take a script at all, or is sitting on a dialog.
+ALTIUM_PING = ALTIUM_DIR / "Ping.pas"
 
 # The vendor's own PCB library for the SMP launch, so the generator can
 # place the real footprint -- lands, silkscreen, courtyard and 3D body --
