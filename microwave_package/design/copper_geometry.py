@@ -615,6 +615,20 @@ def _unite_as(modeler, parts: Sequence[str], name: str) -> List[str]:
     return [name]
 
 
+def _unite_or_warn(modeler, parts: Sequence[str], what: str, log=logger.info) -> None:
+    """Unite `parts`, and say so in the run log when AEDT will not.
+
+    PyAEDT's unite does not raise when AEDT refuses: it writes to its own
+    log, undoes, and returns False. The parts then stay behind as bodies
+    no material rule matches -- vacuum -- which is how the bond wires once
+    went missing from every model with signal bonds, with nothing in the
+    run log but the generic unmatched-body warning.
+    """
+    if not modeler.unite(list(parts)):
+        log(f"WARNING: AEDT would not unite {what}; the parts left over will not get "
+            "the right material -- check them in the model.")
+
+
 def _name_each(modeler, parts: Sequence[str], name: str) -> List[str]:
     """Name `parts` `name`, `name_2`, `name_3`... without uniting them.
 
@@ -679,6 +693,9 @@ def blocks(points: Sequence[Tuple[float, float]]) -> List[Block]:
     Every point lands in exactly one block, within a few COINCIDENT_MM of
     where it was: a block puts its copies on a perfect lattice, and
     Altium's coordinate quantum leaves the real ones nanometres off it.
+    At worst five along a row -- one for the row's own fit, and two each
+    for its start and its length against the row it was stacked with --
+    and two across it, so under 6 * COINCIDENT_MM (0.6 um) in all.
     Rows are tried both ways round, along u and along v, and whichever
     needs fewer blocks wins. Points with no pattern at all still come out
     right, one block each -- no worse than building them one at a time.
@@ -962,7 +979,7 @@ def build_bond_wires(modeler, bond_list, frame: Frame, pcb_top: float,
                 radius=foot_radius,
                 height=foot_height,
             ).name)
-        modeler.unite(parts)
+        _unite_or_warn(modeler, parts, "a bond wire and its feet", log)
         return parts[0]
 
     # Grouped by span: the vector from the board end to the die end. Only
@@ -997,7 +1014,7 @@ def build_bond_wires(modeler, bond_list, frame: Frame, pcb_top: float,
     if not made:
         return []
     if len(made) > 1:
-        modeler.unite(made)
+        _unite_or_warn(modeler, made, f"the {len(made)} pieces of {name!r}", log)
     modeler[made[0]].name = name
 
     wires = len(bond_list)

@@ -133,6 +133,24 @@ class TestNotHoldingTheReportOpen(unittest.TestCase):
         with mock.patch("builtins.open", guarded_open):
             self.assertEqual(ag.read_sentinel(self.path), {"stage": "end", "ok": "1"})
 
+    @unittest.skipUnless(os.name == "nt", "the copy is a Windows call")
+    def test_trouble_with_the_copy_reads_as_missing_not_an_error(self):
+        """No temp space, or a scanner holding the fresh copy: the run
+        polls again rather than losing its Altium stage to an exception."""
+        self._write("stage=end", "ok=1")
+        with mock.patch("tempfile.mkstemp", side_effect=OSError("no space")):
+            self.assertEqual(ag.read_sentinel(self.path), {})
+        real_open = open
+
+        def refusing_open(file, *args, **kwargs):
+            if "altium_report_" in os.path.basename(os.fspath(file)):
+                raise PermissionError("held by a scanner")
+            return real_open(file, *args, **kwargs)
+
+        with mock.patch("builtins.open", refusing_open):
+            self.assertEqual(ag.read_sentinel(self.path), {})
+        self.assertEqual(ag.read_sentinel(self.path), {"stage": "end", "ok": "1"})
+
     @unittest.skipUnless(os.name == "nt", "share modes are Windows'")
     def test_a_report_the_script_is_writing_reads_as_missing(self):
         """What Altium holds while it writes a progress line: the file,

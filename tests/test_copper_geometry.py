@@ -207,8 +207,11 @@ class FakeModeler:
                 self._parts[into].extend(self._parts.pop(name))
 
     def unite(self, parts):
+        # The real one returns the surviving body's name, or False when
+        # AEDT refuses -- see copper_geometry._unite_or_warn.
         self.unites.append(list(parts))
         self._fold(parts[0], parts[1:])
+        return parts[0]
 
     def subtract(self, target, tools, keep_originals=False):
         self.subtractions.append((target, list(tools), keep_originals))
@@ -788,8 +791,8 @@ class TestBlocks(unittest.TestCase):
 
     def assertCoversExactly(self, points, found):
         """Every block position matches one input point, one to one,
-        within the few COINCIDENT_MM a lattice is allowed to move them."""
-        allowed = 4 * cg.COINCIDENT_MM
+        within the 6 * COINCIDENT_MM `blocks` promises a lattice moves them."""
+        allowed = 6 * cg.COINCIDENT_MM
         cell = 10 * cg.COINCIDENT_MM
         grid = {}
         for index, (u, v) in enumerate(points):
@@ -1600,6 +1603,21 @@ class TestBondWireFeet(unittest.TestCase):
                             "narrower than a foot, or its sides only graze the feet")
         self.assertEqual(len(modeler.carried("poly1")), 2 + 4 + 2,
                          "wires, feet and bridges are all the one body")
+
+    def test_a_unite_aedt_refuses_is_reported(self):
+        """PyAEDT does not raise when AEDT will not join bodies -- it
+        returns False -- and the pieces then stay behind with no
+        material. That has to reach the run log."""
+        class Refusing(FakeModeler):
+            def unite(self, parts):
+                super().unite(parts)
+                return False
+
+        messages = []
+        cg.build_bond_wires(Refusing(), self.bonds(), FRAME,
+                            pcb_top=STACK.pcb_copper_top, chip_top=STACK.chip_copper_top,
+                            height=self.HEIGHT, diameter=self.DIAMETER, log=messages.append)
+        self.assertTrue(any("WARNING" in m and "unite" in m for m in messages))
 
     def test_feet_apart_are_left_alone(self):
         modeler, _ = self.build(self.bonds())

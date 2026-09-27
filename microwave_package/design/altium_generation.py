@@ -184,13 +184,20 @@ def _snapshot(path: str) -> Optional[str]:
     import ctypes
     import tempfile
 
-    handle, copy = tempfile.mkstemp(prefix="altium_report_", suffix=".txt")
-    os.close(handle)
+    try:
+        handle, copy = tempfile.mkstemp(prefix="altium_report_", suffix=".txt")
+        os.close(handle)
+    except OSError:
+        return None
     try:
         if not ctypes.windll.kernel32.CopyFileW(os.fspath(path), copy, False):
             return None  # missing, a directory, or the script writing it
         with open(copy, "rb") as f:
             return f.read().decode("utf-8", errors="replace")
+    except OSError:
+        # The copy is ours, but a scanner can still be holding it. Like a
+        # report that cannot be copied: the caller polls again.
+        return None
     finally:
         with contextlib.suppress(OSError):
             os.remove(copy)

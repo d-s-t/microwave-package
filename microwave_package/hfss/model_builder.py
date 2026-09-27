@@ -1080,8 +1080,16 @@ def build_model(
     try:
         # The via posts stand in the undrilled board, so this model relies
         # on metal winning where it overlaps a dielectric (see
-        # copper_geometry._via_post). Set here, not left to whatever this
-        # AEDT version defaults to.
+        # copper_geometry._via_post). Set here, not left to the default --
+        # which is off.
+        #
+        # It is a setting of the whole design, not of the posts: with it
+        # on, HFSS no longer refuses ANY body of metal overlapping a
+        # dielectric, so a slip that sinks copper or a connector into a
+        # substrate now solves as metal instead of failing validation.
+        # That is the price of not drilling the board for every via, which
+        # on a dense board is minutes of one AEDT call. Two dielectrics
+        # overlapping are still refused.
         try:
             hfss.change_material_override(True)
         except Exception as exc:
