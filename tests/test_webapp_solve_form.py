@@ -126,9 +126,11 @@ class TestTheFormItself(unittest.TestCase):
         html = self.client.get("/").get_data(as_text=True)
         names = re.findall(r"<(?:input|select)[^>]*name=\"([a-z_0-9]+)\"", html)
         counts = collections.Counter(names)
-        # Radio groups legitimately share a name; nothing else may.
-        radios = {"solution_type", "distortion_mode"}
-        repeated = {n for n, k in counts.items() if k > 1} - radios
+        # Radio groups legitimately share a name, and so do the run list's
+        # compare tick boxes -- one `runs` per ticked run, submitted by
+        # their own form rather than this one. Nothing else may.
+        groups = {"solution_type", "distortion_mode", "runs"}
+        repeated = {n for n, k in counts.items() if k > 1} - groups
         self.assertEqual(repeated, set())
 
 

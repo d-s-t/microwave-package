@@ -1,0 +1,509 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Compare runs</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><path d='M1 9c2.5 0 2.5-6 4.5-6S8 13 10 13s2.2-8 4-8 1 3 2 3' fill='none' stroke='%232E86AB' stroke-width='1.6' stroke-linecap='round'/></svg>">
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+<style>
+  /* Base rules and colour tokens live in static/style.css + _theme.html;
+     only this page's own components are here. */
+
+  /* Each compared run's colour, by its slot -- the same values the plot
+     is drawn with (plotting.RUN_COLOURS), stepped for each theme and
+     scoped the way _theme.html scopes its own tokens. */
+  :root{ {% for colour in palette.light %}--run-{{ loop.index0 }}:{{ colour }};{% endfor %} }
+  @media (prefers-color-scheme:dark){
+    :root:not([data-theme="light"]){ {% for colour in palette.dark %}--run-{{ loop.index0 }}:{{ colour }};{% endfor %} }
+  }
+  :root[data-theme="dark"]{ {% for colour in palette.dark %}--run-{{ loop.index0 }}:{{ colour }};{% endfor %} }
+
+  table{border-collapse:collapse;width:100%}
+  td,th{border:1px solid var(--line);padding:.4rem .6rem;text-align:left;font-size:.9em;vertical-align:top}
+  .muted{color:var(--muted)}
+  .lede{margin-top:-.6rem}
+  .table-wrap{overflow-x:auto}
+  .note-box{border:1px solid var(--line-soft);border-left:3px solid var(--busy);border-radius:4px;
+    padding:.5rem .8rem;margin:1rem 0;font-size:.9em}
+
+  /* A run is named by its marker (the plot's shape, in the run's colour)
+     and its letter, so it reads the same in every table and in the
+     legend -- and never by colour alone. */
+  .run-tag{display:inline-flex;align-items:center;gap:.3rem;white-space:nowrap;font-weight:600}
+  svg.marker{width:12px;height:12px;flex:none}
+  .run-id{display:block;font-size:.78em;color:var(--muted);font-weight:400}
+  table.key td:first-child .run-tag{margin-right:.35rem}
+
+  table.settings tr.group th{background:var(--surface-hover);font-size:.78em;text-transform:uppercase;
+    letter-spacing:.04em;color:var(--muted);font-weight:600}
+  table.settings td.unknown{color:var(--muted);font-style:italic}
+  table.settings th .run-tag,table.sbs th .run-tag{font-size:.95em}
+
+  .axis-picker{display:flex;align-items:center;gap:.5rem;flex-wrap:wrap;margin:.75rem 0;
+    padding:.6rem .8rem;border:1px solid var(--line-soft);border-radius:6px}
+  .axis-picker label{font-weight:600;font-size:.9em}
+  .axis-picker label.plain{font-weight:400}
+  .axis-picker select{padding:.2rem;max-width:20rem}
+  .axis-picker button{padding:.3rem .7rem;font-size:.85em}
+
+  /* One filter row above everything it scopes: both the table and the
+     plot follow it. */
+  .filter-panel{margin:.75rem 0;padding:.6rem .8rem;border:1px solid var(--line-soft);border-radius:6px}
+  .filter-head{display:flex;align-items:center;gap:.6rem;margin-bottom:.4rem}
+  .filter-head strong{font-size:.9em}
+  .filter-row{display:flex;align-items:baseline;gap:.5rem;flex-wrap:wrap;margin:.25rem 0}
+  .filter-name{font-size:.85em;font-weight:600;min-width:11rem}
+  .chips{display:flex;gap:.3rem;flex-wrap:wrap;flex:1}
+  label.chip{display:inline-flex;align-items:center;gap:.25rem;font-size:.8em;cursor:pointer;
+    padding:.1rem .4rem;border:1px solid var(--line-soft);border-radius:999px;user-select:none;max-width:100%}
+  label.chip:hover{border-color:var(--accent)}
+  label.chip:has(input:checked){background:var(--surface-hover);border-color:var(--accent)}
+  label.chip:not(:has(input:checked)){opacity:.5}
+  label.chip .chip-title{font-weight:400;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:22rem}
+  button.mini.link-ish{background:transparent;color:var(--accent);padding:.1rem .3rem;
+    font-size:.75em;margin:0}
+  button.mini.link-ish:hover{background:var(--surface-hover)}
+
+  table.sbs td{font-variant-numeric:tabular-nums;white-space:nowrap}
+  table.sbs td.missing{color:var(--muted)}
+  table.sbs .delta{display:block;font-size:.8em;color:var(--muted)}
+  table.sbs th .base{display:block;font-size:.75em;font-weight:400;color:var(--muted)}
+  .small{font-size:.85em}
+
+  iframe{width:100%;height:clamp(460px,72vh,900px);border:1px solid var(--line);
+    margin-top:.5rem;background:transparent}
+  .point-pick{display:flex;align-items:center;gap:.6rem;flex-wrap:wrap;font-size:.9em;margin:.5rem 0}
+  .point-pick[hidden]{display:none}
+  .point-pick a.button{padding:.3rem .7rem;font-size:.85em}
+</style>
+</head>
+<body>
+{% include "_theme.html" %}
+<header class="topbar">
+  <a href="{{ url_for('index') }}" class="brand">&larr; Eigenmode Analysis</a>
+</header>
+
+{# The plot's marker for a slot, drawn in that slot's colour. The shapes
+   follow plotting.RUN_SYMBOLS, in the same order. #}
+{% set marker_shapes = {
+  "circle": '<circle cx="6" cy="6" r="5"/>',
+  "diamond": '<path d="M6 .4 11.6 6 6 11.6.4 6z"/>',
+  "square": '<rect x="1.3" y="1.3" width="9.4" height="9.4"/>',
+  "triangle-up": '<path d="M6 .8 11.6 11H.4z"/>',
+  "x": '<path d="M1.4 3.5 3.5 1.4 6 3.9 8.5 1.4l2.1 2.1L8.1 6l2.5 2.5-2.1 2.1L6 8.1l-2.5 2.5-2.1-2.1L3.9 6z"/>',
+  "triangle-down": '<path d="M.4 1h11.2L6 11.2z"/>',
+  "pentagon": '<path d="M6 .5l5.2 3.8-2 6.2H2.8l-2-6.2z"/>',
+  "star": '<path d="M6 .2l1.4 3.9 4.1.1-3.2 2.5 1.1 4-3.4-2.3-3.4 2.3 1.1-4L.5 4.2l4.1-.1z"/>',
+} %}
+{% macro marker(slot) -%}
+<svg class="marker" viewBox="0 0 12 12" aria-hidden="true" style="fill:var(--run-{{ slot }})">
+  {{- marker_shapes[symbols[slot % symbols|length]] | safe -}}
+</svg>
+{%- endmacro %}
+{% macro tag(e) -%}
+<span class="run-tag" title="{{ e.name }}">{{ marker(e.slot) }}{{ e.letter }}</span>
+{%- endmacro %}
+
+<h1>Comparing {{ entries|length }} run{{ "" if entries|length == 1 else "s" }}</h1>
+{% if entries %}
+<p class="muted lede">Oldest first -- each run keeps its letter, marker and colour everywhere on this page.
+  <a href="{{ change_url }}">Change which runs</a></p>
+
+<table class="key">
+<thead><tr><th>Run</th><th>Solved</th><th>Swept</th><th>Results</th></tr></thead>
+<tbody>
+{% for e in entries %}
+<tr>
+  <td>{{ tag(e) }} <a href="{{ e.url }}">{{ e.title }}</a>
+    <span class="run-id">{{ e.run_id }}{% if e.started_text and e.title != e.started_text %} · started {{ e.started_text }}{% endif %}</span></td>
+  <td>{{ e.solution_type }}</td>
+  <td>{{ e.swept_text or "—" }}</td>
+  <td>{% if e.rows %}{{ e.rows }} row{{ "" if e.rows == 1 else "s" }}{% if e.combos > 1 %} from {{ e.combos }} combinations{% endif %}
+      {% else %}<span class="muted">none yet</span>{% endif %}</td>
+</tr>
+{% endfor %}
+</tbody>
+</table>
+{% else %}
+<p>There is nothing to compare yet -- <a href="{{ url_for('index') }}#runs">tick two or more runs on the run list</a>
+  and press Compare.</p>
+{% endif %}
+
+{% for note in notes %}
+<div class="note-box">{{ note }}</div>
+{% endfor %}
+
+{% macro settings_table(rows) -%}
+<div class="table-wrap">
+<table class="settings">
+<thead><tr><th>Setting</th>{% for e in entries %}<th>{{ tag(e) }}</th>{% endfor %}</tr></thead>
+<tbody>
+{% set ns = namespace(group=None) %}
+{% for row in rows %}
+{% if row.group != ns.group %}{% set ns.group = row.group %}
+<tr class="group"><th colspan="{{ entries|length + 1 }}">{{ row.group }}</th></tr>
+{% endif %}
+<tr>
+  <td>{{ row.label }}</td>
+  {% for value in row["values"] %}<td{% if value in unknown_values %} class="unknown"{% endif %}>{{ value }}</td>{% endfor %}
+</tr>
+{% endfor %}
+</tbody>
+</table>
+</div>
+{%- endmacro %}
+
+{% if entries|length > 1 %}
+<h2>What differs</h2>
+<p class="muted small">Read from each run's own record -- the settings it was started with and the
+  geometry it was built from -- not from what it is called. <em>not recorded</em> means the run is older
+  than the setting, and <em>n/a</em> that the setting does not apply to it; neither counts as a difference.</p>
+{% if differing %}
+{{ settings_table(differing) }}
+{% else %}
+<p>Nothing recorded differs between these runs.</p>
+{% endif %}
+{% if shared %}
+<details class="collapsible">
+  <summary>The other {{ shared|length }} settings <span class="muted">-- no recorded difference</span></summary>
+  {{ settings_table(shared) }}
+</details>
+{% endif %}
+{% endif %}
+
+{% if has_results %}
+<h2>Results</h2>
+{% if filter_options %}
+{# One row of toggles per thing that varies -- the runs first. Everything
+   starts ticked and filtering is subtractive, exactly as on a run's own
+   page; here it scopes the table and the plot together. #}
+<div class="filter-panel" id="filter-panel">
+  <div class="filter-head">
+    <strong>Show</strong>
+    <span class="muted" id="filter-summary"></span>
+    <button type="button" class="mini" id="filter-reset">reset</button>
+  </div>
+  {% for group in filter_options %}
+  <div class="filter-row" data-column="{{ group.column }}">
+    <span class="filter-name">{{ group.label }}</span>
+    <span class="chips">
+      {% for value in group['values'] %}
+      {% if group.column == run_id_column %}
+      {% set e = entries_by_id[value.key] %}
+      <label class="chip" title="{{ e.name }}"><input type="checkbox" checked
+             data-column="{{ group.column }}" value="{{ value.key }}">{{ tag(e) }}
+        <span class="chip-title">{{ e.title }}</span></label>
+      {% else %}
+      <label class="chip"><input type="checkbox" checked
+             data-column="{{ group.column }}" value="{{ value.key }}">{{ value.label }}</label>
+      {% endif %}
+      {% endfor %}
+    </span>
+    <button type="button" class="mini link-ish" data-all="{{ group.column }}">all</button>
+    <button type="button" class="mini link-ish" data-none="{{ group.column }}">none</button>
+  </div>
+  {% endfor %}
+</div>
+{% endif %}
+
+<h3>Side by side</h3>
+{% if table %}
+<p class="muted small">One row per point -- the same swept values and mode -- and one column per run,
+  each measured against the base run chosen here (at a point the base run lacks, against the first
+  run that has it). This is also the plot below, as numbers.</p>
+<div class="axis-picker">
+  <label for="sbs-quantity">Show</label>
+  <select id="sbs-quantity">
+    {% for quantity in table.quantities %}
+    <option value="{{ quantity.column }}" {% if quantity.column == default_y %}selected{% endif %}>{{ quantity.label }}</option>
+    {% endfor %}
+  </select>
+  <label for="sbs-base">&Delta; against</label>
+  <select id="sbs-base">
+    {% for r in table.runs %}<option value="{{ r.id }}">{{ r.name }}</option>{% endfor %}
+  </select>
+  <label class="plain"><input type="checkbox" id="sbs-shared" checked> hide points only one run has</label>
+</div>
+<div class="table-wrap"><table class="sbs" id="sbs-table"></table></div>
+<p class="muted small" id="sbs-count" aria-live="polite"></p>
+<script type="application/json" id="sbs-data">{{ table | tojson }}</script>
+{% elif table_note %}
+<p class="muted">{{ table_note }}</p>
+{% endif %}
+
+<h3>Plot</h3>
+{% if axis_options %}
+<div class="axis-picker">
+  <label for="axis-x">X</label>
+  <select id="axis-x">
+    {% for option in axis_options %}
+    <option value="{{ option.value }}" {% if option.value == default_x %}selected{% endif %}>{{ option.label }}</option>
+    {% endfor %}
+  </select>
+  <label for="axis-y">Y</label>
+  <select id="axis-y">
+    {% for option in axis_options %}
+    <option value="{{ option.value }}" {% if option.value == default_y %}selected{% endif %}>{{ option.label }}</option>
+    {% endfor %}
+  </select>
+  <label for="axis-color">Colour</label>
+  <select id="axis-color">
+    <option value="" {% if not default_color %}selected{% endif %}>(none)</option>
+    {% for option in axis_options %}
+    <option value="{{ option.value }}" {% if option.value == default_color %}selected{% endif %}>{{ option.label }}</option>
+    {% endfor %}
+  </select>
+  <button type="button" id="swap-axes" title="Swap the X and Y axes">&#8646; swap</button>
+</div>
+{% endif %}
+<iframe id="plot-frame" title="The compared runs' results"></iframe>
+<p class="point-pick" id="point-pick" hidden>
+  <span id="point-pick-text"></span>
+  <a class="button" id="point-pick-link" target="_blank" rel="noopener">Open it in its run</a>
+</p>
+<p><a class="button" href="{{ url_for('compare_results_csv', runs=runs_param) }}">Download the combined CSV</a>
+   <span class="muted">-- click a point to find it in its own run</span></p>
+{% endif %}
+
+<script>
+(function () {
+  var frame = document.getElementById("plot-frame");
+  if (!frame) { return; }
+  var runsParam = {{ runs_param | tojson }};
+  var entries = {{ entries | tojson }};
+  var byId = {};
+  entries.forEach(function (e) { byId[e.run_id] = e; });
+
+  // --- the filter: one state, read by both the plot and the table -----
+  // A column is only in the state when some of its values are unticked,
+  // so the usual "everything on" case keeps the plot URL short.
+  var panel = document.getElementById("filter-panel");
+  var summary = document.getElementById("filter-summary");
+
+  function boxes(column) {
+    return panel
+      ? [].slice.call(panel.querySelectorAll('input[type=checkbox][data-column="' + column + '"]'))
+      : [];
+  }
+
+  function columns() {
+    return panel
+      ? [].slice.call(panel.querySelectorAll(".filter-row")).map(function (row) { return row.dataset.column; })
+      : [];
+  }
+
+  function filterState() {
+    var state = {}, hidden = 0;
+    columns().forEach(function (column) {
+      var all = boxes(column);
+      var on = all.filter(function (b) { return b.checked; });
+      hidden += all.length - on.length;
+      if (on.length !== all.length) {
+        state[column] = on.map(function (b) { return b.value; });
+      }
+    });
+    if (summary) { summary.textContent = hidden ? hidden + " value(s) hidden" : "everything"; }
+    return state;
+  }
+
+  // --- the plot ---------------------------------------------------------
+  // Rendered server-side and embedded, so a change reloads just the
+  // iframe -- and re-renders on a theme flip, since plotly bakes its
+  // colours in (the run colours are stepped per theme, too).
+  var x = document.getElementById("axis-x");
+  var y = document.getElementById("axis-y");
+  var colour = document.getElementById("axis-color");
+  var base = "{{ url_for('compare_plot') }}";
+
+  function renderPlot(state) {
+    var params = new URLSearchParams({ runs: runsParam, theme: window.themeIsDark() ? "dark" : "light" });
+    if (x && y) { params.set("x", x.value); params.set("y", y.value); }
+    // sent even when empty: "(none)" is a choice, and a missing colour
+    // means "whatever the comparison opens on"
+    if (colour) { params.set("color", colour.value); }
+    Object.keys(state).forEach(function (column) { params.set("f_" + column, state[column].join(",")); });
+    frame.src = base + "?" + params.toString();
+  }
+
+  // --- the side-by-side table -------------------------------------------
+  var dataNode = document.getElementById("sbs-data");
+  var data = dataNode ? JSON.parse(dataNode.textContent) : null;
+  var table = document.getElementById("sbs-table");
+  var count = document.getElementById("sbs-count");
+  var quantity = document.getElementById("sbs-quantity");
+  var baseline = document.getElementById("sbs-base");
+  var sharedOnly = document.getElementById("sbs-shared");
+
+  function esc(text) {
+    var div = document.createElement("div");
+    div.textContent = text == null ? "" : text;
+    return div.innerHTML;
+  }
+
+  // Six significant figures: more than any of these results carries,
+  // and short enough to scan down a column.
+  function number(value) { return Number(value.toPrecision(6)).toString(); }
+
+  function signed(value, text) {
+    return (value > 0 ? "+" : value < 0 ? "−" : "±") + text;
+  }
+
+  function delta(value, reference) {
+    var d = value - reference;
+    var text = signed(d, Number(Math.abs(d).toPrecision(3)).toString());
+    if (reference !== 0) {
+      var pct = 100 * d / Math.abs(reference);
+      var size = Math.abs(pct);
+      text += " (" + signed(pct, size >= 0.01 || size === 0 ? size.toFixed(2)
+                                                          : Number(size.toPrecision(2)).toString()) + "%)";
+    }
+    return text;
+  }
+
+  function tagHtml(run) {
+    // the page's own tag for this run, so the headers match the key
+    var source = document.querySelector('table.key .run-tag[title="' + CSS.escape(run.name) + '"]');
+    return source ? source.outerHTML : esc(run.letter);
+  }
+
+  var runColumn = {{ run_id_column | tojson }};
+
+  function renderTable(state) {
+    if (!data || !table) { return; }
+    var column = quantity.value;
+    var shownRuns = state[runColumn];
+    var runs = data.runs.filter(function (r) { return !shownRuns || shownRuns.indexOf(r.id) !== -1; });
+    var baseId = runs.some(function (r) { return r.id === baseline.value; })
+      ? baseline.value : (runs[0] && runs[0].id);
+
+    var inFilter = data.rows.filter(function (row) {
+      return data.key_columns.every(function (key, i) {
+        var allowed = state[key.column];
+        return !allowed || allowed.indexOf(row.key[i]) !== -1;
+      });
+    });
+    var counted = inFilter.map(function (row) {
+      var values = row.values[column] || {};
+      var n = runs.filter(function (r) { return values[r.id] !== undefined; }).length;
+      return { row: row, values: values, n: n };
+    }).filter(function (item) { return item.n > 0; });
+    var onlyOne = counted.filter(function (item) { return item.n < 2; }).length;
+    var shown = sharedOnly.checked && runs.length > 1
+      ? counted.filter(function (item) { return item.n >= 2; }) : counted;
+    var listed = shown.slice(0, data.max_rows);
+
+    var head = "<thead><tr>" + data.key_columns.map(function (key) {
+      return "<th>" + esc(key.label) + "</th>";
+    }).join("") + runs.map(function (r) {
+      return "<th>" + tagHtml(r) + (r.id === baseId && runs.length > 1 ? '<span class="base">base</span>' : "") + "</th>";
+    }).join("") + "</tr></thead>";
+
+    var body = listed.map(function (item) {
+      // Measured against the base run -- or, at a point the base run does
+      // not have, against the first run that does, which says so.
+      var refId = item.values[baseId] !== undefined ? baseId : (runs.filter(function (r) {
+        return item.values[r.id] !== undefined;
+      })[0] || {}).id;
+      var reference = item.values[refId];
+      var cells = item.row.key.map(function (value) {
+        return "<td>" + (value === "" ? '<span class="muted">—</span>' : esc(value)) + "</td>";
+      });
+      runs.forEach(function (r) {
+        var value = item.values[r.id];
+        if (value === undefined) { cells.push('<td class="missing">—</td>'); return; }
+        var extra = "";
+        if (r.id !== refId) {
+          extra = '<span class="delta">' + esc(delta(value, reference)) + "</span>";
+        } else if (refId !== baseId && item.n > 1) {
+          extra = '<span class="delta">reference</span>';
+        }
+        cells.push("<td>" + esc(number(value)) + extra + "</td>");
+      });
+      return "<tr>" + cells.join("") + "</tr>";
+    }).join("");
+    table.innerHTML = head + "<tbody>" + body + "</tbody>";
+    table.hidden = !listed.length;
+
+    var bits = [];
+    if (!shown.length) {
+      bits.push(onlyOne && sharedOnly.checked
+        ? "No point here is in more than one of the runs shown."
+        : "No point matches the filter above.");
+    } else if (listed.length < shown.length) {
+      bits.push("Showing the first " + listed.length + " of " + shown.length +
+                " points -- narrow them down with the filter above.");
+    } else {
+      bits.push(shown.length + " point" + (shown.length === 1 ? "" : "s"));
+    }
+    if (sharedOnly.checked && onlyOne && runs.length > 1) {
+      bits.push(onlyOne + " more " + (onlyOne === 1 ? "is" : "are") +
+                " in only one run -- untick “hide points only one run has” to list " +
+                (onlyOne === 1 ? "it" : "them"));
+    }
+    count.textContent = bits.join(" · ");
+  }
+
+  function render() {
+    var state = filterState();
+    renderPlot(state);
+    renderTable(state);
+  }
+
+  if (panel) {
+    panel.addEventListener("change", function (event) {
+      if (event.target.matches("input[type=checkbox]")) { render(); }
+    });
+    panel.addEventListener("click", function (event) {
+      var wantAll = event.target.dataset ? event.target.dataset.all : null;
+      var wantNone = event.target.dataset ? event.target.dataset.none : null;
+      if (!wantAll && !wantNone) { return; }
+      boxes(wantAll || wantNone).forEach(function (b) { b.checked = !!wantAll; });
+      render();
+    });
+    var reset = document.getElementById("filter-reset");
+    if (reset) {
+      reset.addEventListener("click", function () {
+        columns().forEach(function (column) { boxes(column).forEach(function (b) { b.checked = true; }); });
+        render();
+      });
+    }
+  }
+  [x, y, colour].forEach(function (select) {
+    if (select) { select.addEventListener("change", function () { renderPlot(filterState()); }); }
+  });
+  var swap = document.getElementById("swap-axes");
+  if (swap && x && y) {
+    swap.addEventListener("click", function () {
+      var held = x.value;
+      x.value = y.value;
+      y.value = held;
+      renderPlot(filterState());
+    });
+  }
+  [quantity, baseline, sharedOnly].forEach(function (control) {
+    if (control) { control.addEventListener("change", function () { renderTable(filterState()); }); }
+  });
+  window.addEventListener("themechange", function () { renderPlot(filterState()); });
+  render();
+
+  // --- a clicked point --------------------------------------------------
+  // The figure posts the combination and the run it was clicked on (see
+  // plotting._CLICK_BRIDGE); the link opens that combination's window on
+  // its own run's page, in a new tab so this comparison stays put.
+  var pick = document.getElementById("point-pick");
+  var pickText = document.getElementById("point-pick-text");
+  var pickLink = document.getElementById("point-pick-link");
+  window.addEventListener("message", function (event) {
+    if (event.source !== frame.contentWindow) { return; }
+    var message = event.data;
+    if (!message || message.source !== "eigenmode-plot" || !message.comboId) { return; }
+    var entry = byId[message.runId];
+    if (!entry) { return; }
+    pickText.textContent = "Clicked: " + entry.name + " — combination " + message.comboId;
+    pickLink.href = entry.url + "?combo=" + encodeURIComponent(message.comboId);
+    pick.hidden = false;
+  });
+})();
+</script>
+</body>
+</html>

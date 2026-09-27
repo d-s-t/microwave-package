@@ -48,7 +48,7 @@ from .hfss.driven import ports
 # solver has a view like it.
 from .hfss.eigenmode import fields as eigenmode_fields
 from .pipeline import run_pipeline
-from .workflow import plotting, resilient_io, run_manager
+from .workflow import compare, plotting, resilient_io, run_manager
 from .workflow.run_manager import Run
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s: %(message)s", stream=sys.stdout)
@@ -139,6 +139,11 @@ def _fmt_dur(delta) -> str:
 
 def _run_started(run):
     return _parse_dt(run.created_at) or _run_id_dt(run.run_id)
+
+
+def _run_name(run) -> str:
+    """What a run is called on the page: its label, or when it started."""
+    return run.label or _fmt_dt(_run_started(run)) or run.run_id
 
 
 # In-process registry of running pipeline threads, keyed by run_id -- so
@@ -412,8 +417,8 @@ def _materials_from_form(form) -> dict:
 
 def _runs_for_display(runs: list) -> list:
     """`Run.list_runs()` rows with the run-list's presentation fields added:
-    a friendly name, a relative time, a humanised stage, and the one-line
-    "what it swept" summary."""
+    a friendly name, a relative time, a humanised stage, the one-line
+    "what it swept" summary, and whether it has results to compare."""
     view = []
     for r in runs:
         started = _parse_dt(r.get("created_at")) or _run_id_dt(r["run_id"])
@@ -425,6 +430,8 @@ def _runs_for_display(runs: list) -> list:
             "started_ago": _fmt_ago(started),
             "stage_display": _stage_display(r.get("stage"), r.get("failed", 0)),
             "swept_text": ", ".join(f'{s["label"]} ×{s["n"]}' for s in r["swept"]),
+            "has_results": os.path.isfile(
+                os.path.join(Run(r["run_id"]).plots_dir, plotting.RESULTS_FILENAME)),
         })
     return view
 
@@ -449,6 +456,10 @@ def index():
         parameters=parameters,
         groups=parameter_meta.grouped(parameters),
         runs=runs,
+        # Ticked on arrival: the comparison page's "change the selection"
+        # comes back here with the runs it was showing.
+        compare_ids=set(filter(None, request.args.get("compare", "").split(","))),
+        max_compare=compare.MAX_RUNS,
         distortion_geometry_params=parameter_meta.DISTORTION_GEOMETRY_PARAMETERS,
         drawings=_parameter_drawings(),
         meta=parameter_meta,
@@ -693,7 +704,7 @@ def run_status(run_id):
     return render_template(
         "run_status.html",
         run=run,
-        run_name=run.label or _fmt_dt(started) or run.run_id,
+        run_name=_run_name(run),
         rows=_combo_rows(run),
         phases=_phase_meta(),
         is_running=_is_running(run_id),
@@ -889,7 +900,7 @@ def run_status_json(run_id):
 
 def _results_frame(run):
     """This run's combined results table, or None if it has none yet."""
-    csv_path = os.path.join(run.plots_dir, "all_results.csv")
+    csv_path = os.path.join(run.plots_dir, plotting.RESULTS_FILENAME)
     if not os.path.exists(csv_path):
         return None
     try:
@@ -1165,7 +1176,191 @@ def combo_details(run_id, combo_id):
 @app.route("/runs/<run_id>/results.csv")
 def run_results_csv(run_id):
     run = Run.load(run_id)
-    return send_from_directory(run.plots_dir, "all_results.csv", as_attachment=True)
+    return send_from_directory(run.plots_dir, plotting.RESULTS_FILENAME, as_attachment=True)
+
+
+# -- comparing runs ----------------------------------------------------------
+# A run id as Run.create makes them. Anything else in a comparison URL is
+# dropped rather than joined onto a path.
+_RUN_ID = re.compile(r"[A-Za-z0-9_\-]+")
+
+
+def _requested_run_ids(args) -> list:
+    """The run ids a comparison URL names, each once, oldest first.
+
+    Read both as repeated `runs=` -- what the run list's checkboxes send
+    -- and as one comma-separated `runs=`, which is how the comparison
+    page links to itself. A run id is its start time, so sorted is oldest
+    first: the first run made is the one the others are measured against.
+    """
+    wanted = []
+    for value in args.getlist("runs"):
+        for run_id in value.split(","):
+            run_id = run_id.strip()
+            if _RUN_ID.fullmatch(run_id) and run_id not in wanted:
+                wanted.append(run_id)
+    return sorted(wanted)
+
+
+def _compared_runs(args):
+    """The runs a comparison URL asks for, ready to compare -- and what to
+    say about any that could not be."""
+    notes, runs = [], []
+    for run_id in _requested_run_ids(args):
+        try:
+            runs.append(Run.load(run_id))
+        except (OSError, ValueError):
+            logger.warning("Cannot load run %s to compare it.", run_id)
+            notes.append(f"{run_id} could not be read, so it is not in this comparison.")
+    if len(runs) > compare.MAX_RUNS:
+        notes.append(f"A comparison takes up to {compare.MAX_RUNS} runs, so the "
+                     f"{len(runs) - compare.MAX_RUNS} most recent were left out.")
+        runs = runs[:compare.MAX_RUNS]
+    entries = compare.compared(
+        runs, [_run_name(run) for run in runs], [_results_frame(run) for run in runs])
+    return entries, notes
+
+
+def _compared_view(entry) -> dict:
+    """One compared run, as the comparison page's key lists it."""
+    run = entry.run
+    results = entry.results if entry.has_results else None
+    return {
+        "run_id": entry.run_id,
+        "letter": entry.letter,
+        "name": entry.name,
+        "title": entry.title,
+        "slot": entry.slot,
+        "url": url_for("run_status", run_id=entry.run_id),
+        "started_text": _fmt_dt(_run_started(run)),
+        "solution_type": registry.solution_type_of(run.analysis_settings),
+        "swept_text": ", ".join(
+            f'{parameter_meta.label_for(p["name"])} ×{len(p.get("values", []))}'
+            for p in run.config.get("sweep_params", [])),
+        "rows": len(results) if results is not None else 0,
+        "combos": results["combo_id"].nunique() if results is not None and "combo_id" in results else 0,
+    }
+
+
+@app.route("/compare")
+def compare_runs():
+    """Several runs on one page: what they were made with and where that
+    differs, their numbers point by point, and their results in one plot.
+
+    Opened from the run list with the runs ticked. Everything below the
+    settings works on the runs that have results; one that has none yet
+    is still listed, and its settings still compared.
+    """
+    entries, notes = _compared_runs(request.args)
+    runs = [entry.run for entry in entries]
+    swept = compare.swept_names(runs)
+    df = compare.combined_results(entries)
+
+    solution_types = list(dict.fromkeys(registry.solution_type_of(r.analysis_settings) for r in runs))
+    if len(solution_types) > 1:
+        notes.append(
+            f"These runs solved different things ({', '.join(solution_types)}). Their results "
+            "share a column only where the name is the same, which is not always the same meaning."
+        )
+    notes += [f"{entry.name} has no results yet, so only its settings are compared here."
+              for entry in entries if not entry.has_results]
+    if len(entries) == 1:
+        notes.append("There is only one run here -- tick another on the run list to compare it with.")
+
+    differing, shared = compare.setting_rows(runs)
+    axes = (compare.default_axes(df, swept, solution_types[0]) if not df.empty
+            else {"x": None, "y": None, "color": None})
+    table, table_note = compare.side_by_side(df, entries, swept)
+    runs_param = ",".join(entry.run_id for entry in entries)
+    views = [_compared_view(entry) for entry in entries]
+    return render_template(
+        "compare.html",
+        entries=views,
+        entries_by_id={view["run_id"]: view for view in views},
+        symbols=plotting.RUN_SYMBOLS,
+        notes=notes,
+        differing=differing,
+        shared=shared,
+        unknown_values=(compare.NOT_RECORDED, compare.NOT_APPLICABLE),
+        has_results=not df.empty,
+        axis_options=plotting.axis_options(df, swept) if not df.empty else [],
+        default_x=axes["x"],
+        default_y=axes["y"],
+        default_color=axes["color"] or "",
+        filter_options=plotting.filter_options(df, swept) if not df.empty else [],
+        run_id_column=plotting.RUN_ID_COLUMN,
+        table=table,
+        table_note=table_note,
+        palette=plotting.RUN_COLOURS,
+        runs_param=runs_param,
+        change_url=url_for("index", compare=runs_param) + "#runs",
+    )
+
+
+@app.route("/compare/plot")
+def compare_plot():
+    """The comparison's figure, for the axes, filter and theme asked for --
+    the comparison page's counterpart of `run_plot`."""
+    entries, _ = _compared_runs(request.args)
+    df = compare.combined_results(entries)
+    if df.empty:
+        return Response(
+            "<!doctype html><meta charset='utf-8'>"
+            "<p style='font:14px system-ui;color:#888;padding:2rem;text-align:center'>"
+            "None of these runs has results to plot yet.</p>",
+            mimetype="text/html",
+        )
+    swept = compare.swept_names(entry.run for entry in entries)
+    # the first run's solver, as the page itself opens on
+    solution_type = registry.solution_type_of(entries[0].run.analysis_settings)
+    # What the page opens on, for any axis the URL leaves out. An empty
+    # `color` is the "(none)" choice, which is not the same as no choice.
+    axes = compare.default_axes(df, swept, solution_type)
+    x, y = request.args.get("x") or axes["x"], request.args.get("y") or axes["y"]
+    color = request.args.get("color", axes["color"]) or None
+
+    df = plotting.apply_filters(df, _plot_filters(request.args))
+    if df.empty:
+        return Response(
+            "<!doctype html><meta charset='utf-8'>"
+            "<p style='font:14px system-ui;color:#888;padding:2rem;text-align:center'>"
+            "Every point is filtered out -- tick a value back on to see the plot.</p>",
+            mimetype="text/html",
+        )
+
+    off_axes = compare.runs_off_axes(df, x, y)
+    dark = request.args.get("theme") == "dark"
+    html = plotting.figure_html(
+        df,
+        swept,
+        x=x,
+        y=y,
+        color=color,
+        solution_type=solution_type,
+        dark=dark,
+        plotlyjs_src=url_for("plotly_js"),
+        # every compared run, hidden or not, so each keeps its own colour
+        run_colours=plotting.run_colours([entry.name for entry in entries], dark),
+        note=(f"Nothing from {', '.join(off_axes)} on these axes -- "
+              f"{'it has' if len(off_axes) == 1 else 'they have'} no values for them."
+              if off_axes else None),
+    )
+    return Response(html, mimetype="text/html")
+
+
+@app.route("/compare/results.csv")
+def compare_results_csv():
+    """Every compared run's results in one CSV, each row saying which run."""
+    entries, _ = _compared_runs(request.args)
+    df = compare.combined_results(entries)
+    if not df.empty:
+        first = [plotting.RUN_ID_COLUMN, plotting.RUN_COLUMN]
+        df = df[first + [column for column in df.columns if column not in first]]
+    name = "comparison_" + "-".join(entry.run_id.removeprefix("run_") for entry in entries)
+    return Response(
+        df.to_csv(index=False), mimetype="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{name}.csv"'},
+    )
 
 
 def main() -> None:

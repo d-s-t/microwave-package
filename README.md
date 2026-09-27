@@ -110,6 +110,18 @@ just "running". The plot appears automatically once everything's done.
 Existing runs (including ones interrupted or stopped mid-way) are listed
 on the home page and can be resumed with one click.
 
+**Comparing runs.** Tick two or more runs with results in the run list
+and press **Compare** (up to eight at a time). The comparison page
+first says what the runs' own records disagree on -- analysis settings,
+materials, and every dimension of the geometry they were built with,
+including equation-file values nobody typed in -- rather than trusting
+their names. It then lines their results up point by point (the same
+swept values and mode, whatever each run called its combinations), with
+the difference against a base run you pick, and draws them all in one
+plot, each run keeping its own colour and marker. One filter scopes the
+table and the plot together; clicking a point opens that combination
+on its own run's page.
+
 **Stop this run** stops a run without losing anything. It is cooperative
 rather than a kill -- none of the three programs can be interrupted
 mid-call -- so each finishes the combination it is in the middle of,
