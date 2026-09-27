@@ -368,7 +368,7 @@ def _solve_settings_from_form(form) -> dict:
     return settings
 
 
-def _material_choice(form, key: str, options: list, default: str) -> str:
+def _material_choice(form, key: str) -> str:
     """One material dropdown's value off the form.
 
     The form posts `model_builder.CUSTOM_MATERIAL` for "Custom..." and the
@@ -376,12 +376,12 @@ def _material_choice(form, key: str, options: list, default: str) -> str:
     macro in index.html. Anything else is one of the curated options
     (or, for an older submission bypassing the dropdown entirely, any
     other string) and is used as-is. A blank submission falls back to
-    `default`, the same as every material field always has.
+    the material model_builder would fall back to anyway.
     """
     raw = form.get(key)
     if raw == model_builder.CUSTOM_MATERIAL:
         raw = form.get(f"{key}_custom", "")
-    return (raw or "").strip() or default
+    return (raw or "").strip() or model_builder.MATERIAL_FALLBACKS[key]
 
 
 def _materials_from_form(form) -> dict:
@@ -391,22 +391,17 @@ def _materials_from_form(form) -> dict:
     be tested without going through the route -- the same reasoning as
     `_solve_settings_from_form` below.
     """
-    options = model_builder.MATERIAL_OPTIONS
     wirebond = form.get("mat_wirebond")
     if wirebond not in model_builder.WIREBOND_MATERIALS:
         wirebond = model_builder.MATERIAL_FALLBACKS["mat_wirebond"]
     return {
-        "mat_box": _material_choice(form, "mat_box", options["mat_box"], "aluminum"),
-        "mat_pcb": _material_choice(form, "mat_pcb", options["mat_pcb"], "Rogers TMM 10i (tm)"),
-        "mat_chip": _material_choice(form, "mat_chip", options["mat_chip"], "silicon"),
-        "mat_vacuum": _material_choice(form, "mat_vacuum", options["mat_vacuum"], "vacuum"),
+        "mat_box": _material_choice(form, "mat_box"),
+        "mat_pcb": _material_choice(form, "mat_pcb"),
+        "mat_chip": _material_choice(form, "mat_chip"),
+        "mat_vacuum": _material_choice(form, "mat_vacuum"),
         "perfect_e_box": "perfect_e_box" in form,
-        "mat_conductor_pcb": _material_choice(
-            form, "mat_conductor_pcb", options["mat_conductor_pcb"], "copper"
-        ),
-        "mat_conductor_chip": _material_choice(
-            form, "mat_conductor_chip", options["mat_conductor_chip"], "niobium"
-        ),
+        "mat_conductor_pcb": _material_choice(form, "mat_conductor_pcb"),
+        "mat_conductor_chip": _material_choice(form, "mat_conductor_chip"),
         "perfect_e_conductors": "perfect_e_conductors" in form,
         # Closed choice (see model_builder.WIREBOND_MATERIALS), so there is
         # no matching "<key>_custom" box for this one.
