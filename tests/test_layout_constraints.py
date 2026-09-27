@@ -6,10 +6,13 @@ rather than a board that looks fine and is quietly wrong.
 
 Run: python -m unittest discover -s tests
 """
+import tempfile
 import unittest
 
-from microwave_package import paths
+from microwave_package import paths, pipeline
 from microwave_package.design import constraints, equations as eq
+from microwave_package.design.sweep import SweepParameter
+from microwave_package.workflow.run_manager import Run
 
 
 def defaults():
@@ -137,3 +140,114 @@ class TestTheDiesOpening(unittest.TestCase):
                 any(name in reason for name in names),
                 f"{reason!r} names no parameter the reader could change",
             )
+
+
+def via_grid(diameter, max_spacing, min_spacing):
+    return dict(defaults(), via_diameter=diameter, via_max_spacing=max_spacing,
+                via_min_spacing=min_spacing)
+
+
+class TestViaGrid(unittest.TestCase):
+    """The fill and the fence place a via every via_max_spacing and refuse
+    any that would sit closer than via_min_spacing to one already placed.
+    If a via plus that gap does not fit in one step, the generator skips
+    every other via without complaint, and the board has twice the
+    spacing its parameters say."""
+
+    def test_the_sweep_that_found_it_is_refused(self):
+        """0.4 mm vias 0.2 mm apart need 0.6 mm, and were asked for every
+        0.5 mm (runs/run_20260927_125850)."""
+        reason = constraints.check_via_grid(via_grid(0.4, 0.5, 0.2))
+        self.assertIsNotNone(reason)
+        self.assertIn("0.6 mm", reason)
+
+    def test_the_message_names_all_three_parameters(self):
+        """Any of the three can fix it, so the reader is told about all of them."""
+        reason = constraints.check_via_grid(via_grid(0.4, 0.5, 0.2))
+        for name in ("via_diameter", "via_max_spacing", "via_min_spacing"):
+            self.assertIn(name, reason)
+
+    def test_a_step_that_exactly_fits_is_allowed(self):
+        """The generator places a via exactly via_min_spacing from its
+        neighbour (GapTolerance), so this has to allow it too. Several of
+        these are a hair over the step in floating point -- 0.4 + 0.2
+        is more than 0.6 -- which a plain comparison refuses."""
+        for diameter, max_spacing in ((0.1, 0.3), (0.2, 0.4), (0.3, 0.5), (0.4, 0.6),
+                                      (0.5, 0.7), (0.6, 0.8), (0.7, 0.9), (0.8, 1.0)):
+            with self.subTest(via_diameter=diameter, via_max_spacing=max_spacing):
+                self.assertIsNone(
+                    constraints.check_via_grid(via_grid(diameter, max_spacing, 0.2)))
+
+    def test_a_shortfall_inside_the_tolerance_is_allowed(self):
+        tolerance = constraints.VIA_GAP_TOLERANCE
+        self.assertIsNone(constraints.check_via_grid(via_grid(0.3, 0.5 - tolerance / 2, 0.2)))
+
+    def test_a_shortfall_past_the_tolerance_is_refused(self):
+        tolerance = constraints.VIA_GAP_TOLERANCE
+        self.assertIsNotNone(constraints.check_via_grid(via_grid(0.3, 0.5 - tolerance * 2, 0.2)))
+
+    def test_a_generous_step_is_allowed(self):
+        self.assertIsNone(constraints.check_via_grid(via_grid(0.3, 1.0, 0.2)))
+
+    def test_check_layout_refuses_it_too(self):
+        """The Altium stage's own check, which still catches it for a run
+        created before the check at run creation existed."""
+        values = via_grid(0.4, 0.5, 0.2)
+        self.assertEqual(constraints.check_layout(values), constraints.check_via_grid(values))
+
+    def test_check_layout_allows_an_exact_fit(self):
+        """It used to compare without any tolerance, and refused this."""
+        self.assertIsNone(constraints.check_layout(via_grid(0.4, 0.6, 0.2)))
+
+
+class TestViaGridAtRunCreation(unittest.TestCase):
+    """A combination whose via grid would come out sparse is skipped when
+    the run is created, like a distortion that does not fit. Before, it
+    was only refused once the Altium stage reached it, by which time
+    SolidWorks had already built its solid."""
+
+    def setUp(self):
+        # A temporary runs root: nothing here should touch the
+        # developer's own runs/. Every module finds it through `paths`.
+        runs_root = tempfile.TemporaryDirectory(prefix="runs_")
+        self.addCleanup(runs_root.cleanup)
+        saved = paths.RUNS_ROOT
+        paths.RUNS_ROOT = runs_root.name
+        self.addCleanup(setattr, paths, "RUNS_ROOT", saved)
+
+    def skip_reasons(self, **settings):
+        run = Run.create(
+            [SweepParameter(name="via_max_spacing", values=[0.5, 0.6])],
+            dict(pipeline.DEFAULT_ANALYSIS_SETTINGS, **settings),
+            parameter_defaults={"via_diameter": 0.4, "via_min_spacing": 0.2},
+        )
+        return {
+            combo["params"]["via_max_spacing"]: combo["skip_reason"]
+            for combo in run.state["combos"].values()
+        }
+
+    def test_the_sparse_combination_is_skipped(self):
+        reasons = self.skip_reasons(use_altium=True)
+        self.assertIsNotNone(reasons[0.5])
+        self.assertIn("via_max_spacing", reasons[0.5])
+
+    def test_the_combination_that_fits_is_built(self):
+        self.assertIsNone(self.skip_reasons(use_altium=True)[0.6])
+
+    def test_a_run_without_altium_skips_nothing(self):
+        """No layout is drawn, so there are no vias to be sparse."""
+        reasons = self.skip_reasons(use_altium=False)
+        self.assertEqual(reasons, {0.5: None, 0.6: None})
+
+    def test_a_distortion_that_does_not_fit_is_still_the_reason_given(self):
+        """Both are wrong here. The distortion check comes first, as it
+        always has, so its message is the one that shows."""
+        run = Run.create(
+            [SweepParameter(name="via_max_spacing", values=[0.5])],
+            dict(pipeline.DEFAULT_ANALYSIS_SETTINGS, use_altium=True),
+            parameter_defaults={"via_diameter": 0.4, "via_min_spacing": 0.2,
+                                "no_distortion": 0, "distortion_radius": 100.0},
+        )
+        (combo,) = run.state["combos"].values()
+        self.assertIn("distortion", combo["skip_reason"].lower())
+        self.assertNotIn("via_max_spacing", combo["skip_reason"])
