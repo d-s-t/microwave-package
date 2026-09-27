@@ -249,8 +249,20 @@ class _AltiumStage:
         return ok
 
 
+def _needs_new_step_files(run, combo_id: str) -> bool:
+    """Whether a combination still has a model to build from STEP files.
+
+    Asks the AEDT stage's own question (model_builder.reusable_model): a
+    model it will reuse never reads the STEP files again, so a run from
+    before they were split resumes without re-exporting geometry nothing
+    will look at -- and one it will rebuild gets files it can use.
+    """
+    return model_builder.reusable_model(run, combo_id, log=lambda _m: None) is None
+
+
 class _SolidWorksStage:
-    """Rebuilds the assembly for one combination and exports its STEP.
+    """Rebuilds box.SLDPRT and lid_inside.SLDPRT for one combination and
+    exports each to its own STEP.
 
     The session is opened on the first combination that actually needs
     it, so resuming a run whose geometry is already on disk never starts
@@ -258,12 +270,12 @@ class _SolidWorksStage:
     """
 
     def __init__(self, run, original_content, parameter_defaults,
-                 equations_path, assembly_path, log) -> None:
+                 equations_path, part_paths, log) -> None:
         self._run = run
         self._original = original_content
         self._defaults = parameter_defaults or {}
         self._equations_path = equations_path
-        self._assembly_path = assembly_path
+        self._part_paths = part_paths
         self._log = log
         self._session: Optional[step_generation.Session] = None
         self._needed = False
@@ -272,26 +284,31 @@ class _SolidWorksStage:
         run = self._run
         combo = run.state["combos"][combo_id]
         if combo.get("step_status") == "done":
-            return True
+            if combo.get("step_paths") or not _needs_new_step_files(run, combo_id):
+                return True
+            # Exported before box and lid_inside became separate files:
+            # one assembly STEP, which the model builder can no longer use.
+            self._log(f"{combo_id}: geometry predates the separate box/lid_inside "
+                      "STEP files -- rebuilding it.")
 
         self._needed = True
         run.update_combo(combo_id, step_status="running")
         content = eq.with_values(self._original, self._defaults, combo["params"])
         self._log(f"Building geometry for {combo_id} ({combo['params']})...")
-        step_path, reason = self._session_now().build(
+        step_paths, reason = self._session_now().build(
             combo_id, content, run.combo_dir(combo_id), log=self._log
         )
-        if step_path is None:
+        if step_paths is None:
             self._log(f"FAILED to save STEP for {combo_id}: {reason}")
             run.update_combo(combo_id, step_status="failed", step_error=reason)
             return False
-        run.update_combo(combo_id, step_path=step_path, step_status="done", step_error=None)
+        run.update_combo(combo_id, step_paths=step_paths, step_status="done", step_error=None)
         return True
 
     def _session_now(self) -> "step_generation.Session":
         if self._session is None:
             self._session = step_generation.Session.open(
-                self._equations_path, self._assembly_path, log=self._log
+                self._equations_path, self._part_paths, log=self._log
             )
         return self._session
 
@@ -333,7 +350,7 @@ class _AedtStage:
         settings = self._settings
         dimensions = eq.read_file(os.path.join(run.combo_dir(combo_id), "dimensions.txt"))
         object_names = model_builder.build_model(
-            combo_id, combo["step_path"], dimensions, run, settings,
+            combo_id, combo.get("step_paths") or {}, dimensions, run, settings,
             settings.get("aedt_version"), settings.get("student_version", True),
             settings.get("graphical", False), log=self._log,
         )
@@ -353,7 +370,7 @@ def run_local_stages(
     run,
     *,
     equations_path: str,
-    assembly_path: str,
+    part_paths: Dict[str, str],
     analysis_settings: dict,
     handoff: Callable[[str, Dict[str, str]], None],
     parameter_defaults: Optional[Dict[str, float]] = None,
@@ -404,7 +421,7 @@ def run_local_stages(
             "with no copper.")
 
     solidworks = _SolidWorksStage(
-        run, original_content, parameter_defaults, equations_path, assembly_path,
+        run, original_content, parameter_defaults, equations_path, part_paths,
         _prefixed(log, "SolidWorks"),
     )
     upstream.append(_Lane(

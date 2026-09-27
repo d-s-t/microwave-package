@@ -68,24 +68,24 @@ class TestTheOriginalBodies(unittest.TestCase):
     """The bodies that existed before copper did must keep behaving."""
 
     def test_each_gets_its_own_material(self):
-        hfss, _ = assign(["vacuum", "PCB", "chip", "box", "lid", "chip_lid"])
+        hfss, _ = assign(["vacuum", "PCB", "chip", "box", "lid_inside"])
         got = {o.name: o.material_name for o in hfss.modeler.solid_objects}
         self.assertEqual(got["vacuum"], "vacuum")
         self.assertEqual(got["PCB"], "Rogers TMM 10i (tm)")
         self.assertEqual(got["chip"], "silicon")
         self.assertEqual(got["box"], "aluminum")
-        self.assertEqual(got["lid"], "aluminum")
-        self.assertEqual(got["chip_lid"], "aluminum")
+        self.assertEqual(got["lid_inside"], "aluminum")
 
-    def test_chip_lid_is_metal_not_silicon(self):
-        """`chip_lid` contains `chip`. The specific rule has to win, or
-        the lid becomes silicon."""
-        hfss, _ = assign(["chip_lid"])
+    def test_lid_inside_is_metal_not_silicon(self):
+        """`lid_inside` contains no `chip`/`pcb` substring, but this
+        guards the same failure mode the old `chip_lid` rule did: the
+        enclosure must never fall through to a die/board rule."""
+        hfss, _ = assign(["lid_inside"])
         self.assertEqual(hfss.modeler.solid_objects[0].material_name, "aluminum")
 
     def test_perfect_e_on_the_enclosure(self):
-        hfss, _ = assign(["box", "lid", "chip_lid", "PCB"])
-        self.assertEqual(sorted(hfss.perfect_e), ["box", "chip_lid", "lid"])
+        hfss, _ = assign(["box", "lid_inside", "PCB"])
+        self.assertEqual(sorted(hfss.perfect_e), ["box", "lid_inside"])
 
 
 class TestCopperDoesNotBecomeSubstrate(unittest.TestCase):
@@ -113,7 +113,7 @@ class TestCopperDoesNotBecomeSubstrate(unittest.TestCase):
 
     def test_a_full_copper_model_assigns_every_body_correctly(self):
         names = [
-            "vacuum", "box", "lid", "chip_lid",
+            "vacuum", "box", "lid_inside",
             "pcb_substrate", "pcb_copper_top", "pcb_copper_bottom", "pcb_vias",
             "chip_substrate", "chip_conductor", "wirebond_1",
             "connector_1_outer", "connector_1_center", "connector_1_dielectric",
@@ -225,12 +225,12 @@ class TestSupersededSolids(unittest.TestCase):
             ["PCB", "chip"],
         )
 
-    def test_the_chip_lid_survives(self):
-        """It is enclosure, not die, and shares the prefix."""
-        self.assertEqual(self._drop(["chip_lid", "lid", "box"]), [])
+    def test_lid_inside_survives(self):
+        """It is enclosure, not die, and shares the "lid" guard."""
+        self.assertEqual(self._drop(["lid_inside", "box"]), [])
 
     def test_the_enclosure_and_vacuum_survive(self):
-        self.assertEqual(self._drop(["box", "lid", "vacuum"]), [])
+        self.assertEqual(self._drop(["box", "lid_inside", "vacuum"]), [])
 
     def test_bodies_we_build_ourselves_are_not_targets(self):
         """They are created after this runs, but the names must not
@@ -341,7 +341,7 @@ class TestRuleTableIsSane(unittest.TestCase):
         patterns = [rule[0] for rule in model_builder.MATERIAL_RULES]
         for specific, bare in (("chip_copper", "chip"), ("chip_substrate", "chip"),
                                ("pcb_copper", "pcb"), ("pcb_substrate", "pcb"),
-                               ("chip_lid", "chip"), ("dielectric", "connector")):
+                               ("dielectric", "connector")):
             self.assertLess(patterns.index(specific), patterns.index(bare),
                             f"{specific} must be tested before {bare}")
 
@@ -430,6 +430,215 @@ class TestCavityFrame(unittest.TestCase):
         self.assertTrue(any("WARNING" in m for m in messages))
 
 
+class TestBuildVacuum(unittest.TestCase):
+    """The air fill, built from box's own measured envelope now instead
+    of an imported vacuum.SLDPRT -- which turned out not to be linked to
+    default.txt at all, so nothing kept it in step with a swept box."""
+
+    class Box:
+        def __init__(self, box):
+            self.bounding_box = list(box)
+            self.name = None
+
+    class Modeler:
+        def __init__(self, box_solid):
+            self._box = box_solid
+            self.created = []
+
+        @property
+        def modeler(self):
+            return self
+
+        def __getitem__(self, name):
+            if name == "box":
+                return self._box
+            raise KeyError(name)
+
+        def create_box(self, origin, sizes):
+            obj = TestBuildVacuum.Box([
+                origin[0], origin[1], origin[2],
+                origin[0] + sizes[0], origin[1] + sizes[1], origin[2] + sizes[2],
+            ])
+            self.created.append(obj)
+            return obj
+
+    @staticmethod
+    def _frame_and_stack():
+        from microwave_package.design import copper_geometry as cg
+        frame = cg.Frame(x_offset=19.0, z_offset=6.0)
+        stack = cg.Stack(pcb_bottom=1.0, pcb_top=1.381, chip_bottom=1.0, chip_top=1.381,
+                         copper_thickness=0.035, chip_metal_thickness=0.0002)
+        return frame, stack
+
+    def test_spans_the_pcb_footprint_and_box_own_height(self):
+        modeler = self.Modeler(self.Box([0.0, 0.0, 0.0, 38.0, 1.951, 12.0]))
+        frame, stack = self._frame_and_stack()
+        name = model_builder.build_vacuum(
+            modeler, frame, stack, pcb_half_length=13.0, pcb_half_side=5.0, log=lambda _m: None,
+        )
+        self.assertEqual(name, "vacuum")
+        vac = modeler.created[0]
+        self.assertEqual(vac.name, "vacuum")
+        x0, y0, z0, x1, y1, z1 = vac.bounding_box
+        # X/Z: the PCB's own footprint, centred on the frame -- not box's
+        # outer envelope, which also carries the mounting wings.
+        self.assertAlmostEqual(x0, 6.0)
+        self.assertAlmostEqual(x1, 32.0)
+        self.assertAlmostEqual(z0, 1.0)
+        self.assertAlmostEqual(z1, 11.0)
+        # Y: box's own measured bottom and top, whatever floor or
+        # pedestal shape sits inside them -- carve_vacuum cuts that out.
+        self.assertAlmostEqual(y0, 0.0)
+        self.assertAlmostEqual(y1, 1.951)
+
+    def test_an_unmeasurable_box_is_a_loud_no_op(self):
+        class Broken:
+            @property
+            def bounding_box(self):
+                raise RuntimeError("cannot measure")
+
+        class BrokenModeler:
+            @property
+            def modeler(self):
+                return self
+
+            def __getitem__(self, name):
+                return Broken()
+
+        frame, stack = self._frame_and_stack()
+        messages = []
+        result = model_builder.build_vacuum(
+            BrokenModeler(), frame, stack,
+            pcb_half_length=13.0, pcb_half_side=5.0, log=messages.append,
+        )
+        self.assertIsNone(result)
+        self.assertTrue(any("WARNING" in m for m in messages))
+
+
+class TestPlaceLidInside(unittest.TestCase):
+    """Where lid_inside ends up, with no SolidWorks mate to put it there.
+
+    The AEDT-side equivalent of a mate: measure the imported body's real
+    bounding box, then move it onto the reference points the design
+    wants -- centred on the board's frame, resting on the board's copper.
+    """
+
+    class Solid:
+        def __init__(self, name, box, modeler):
+            self._name = name
+            self.bounding_box = list(box)
+            self._modeler = modeler
+
+        @property
+        def name(self):
+            return self._name
+
+        @name.setter
+        def name(self, new_name):
+            del self._modeler._by_name[self._name]
+            self._name = new_name
+            self._modeler._by_name[new_name] = self
+
+    class Modeler:
+        def __init__(self, solids_by_name):
+            self._by_name = {}
+            for name, box in solids_by_name.items():
+                self._by_name[name] = TestPlaceLidInside.Solid(name, box, self)
+            self.united = []
+            self.moved = []
+
+        @property
+        def modeler(self):
+            return self
+
+        def __getitem__(self, name):
+            return self._by_name[name]
+
+        def unite(self, names):
+            self.united.append(list(names))
+            boxes = [self._by_name[n].bounding_box for n in names]
+            merged = [
+                min(b[0] for b in boxes), min(b[1] for b in boxes), min(b[2] for b in boxes),
+                max(b[3] for b in boxes), max(b[4] for b in boxes), max(b[5] for b in boxes),
+            ]
+            survivor = self._by_name[names[0]]
+            survivor.bounding_box = merged
+            for n in names[1:]:
+                del self._by_name[n]
+
+        def move(self, names, vector):
+            self.moved.append((list(names), list(vector)))
+            dx, dy, dz = vector
+            for n in names:
+                obj = self._by_name[n]
+                x0, y0, z0, x1, y1, z1 = obj.bounding_box
+                obj.bounding_box = [x0 + dx, y0 + dy, z0 + dz, x1 + dx, y1 + dy, z1 + dz]
+
+    @staticmethod
+    def _frame_and_stack():
+        from microwave_package.design import copper_geometry as cg
+        frame = cg.Frame(x_offset=19.0, z_offset=6.0)
+        stack = cg.Stack(pcb_bottom=1.0, pcb_top=1.381, chip_bottom=1.0, chip_top=1.381,
+                         copper_thickness=0.035, chip_metal_thickness=0.0002)
+        return frame, stack
+
+    def test_centres_on_the_frame_and_rests_on_the_board_copper(self):
+        modeler = self.Modeler({
+            "box": [0.0, 0.0, 0.0, 38.0, 1.951, 12.0],
+            # Imported off in lid_inside's own part coordinates -- nowhere
+            # near the board, e.g. centred on its own origin.
+            "NewObject_1": [-13.0, 0.0, -5.0, 13.0, 0.5, 5.0],
+        })
+        frame, stack = self._frame_and_stack()
+        name = model_builder.place_lid_inside(
+            modeler, frame, stack, ["NewObject_1"], log=lambda _m: None,
+        )
+        self.assertEqual(name, "lid_inside")
+        x0, y0, z0, x1, y1, z1 = modeler["lid_inside"].bounding_box
+        self.assertAlmostEqual((x0 + x1) / 2.0, frame.x_offset)
+        self.assertAlmostEqual((z0 + z1) / 2.0, frame.z_offset)
+        self.assertAlmostEqual(y0, stack.pcb_copper_top)
+
+    def test_multiple_imported_bodies_are_united_first(self):
+        modeler = self.Modeler({
+            "box": [0.0, 0.0, 0.0, 38.0, 1.951, 12.0],
+            "NewObject_1": [-13.0, 0.0, -5.0, 0.0, 0.5, 5.0],
+            "NewObject_2": [0.0, 0.0, -5.0, 13.0, 0.5, 5.0],
+        })
+        frame, stack = self._frame_and_stack()
+        model_builder.place_lid_inside(
+            modeler, frame, stack, ["NewObject_1", "NewObject_2"], log=lambda _m: None,
+        )
+        self.assertEqual(modeler.united, [["NewObject_1", "NewObject_2"]])
+        x0, _y0, _z0, x1, _y1, _z1 = modeler["lid_inside"].bounding_box
+        self.assertAlmostEqual(x1 - x0, 26.0)
+
+    def test_no_imported_body_is_reported_not_raised(self):
+        modeler = self.Modeler({"box": [0.0, 0.0, 0.0, 38.0, 1.951, 12.0]})
+        frame, stack = self._frame_and_stack()
+        messages = []
+        result = model_builder.place_lid_inside(modeler, frame, stack, [], log=messages.append)
+        self.assertIsNone(result)
+        self.assertTrue(any("WARNING" in m for m in messages))
+
+    def test_a_lid_taller_than_the_box_is_not_a_warning(self):
+        """Confirmed as the intended design: lid_inside is free to poke
+        above box's own rim -- whatever closes over it from there is
+        outside this model, and this code must not second-guess it."""
+        modeler = self.Modeler({
+            "box": [0.0, 0.0, 0.0, 38.0, 1.951, 12.0],
+            # 2 mm thick -- well past the 0.535 mm gap above the copper.
+            "NewObject_1": [-13.0, 0.0, -5.0, 13.0, 2.0, 5.0],
+        })
+        frame, stack = self._frame_and_stack()
+        messages = []
+        model_builder.place_lid_inside(modeler, frame, stack, ["NewObject_1"], log=messages.append)
+        self.assertFalse(any("WARNING" in m for m in messages))
+        x0, y0, z0, x1, y1, z1 = modeler["lid_inside"].bounding_box
+        self.assertAlmostEqual(y0, stack.pcb_copper_top)
+        self.assertAlmostEqual(y1 - y0, 2.0)
+
+
 class TestCarveVacuum(unittest.TestCase):
     """Which bodies get subtracted from vacuum.
 
@@ -494,17 +703,18 @@ class TestCarveVacuum(unittest.TestCase):
         self.assertIn("pcb_substrate", tools)
         self.assertIn("chip_substrate", tools)
 
-    def test_the_enclosure_is_never_a_carving_tool(self):
-        """box/lid/chip_lid come straight from the STEP, where the
-        SolidWorks-built vacuum already accounts for them -- carving
-        them again would be wrong, not merely redundant."""
-        hfss = FakeHfss(["vacuum", "box", "lid", "chip_lid", "pcb_substrate"])
+    def test_only_vacuum_itself_is_never_a_carving_tool(self):
+        """vacuum is now a plain block built from box's own measured
+        envelope (build_vacuum), with no body pre-excluded from it -- so
+        box and lid_inside are legitimate carving tools too, unlike the
+        old SolidWorks-hand-fitted vacuum this replaces."""
+        hfss = FakeHfss(["vacuum", "box", "lid_inside", "pcb_substrate"])
         objects_dict = {"vacuum": hfss.solid_objects[0]}
         model_builder.carve_vacuum(hfss, objects_dict, log=lambda _m: None)
         _target, tools, _keep = hfss.subtractions[0]
-        self.assertNotIn("box", tools)
-        self.assertNotIn("lid", tools)
-        self.assertNotIn("chip_lid", tools)
+        self.assertNotIn("vacuum", tools)
+        self.assertIn("box", tools)
+        self.assertIn("lid_inside", tools)
         self.assertIn("pcb_substrate", tools)
 
     def test_the_carved_bodies_survive(self):
@@ -522,7 +732,8 @@ class TestCarveVacuum(unittest.TestCase):
         self.assertEqual(hfss.subtractions, [])
 
     def test_nothing_to_carve_is_a_no_op(self):
-        hfss = FakeHfss(["vacuum", "box", "lid", "chip_lid"])
+        """The only case with nothing to carve is vacuum on its own."""
+        hfss = FakeHfss(["vacuum"])
         model_builder.carve_vacuum(hfss, {"vacuum": hfss.solid_objects[0]},
                                    log=lambda _m: None)
         self.assertEqual(hfss.subtractions, [])

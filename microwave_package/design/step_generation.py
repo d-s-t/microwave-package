@@ -1,11 +1,20 @@
 """
 SolidWorks STEP-file generation: for each parameter combination in a
-sweep, edits the shared equations file, rebuilds the assembly, and
-exports a STEP file. Runs on the machine that has SolidWorks installed
-(requires `pywin32`).
+sweep, edits the shared equations file, rebuilds box.SLDPRT and
+lid_inside.SLDPRT, and exports each straight to its own STEP file. Runs
+on the machine that has SolidWorks installed (requires `pywin32`).
 
-`Session` is the whole of it -- one connection, one open assembly, one
-combination at a time. Which combinations it is given, and in what
+There is no assembly and no mates here any more. box and lid_inside sit
+in the same box only once they reach AEDT -- model_builder.place_lid_inside
+positions lid_inside there by measuring its imported geometry against the
+board, the same way place_connectors already does for the SMP connector.
+The two parts are still linked to the same external equations file
+(`base_parts/default.txt`, confirmed via SolidWorks' own Equation Manager
+for both), so writing it once and rebuilding each part independently
+keeps them in step without an assembly to hold them together.
+
+`Session` is the whole of it -- one connection, both parts open at once,
+one combination at a time. Which combinations it is given, and in what
 order, is decided by `workflow/stages.py`, which runs this alongside the
 Altium and AEDT stages rather than before them.
 """
@@ -14,7 +23,7 @@ from __future__ import annotations
 import logging
 import os
 import time
-from typing import Callable, Optional, Tuple
+from typing import Callable, Dict, Optional, Tuple
 
 from . import equations as eq
 
@@ -36,8 +45,12 @@ def connect_solidworks() -> Tuple[Optional[object], Optional[str]]:
         return None, str(e)
 
 
-def open_and_activate_assembly(swApp, assembly_path: str) -> Tuple[Optional[object], Optional[str]]:
+def open_and_activate_part(swApp, part_path: str) -> Tuple[Optional[object], Optional[str]]:
     """Returns (model, None) on success, or (None, reason) on failure.
+
+    Opens `part_path` as a plain part document (swDocPART = 1) -- there is
+    no assembly document in this pipeline any more, just box.SLDPRT and
+    lid_inside.SLDPRT opened side by side.
 
     Both OpenDoc6 and ActivateDoc3 report a numeric error/warning code via
     their ByRef out-params -- SolidWorks' own explanation for why the
@@ -53,20 +66,22 @@ def open_and_activate_assembly(swApp, assembly_path: str) -> Tuple[Optional[obje
     import pythoncom
     import win32com.client
 
+    SW_DOC_PART = 1
+
     try:
-        logger.info("Opening assembly: %s", assembly_path)
+        logger.info("Opening part: %s", part_path)
         open_err = win32com.client.VARIANT(pythoncom.VT_BYREF | pythoncom.VT_I4, 0)
         open_warn = win32com.client.VARIANT(pythoncom.VT_BYREF | pythoncom.VT_I4, 0)
-        swApp.OpenDoc6(assembly_path, 2, 1, "", open_err, open_warn)
+        swApp.OpenDoc6(part_path, SW_DOC_PART, 1, "", open_err, open_warn)
         if open_err.value:
             logger.warning(
                 "OpenDoc6 reported error code %s (warning code %s) for %s -- see SolidWorks' "
                 "swFileLoadError_e/swFileLoadWarning_e enums for what the code means.",
-                open_err.value, open_warn.value, assembly_path,
+                open_err.value, open_warn.value, part_path,
             )
 
         activate_err = win32com.client.VARIANT(pythoncom.VT_BYREF | pythoncom.VT_I4, 0)
-        swModel = swApp.ActivateDoc3(assembly_path, False, 2, activate_err)
+        swModel = swApp.ActivateDoc3(part_path, False, SW_DOC_PART, activate_err)
         if not swModel:
             reason = (
                 f"OpenDoc6 error={open_err.value}, warning={open_warn.value}; "
@@ -75,16 +90,16 @@ def open_and_activate_assembly(swApp, assembly_path: str) -> Tuple[Optional[obje
                 "blocking dialog -- e.g. \"open read-only?\", a missing-reference prompt, or a "
                 "rebuild-on-open warning -- headless automation can't click through those."
             )
-            logger.error("Failed to activate assembly %s: %s", assembly_path, reason)
+            logger.error("Failed to activate part %s: %s", part_path, reason)
             return None, reason
         return swModel, None
     except Exception as e:
-        logger.error("Error opening/activating assembly: %s", e)
+        logger.error("Error opening/activating part %s: %s", part_path, e)
         return None, str(e)
 
 
 def rebuild_model(swModel) -> None:
-    logger.info("Rebuilding assembly...")
+    logger.info("Rebuilding part...")
     try:
         swModel.ForceRebuild3(False)
     except Exception as e:
@@ -172,33 +187,34 @@ def write_common_dimensions(run, log: Callable[[str], None] = logger.info) -> Op
 
 
 class Session:
-    """One SolidWorks document, held open across a run's combinations.
+    """box.SLDPRT and lid_inside.SLDPRT, both held open across a run's
+    combinations.
 
-    SolidWorks drives a single document and a single shared equations
-    file, so a run's combinations go through it strictly one at a time,
-    in order -- which is why this is a session opened once and reused
-    rather than a function that connects per combination. What it costs
-    to open (and what a combination costs to rebuild) is exactly why the
-    Altium and AEDT stages no longer wait behind it: see
-    `workflow/stages.py`.
+    SolidWorks drives its documents one at a time on a single shared
+    equations file, so a run's combinations go through it strictly in
+    order -- which is why this is a session opened once and reused rather
+    than a function that connects per combination. What it costs to open
+    (and what a combination costs to rebuild) is exactly why the Altium
+    and AEDT stages no longer wait behind it: see `workflow/stages.py`.
 
     The original equations file is held from the moment the session
     opens and written back when it closes, so the shared file is left as
     it was found however the run ends.
     """
 
-    def __init__(self, app, model, equations_path: str, original_content: str) -> None:
+    def __init__(self, app, parts: Dict[str, object], equations_path: str,
+                 original_content: str) -> None:
         self.app = app
-        self.model = model
+        self.parts = parts
         self.equations_path = equations_path
         self.original_content = original_content
 
     @classmethod
-    def open(cls, equations_path: str, assembly_path: str,
+    def open(cls, equations_path: str, part_paths: Dict[str, str],
              log: Callable[[str], None] = logger.info) -> "Session":
-        """Connect to SolidWorks and open the assembly.
+        """Connect to SolidWorks and open every part in `part_paths`.
 
-        Raises RuntimeError if either fails: a run cannot produce
+        Raises RuntimeError if any of it fails: a run cannot produce
         geometry without this, and failing here rather than once per
         combination is what says so plainly.
         """
@@ -208,38 +224,48 @@ class Session:
             raise RuntimeError(
                 f"Could not connect to SolidWorks -- is it installed and licensed on this machine? ({err})"
             )
-        model, err = open_and_activate_assembly(app, assembly_path)
-        if not model:
-            eq.write_file(equations_path, original_content)
-            raise RuntimeError(f"Could not open/activate assembly {assembly_path}: {err}")
-        return cls(app, model, equations_path, original_content)
+        parts: Dict[str, object] = {}
+        for name, part_path in part_paths.items():
+            model, err = open_and_activate_part(app, part_path)
+            if not model:
+                eq.write_file(equations_path, original_content)
+                raise RuntimeError(f"Could not open/activate {name} ({part_path}): {err}")
+            parts[name] = model
+        return cls(app, parts, equations_path, original_content)
 
     def build(self, combo_id: str, content: str, combo_dir: str,
-              log: Callable[[str], None] = logger.info) -> Tuple[Optional[str], Optional[str]]:
-        """Rebuild the assembly for one combination and export its STEP.
+              log: Callable[[str], None] = logger.info) -> Tuple[Optional[Dict[str, str]], Optional[str]]:
+        """Rebuild every part for one combination and export each to its
+        own STEP file.
 
         `content` is the whole equations file as this combination wants
         it -- worked out by the caller (see `equations.with_values`), not
         here, so the Altium stage can work out the same numbers for a
-        different combination at the same time.
+        different combination at the same time. Writing it once and
+        rebuilding every open part off of it is what keeps box and
+        lid_inside in step without an assembly holding them together.
 
-        Returns (step_path, None) on success, or (None, reason).
+        Returns ({name: step_path, ...}, None) on success, or (None, reason).
         """
         eq.write_file(self.equations_path, content)
         os.makedirs(combo_dir, exist_ok=True)
 
-        rebuild_model(self.model)
+        step_paths: Dict[str, str] = {}
+        for name, model in self.parts.items():
+            rebuild_model(model)
+            step_path = os.path.join(combo_dir, f"{combo_id}_{name}.STEP")
+            success, err = save_as_step(model, step_path)
+            if not success:
+                return None, f"{name}: {err}"
+            step_paths[name] = step_path
+
         # Snapshot of the exact equations used for this combo, so
         # later steps (min-frequency estimate) can read it back
         # without depending on the shared file's current state.
         eq.write_file(os.path.join(combo_dir, "dimensions.txt"), content)
 
-        step_path = os.path.join(combo_dir, f"{combo_id}.STEP")
-        success, err = save_as_step(self.model, step_path)
-        if not success:
-            return None, err
-        log(f"Saved {step_path}")
-        return step_path, None
+        log(f"Saved {', '.join(step_paths.values())}")
+        return step_paths, None
 
     def close(self, log: Callable[[str], None] = logger.info) -> None:
         """Put the shared equations file back the way it was found."""

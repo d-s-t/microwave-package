@@ -11,6 +11,8 @@ being retried once per combination.
 Run: python -m unittest discover -s tests
 """
 import logging
+import os
+import tempfile
 import threading
 import unittest
 
@@ -251,6 +253,67 @@ class TestTheLanesTogether(unittest.TestCase):
         upstream, aedt = self.build(layout_fails={"c2"})
         self.run_all(upstream, aedt, ["c1", "c2", "c3"])
         self.assertEqual(sorted(self.modelled), ["c1", "c3"])
+
+
+class TestResumingARunFromBeforeTheSplitParts(unittest.TestCase):
+    """A run exported before box and lid_inside were separate STEP files
+    recorded one `step_path`. Its geometry is useless to the model
+    builder now, but only matters for a combination that still needs a
+    model built."""
+
+    class FakeSession:
+        def __init__(self):
+            self.built = []
+
+        def build(self, combo_id, content, combo_dir, log=None):
+            self.built.append(combo_id)
+            return {"box": "b.STEP", "lid_inside": "l.STEP"}, None
+
+    def _stage(self, run):
+        stage = stages._SolidWorksStage(run, "", {}, "eq.txt", {}, log=lambda _m: None)
+        stage._session = self.FakeSession()
+        run.combo_dir = lambda combo_id: "."
+        return stage
+
+    def test_a_combination_still_to_be_modelled_is_re_exported(self):
+        run = FakeRun("c1", step_status="done", step_path="c1.STEP", params={})
+        stage = self._stage(run)
+        self.assertTrue(stage.build("c1"))
+        self.assertEqual(stage._session.built, ["c1"])
+        self.assertEqual(run.state["combos"]["c1"]["step_paths"]["lid_inside"], "l.STEP")
+
+    def test_a_combination_already_handed_over_is_left_alone(self):
+        run = FakeRun("c1", step_status="done", step_path="c1.STEP", params={}, task_id="t1")
+        stage = self._stage(run)
+        self.assertTrue(stage.build("c1"))
+        self.assertEqual(stage._session.built, [])
+
+    def test_a_built_model_that_will_be_reused_is_left_alone(self):
+        with tempfile.NamedTemporaryFile(suffix=".aedt", delete=False) as project:
+            pass
+        self.addCleanup(os.remove, project.name)
+        run = FakeRun("c1", step_status="done", step_path="c1.STEP", params={},
+                      model_status="built", object_names={"vacuum": "vacuum"},
+                      project_path=project.name)
+        stage = self._stage(run)
+        self.assertTrue(stage.build("c1"))
+        self.assertEqual(stage._session.built, [])
+
+    def test_a_built_model_whose_project_is_gone_is_re_exported(self):
+        """The AEDT stage will rebuild it, and needs STEP files it can use."""
+        run = FakeRun("c1", step_status="done", step_path="c1.STEP", params={},
+                      model_status="built", object_names={"vacuum": "vacuum"},
+                      project_path="no/such/project.aedt")
+        stage = self._stage(run)
+        self.assertTrue(stage.build("c1"))
+        self.assertEqual(stage._session.built, ["c1"])
+
+    def test_a_current_combination_is_not_re_exported(self):
+        run = FakeRun("c1", step_status="done", params={},
+                      step_paths={"box": "b.STEP", "lid_inside": "l.STEP"})
+        stage = self._stage(run)
+        self.assertTrue(stage.build("c1"))
+        self.assertEqual(stage._session.built, [])
 
 
 class TestSealingAnIdleLane(unittest.TestCase):
