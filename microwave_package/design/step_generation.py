@@ -99,7 +99,7 @@ def open_and_activate_part(swApp, part_path: str) -> Tuple[Optional[object], Opt
 
 
 def rebuild_model(swModel) -> None:
-    logger.info("Rebuilding assembly...")
+    logger.info("Rebuilding part...")
     try:
         swModel.ForceRebuild3(False)
     except Exception as e:

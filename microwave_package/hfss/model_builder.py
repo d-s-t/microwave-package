@@ -170,9 +170,9 @@ def _drop_superseded_solids(hfss, log) -> None:
     doomed = []
     for obj in hfss.modeler.solid_objects:
         name = obj.name.lower()
-        # lid_inside is part of the enclosure, not the die, and shares
-        # the "pcb"/"chip" wording nowhere but this guard is cheap
-        # insurance against a future part named similarly.
+        # Anything lid-like is enclosure, not die. lid_inside shares no
+        # "pcb"/"chip" wording today; this is cheap insurance against a
+        # future part that does.
         if "lid" in name:
             continue
         if name in SUPERSEDED_BY_LAYOUT:

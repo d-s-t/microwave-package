@@ -1040,9 +1040,10 @@ def combo_step_file(run_id, combo_id):
     if combo_id not in run.state.get("combos", {}):
         return Response("unknown combination", status=404)
 
-    # box is the representative preview -- lid_inside and vacuum are the
-    # rest of the enclosure, but this endpoint (and the in-browser viewer
-    # behind it) only ever shows one file at a time.
+    # box is the representative preview -- lid_inside is the rest of the
+    # enclosure, but this endpoint (and the in-browser viewer behind it)
+    # only ever shows one file at a time. A run exported before the parts
+    # were split has a single assembly STEP instead, found by the glob.
     step_paths = run.state["combos"][combo_id].get("step_paths") or {}
     step_path = step_paths.get("box")
     if not step_path or not os.path.exists(step_path):

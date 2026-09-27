@@ -249,6 +249,17 @@ class _AltiumStage:
         return ok
 
 
+def _needs_new_step_files(combo) -> bool:
+    """Whether a combination still has a model to build from STEP files.
+
+    One already handed to the worker, or whose model is built and kept,
+    never reads them again (see model_builder.reusable_model) -- so a run
+    from before the STEP files were split resumes without re-exporting
+    geometry nothing will look at.
+    """
+    return not (combo.get("task_id") or combo.get("model_status") == "built")
+
+
 class _SolidWorksStage:
     """Rebuilds box.SLDPRT and lid_inside.SLDPRT for one combination and
     exports each to its own STEP.
@@ -273,7 +284,12 @@ class _SolidWorksStage:
         run = self._run
         combo = run.state["combos"][combo_id]
         if combo.get("step_status") == "done":
-            return True
+            if combo.get("step_paths") or not _needs_new_step_files(combo):
+                return True
+            # Exported before box and lid_inside became separate files:
+            # one assembly STEP, which the model builder can no longer use.
+            self._log(f"{combo_id}: geometry predates the separate box/lid_inside "
+                      "STEP files -- rebuilding it.")
 
         self._needed = True
         run.update_combo(combo_id, step_status="running")
@@ -334,7 +350,7 @@ class _AedtStage:
         settings = self._settings
         dimensions = eq.read_file(os.path.join(run.combo_dir(combo_id), "dimensions.txt"))
         object_names = model_builder.build_model(
-            combo_id, combo["step_paths"], dimensions, run, settings,
+            combo_id, combo.get("step_paths") or {}, dimensions, run, settings,
             settings.get("aedt_version"), settings.get("student_version", True),
             settings.get("graphical", False), log=self._log,
         )

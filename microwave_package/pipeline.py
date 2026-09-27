@@ -185,7 +185,7 @@ def _run_stages(run: Run, queue: "queue_common.QueuePaths", log=logger.info, sto
         )
         resilient_io.call_with_retry(
             model_builder.queue_model,
-            combo_id, run.state["combos"][combo_id]["step_paths"], run, queue, object_names,
+            combo_id, run.state["combos"][combo_id].get("step_paths") or {}, run, queue, object_names,
             queue_root=queue.root, log=log, stop_event=stop_event,
         )
 

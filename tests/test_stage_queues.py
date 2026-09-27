@@ -253,6 +253,54 @@ class TestTheLanesTogether(unittest.TestCase):
         self.assertEqual(sorted(self.modelled), ["c1", "c3"])
 
 
+class TestResumingARunFromBeforeTheSplitParts(unittest.TestCase):
+    """A run exported before box and lid_inside were separate STEP files
+    recorded one `step_path`. Its geometry is useless to the model
+    builder now, but only matters for a combination that still needs a
+    model built."""
+
+    class FakeSession:
+        def __init__(self):
+            self.built = []
+
+        def build(self, combo_id, content, combo_dir, log=None):
+            self.built.append(combo_id)
+            return {"box": "b.STEP", "lid_inside": "l.STEP"}, None
+
+    def _stage(self, run):
+        stage = stages._SolidWorksStage(run, "", {}, "eq.txt", {}, log=lambda _m: None)
+        stage._session = self.FakeSession()
+        run.combo_dir = lambda combo_id: "."
+        return stage
+
+    def test_a_combination_still_to_be_modelled_is_re_exported(self):
+        run = FakeRun("c1", step_status="done", step_path="c1.STEP", params={})
+        stage = self._stage(run)
+        self.assertTrue(stage.build("c1"))
+        self.assertEqual(stage._session.built, ["c1"])
+        self.assertEqual(run.state["combos"]["c1"]["step_paths"]["lid_inside"], "l.STEP")
+
+    def test_a_combination_already_handed_over_is_left_alone(self):
+        run = FakeRun("c1", step_status="done", step_path="c1.STEP", params={}, task_id="t1")
+        stage = self._stage(run)
+        self.assertTrue(stage.build("c1"))
+        self.assertEqual(stage._session.built, [])
+
+    def test_a_built_model_is_left_alone(self):
+        run = FakeRun("c1", step_status="done", step_path="c1.STEP", params={},
+                      model_status="built")
+        stage = self._stage(run)
+        self.assertTrue(stage.build("c1"))
+        self.assertEqual(stage._session.built, [])
+
+    def test_a_current_combination_is_not_re_exported(self):
+        run = FakeRun("c1", step_status="done", params={},
+                      step_paths={"box": "b.STEP", "lid_inside": "l.STEP"})
+        stage = self._stage(run)
+        self.assertTrue(stage.build("c1"))
+        self.assertEqual(stage._session.built, [])
+
+
 class TestSealingAnIdleLane(unittest.TestCase):
     def test_a_lane_given_nothing_finishes(self):
         """It waits on its queue, so something has to tell it no more is
