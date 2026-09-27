@@ -789,6 +789,19 @@ class TestCarveVacuum(unittest.TestCase):
         self.assertIn("lid_inside", tools)
         self.assertIn("pcb_substrate", tools)
 
+    def test_via_posts_are_not_carved_but_everything_else_is(self):
+        """The posts stand wholly inside the board, which is carved
+        already. Carving them too has AEDT cut every via out of the vacuum
+        and fill it straight back in -- minutes of one call on a dense
+        board, with the web app frozen for all of it."""
+        hfss = FakeHfss(["vacuum", "box", "pcb_substrate", "pcb_copper_top",
+                         "pcb_vias", "pcb_vias_2", "chip_substrate", "chip_vias"])
+        model_builder.carve_vacuum(hfss, {"vacuum": hfss.solid_objects[0]},
+                                   log=lambda _m: None)
+        _target, tools, _keep = hfss.subtractions[0]
+        self.assertEqual(sorted(tools),
+                         ["box", "chip_substrate", "pcb_copper_top", "pcb_substrate"])
+
     def test_the_carved_bodies_survive(self):
         """keep_originals: these are the things being simulated, not
         scrap left over from cutting the vacuum."""

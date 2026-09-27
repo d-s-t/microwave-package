@@ -114,6 +114,66 @@ class TestNotHoldingTheReportOpen(unittest.TestCase):
         os.mkdir(os.path.join(self.dir, "a_directory.txt"))
         self.assertEqual(ag.read_sentinel(os.path.join(self.dir, "a_directory.txt")), {})
 
+    @unittest.skipUnless(os.name == "nt", "the copy is a Windows call")
+    def test_the_report_itself_is_never_opened_only_a_copy(self):
+        """An open handle on the report is what fails the script's write,
+        and a thread can be held up with one open for as long as an AEDT
+        call lasts -- PyAEDT keeps Python's lock through each one. So the
+        report is copied by a single Windows call and only the copy is
+        opened here."""
+        self._write("stage=end", "ok=1")
+        real_open = open
+        report = os.path.normcase(os.path.abspath(self.path))
+
+        def guarded_open(file, *args, **kwargs):
+            if os.path.normcase(os.path.abspath(os.fspath(file))) == report:
+                raise AssertionError("the report was opened in place")
+            return real_open(file, *args, **kwargs)
+
+        with mock.patch("builtins.open", guarded_open):
+            self.assertEqual(ag.read_sentinel(self.path), {"stage": "end", "ok": "1"})
+
+    @unittest.skipUnless(os.name == "nt", "the copy is a Windows call")
+    def test_trouble_with_the_copy_reads_as_missing_not_an_error(self):
+        """No temp space, or a scanner holding the fresh copy: the run
+        polls again rather than losing its Altium stage to an exception."""
+        self._write("stage=end", "ok=1")
+        with mock.patch("tempfile.mkstemp", side_effect=OSError("no space")):
+            self.assertEqual(ag.read_sentinel(self.path), {})
+        real_open = open
+
+        def refusing_open(file, *args, **kwargs):
+            if "altium_report_" in os.path.basename(os.fspath(file)):
+                raise PermissionError("held by a scanner")
+            return real_open(file, *args, **kwargs)
+
+        with mock.patch("builtins.open", refusing_open):
+            self.assertEqual(ag.read_sentinel(self.path), {})
+        self.assertEqual(ag.read_sentinel(self.path), {"stage": "end", "ok": "1"})
+
+    @unittest.skipUnless(os.name == "nt", "share modes are Windows'")
+    def test_a_report_the_script_is_writing_reads_as_missing(self):
+        """What Altium holds while it writes a progress line: the file,
+        open with no sharing at all. Reading then must come back empty
+        rather than fail -- and must not leave anything open behind it."""
+        import ctypes
+        from ctypes import wintypes
+
+        self._write("stage=start")
+        create = ctypes.windll.kernel32.CreateFileW
+        create.restype = wintypes.HANDLE
+        create.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, ctypes.c_void_p,
+                           wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
+        GENERIC_WRITE, OPEN_EXISTING = 0x40000000, 3
+        held = create(self.path, GENERIC_WRITE, 0, None, OPEN_EXISTING, 0, None)
+        self.assertNotEqual(held, wintypes.HANDLE(-1).value)
+        try:
+            self.assertEqual(ag.read_sentinel(self.path), {})
+        finally:
+            ctypes.windll.kernel32.CloseHandle(held)
+        self.assertEqual(ag.read_sentinel(self.path), {"stage": "start"})
+        os.remove(self.path)  # nothing of ours still has it open
+
     def test_a_missing_file_has_no_fingerprint(self):
         self.assertIsNone(ag._fingerprint(self.path))
 

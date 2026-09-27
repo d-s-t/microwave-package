@@ -14,6 +14,7 @@ Run: python -m unittest discover -s tests
 """
 import math
 import os
+import random
 import unittest
 
 from microwave_package.design import bonds as bond_mod, cavity as cav, copper_geometry as cg
@@ -149,7 +150,15 @@ class FakeSolid:
 
 
 class FakeModeler:
-    """Records what would have been created, instead of creating it."""
+    """Records what would have been created, instead of creating it.
+
+    A clone made by `duplicate_along_line` is recorded as though it had
+    been created in its own right, moved by the clone's offset -- so the
+    geometry the tests read back is every copy in the model, whether the
+    builder made it directly or had AEDT clone it. That takes knowing
+    what each body is made of: `_parts` maps a body to the records it
+    carries, including what a unite or a subtraction folded into it.
+    """
 
     def __init__(self):
         self.boxes = []
@@ -159,26 +168,28 @@ class FakeModeler:
         self.swept = []
         self.unites = []
         self.subtractions = []
+        self.duplicates = []
+        self.deleted = []
         self._n = 0
         self._by_name = {}
+        self._parts = {}
 
-    def _make(self, kind):
+    def _make(self, kind, store, record):
         self._n += 1
         solid = FakeSolid(f"{kind}{self._n}")
         self._by_name[solid.name] = solid
+        store.append(record)
+        self._parts[solid.name] = [(store, record)]
         return solid
 
     def create_box(self, origin, sizes, **kw):
-        self.boxes.append((list(origin), list(sizes)))
-        return self._make("box")
+        return self._make("box", self.boxes, (list(origin), list(sizes)))
 
     def create_cylinder(self, orientation, origin, radius, height, **kw):
-        self.cylinders.append((orientation, list(origin), radius, height))
-        return self._make("cyl")
+        return self._make("cyl", self.cylinders, (orientation, list(origin), radius, height))
 
     def create_polyline(self, points, **kw):
-        self.polylines.append([list(p) for p in points])
-        return self._make("poly")
+        return self._make("poly", self.polylines, [list(p) for p in points])
 
     def thicken_sheet(self, sheet, height, **kw):
         self.thickened.append((sheet.name, height))
@@ -190,14 +201,74 @@ class FakeModeler:
         self.swept.append((name, list(vector)))
         return True
 
+    def _fold(self, into, names):
+        for name in names:
+            if into in self._parts and name in self._parts:
+                self._parts[into].extend(self._parts.pop(name))
+
     def unite(self, parts):
+        # The real one returns the surviving body's name, or False when
+        # AEDT refuses -- see copper_geometry._unite_or_warn.
         self.unites.append(list(parts))
+        self._fold(parts[0], parts[1:])
+        return parts[0]
 
     def subtract(self, target, tools, keep_originals=False):
         self.subtractions.append((target, list(tools), keep_originals))
+        if isinstance(target, str) and not keep_originals:
+            self._fold(target, tools)
+
+    def duplicate_along_line(self, assignment, vector, clones=2, attach=False,
+                             duplicate_assignment=True, **kw):
+        """Clone each named body `clones - 1` times, `vector` apart."""
+        names = [assignment] if isinstance(assignment, str) else list(assignment)
+        self.duplicates.append((names, list(vector), clones, attach))
+        for name in names:
+            originals = list(self._parts[name])
+            for k in range(1, clones):
+                offset = [k * c for c in vector]
+                for store, record in originals:
+                    clone = _moved(store, self, record, offset)
+                    store.append(clone)
+                    self._parts[name].append((store, clone))
+        return True, []
+
+    def delete(self, assignment):
+        names = [assignment] if isinstance(assignment, str) else list(assignment)
+        for name in names:
+            self.deleted.append(name)
+            for store, record in self._parts.pop(name, []):
+                for i, kept in enumerate(store):
+                    if kept is record:
+                        del store[i]
+                        break
+
+    @property
+    def created(self):
+        """How many solids the builder asked for itself -- clones not
+        included. What the block building is meant to keep small."""
+        return self._n
+
+    def carried(self, name):
+        """The recorded solids that make up body `name`."""
+        return [record for _store, record in self._parts.get(name, [])]
 
     def __getitem__(self, name):
         return self._by_name[name]
+
+
+def _moved(store, modeler, record, offset):
+    """A copy of one recorded solid, moved by `offset`."""
+    def shift(point):
+        return [p + o for p, o in zip(point, offset)]
+
+    if store is modeler.boxes:
+        origin, sizes = record
+        return (shift(origin), list(sizes))
+    if store is modeler.cylinders:
+        orientation, origin, radius, height = record
+        return (orientation, shift(origin), radius, height)
+    return [shift(p) for p in record]
 
 
 FRAME = cg.Frame(x_offset=14.0, z_offset=6.0)
@@ -305,42 +376,37 @@ class TestBuildingCopper(unittest.TestCase):
         self.assertAlmostEqual(via[1][1], STACK.pcb_bottom)
         self.assertAlmostEqual(via[3], STACK.pcb_top - STACK.pcb_bottom)
 
-    def test_each_via_is_a_hollow_barrel_with_the_drill_hole_clear(self):
-        """A plated through-hole, not a solid post: copper out to the via
-        radius, with `hole` diameter of clear space bored down the middle
-        and taken back out of the barrel."""
+    def test_each_via_is_a_solid_post_whatever_its_drill(self):
+        """No bore: the 0.15 mm drill in the sample is a waveguide cut off
+        far above any frequency here, and cutting thousands of them was
+        minutes of AEDT per board. So each via is one solid cylinder at
+        the via's own radius, and nothing is cut out of it."""
         modeler, _ = self._build()
-        barrels = [c for c in modeler.cylinders if abs(c[2] - 0.15) < 1e-9]
-        bores = [c for c in modeler.cylinders if abs(c[2] - 0.075) < 1e-9]
-        self.assertEqual(len(barrels), 2, "one barrel OD per via")
-        self.assertEqual(len(bores), 2, "one drilled bore per via")
-        self.assertTrue(all(c[0] == "Y" for c in barrels + bores))
-        self.assertTrue(
-            any(keep is False for _t, _tools, keep in modeler.subtractions),
-            "the bore must be subtracted from the barrel",
-        )
-
-    def test_the_bore_passes_clear_through_the_barrel(self):
-        """Proud of both ends, so no skin of copper is left across the
-        mouth by a boolean that stopped exactly flush."""
-        modeler, _ = self._build()
-        barrel = [c for c in modeler.cylinders if abs(c[2] - 0.15) < 1e-9][0]
-        bore = [c for c in modeler.cylinders if abs(c[2] - 0.075) < 1e-9][0]
-        self.assertLess(bore[1][1], barrel[1][1], "bore starts below the barrel")
-        self.assertGreater(
-            bore[1][1] + bore[3], barrel[1][1] + barrel[3],
-            "bore ends above the barrel",
-        )
-
-    def test_a_filled_via_stays_solid(self):
-        """`hole` = 0 is a filled or tented via -- no bore to cut."""
-        modeler = FakeModeler()
-        board = cg.BoardCopper(name="package", vias=[cg.Via(1.0, 2.0, 0.3, 0.0)])
-        cg.build(modeler, board, FRAME, top_face=STACK.pcb_top,
-                 bottom_face=STACK.pcb_bottom, thickness=STACK.copper_thickness,
-                 prefix="pcb", log=lambda _m: None)
-        self.assertEqual(len(modeler.cylinders), 1, "just the solid post")
+        radii = [c[2] for c in modeler.cylinders]
+        self.assertEqual(radii.count(0.15), 2, "one post per via, at the via's radius")
+        self.assertNotIn(0.075, radii, "no bore at the drill's radius")
         self.assertEqual(modeler.subtractions, [])
+
+    def test_several_via_blocks_stay_bodies_of_their_own(self):
+        """Joining the blocks is a boolean over every via at once -- on a
+        dense board, one of the long AEDT calls. They are named instead,
+        each one a name the via material rule matches."""
+        from microwave_package.hfss import model_builder
+
+        modeler = FakeModeler()
+        board = cg.BoardCopper(name="package", vias=[
+            cg.Via(0.0, 0.0, 0.3, 0.15), cg.Via(1.0, 0.0, 0.3, 0.15),
+            cg.Via(5.0, 3.0, 0.4, 0.2),
+        ])
+        created = cg.build(modeler, board, FRAME, top_face=STACK.pcb_top,
+                           bottom_face=STACK.pcb_bottom, thickness=STACK.copper_thickness,
+                           prefix="pcb", log=lambda _m: None)
+        self.assertEqual(created["pcb_vias"], ["pcb_vias", "pcb_vias_2"])
+        self.assertEqual(modeler.unites, [])
+        self.assertEqual(sorted(s.name for s in modeler._by_name.values()),
+                         ["pcb_vias", "pcb_vias_2"])
+        rule = next(r for r in model_builder.MATERIAL_RULES if r[1] == "pcb_vias")
+        self.assertTrue(all(rule[0] in name for name in created["pcb_vias"]))
 
     def test_top_copper_sits_on_the_board_face(self):
         """Regions and rectangular pads are now boxes (create_box), not
@@ -703,128 +769,224 @@ class TestWireBondNaming(unittest.TestCase):
         self.assertTrue(any(p in "wirebond" for p in patterns))
 
 
-class TestDrillVias(unittest.TestCase):
-    VIAS = [cg.Via(11.8, -0.67131, 0.3, 0.15), cg.Via(11.8, 0.67131, 0.3, 0.15)]
+REAL_COPPER = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "base_parts", "altium", "generated", "copper.txt",
+)
 
-    def _drill(self, modeler=None):
+
+def _grid(nu, nv, pitch_u=0.5, pitch_v=0.4, u0=-3.0, v0=-2.0, skip=lambda i, j: False):
+    return [(u0 + i * pitch_u, v0 + j * pitch_v)
+            for j in range(nv) for i in range(nu) if not skip(i, j)]
+
+
+class TestBlocks(unittest.TestCase):
+    """Positions gathered into rectangular arrays AEDT can clone.
+
+    The one property that matters above all: every position comes back
+    exactly once. A block that drops one is a missing via nothing
+    downstream would notice, and one that adds one is a via where the
+    generator decided there was no room for it.
+    """
+
+    def assertCoversExactly(self, points, found):
+        """Every block position matches one input point, one to one,
+        within the 6 * COINCIDENT_MM `blocks` promises a lattice moves them."""
+        allowed = 6 * cg.COINCIDENT_MM
+        cell = 10 * cg.COINCIDENT_MM
+        grid = {}
+        for index, (u, v) in enumerate(points):
+            grid.setdefault((round(u / cell), round(v / cell)), []).append(index)
+        used = set()
+        slots = [p for block in found for p in block.points()]
+        self.assertEqual(len(slots), len(points), "blocks carry the wrong number of positions")
+        for u, v in slots:
+            cu, cv = round(u / cell), round(v / cell)
+            near = [
+                i for du in (-1, 0, 1) for dv in (-1, 0, 1)
+                for i in grid.get((cu + du, cv + dv), [])
+                if i not in used and math.dist(points[i], (u, v)) <= allowed
+            ]
+            self.assertTrue(near, f"a block puts a copy at ({u}, {v}), where there is none")
+            used.add(near[0])
+
+    def test_a_grid_is_one_block(self):
+        points = _grid(12, 7)
+        found = cg.blocks(points)
+        self.assertEqual(len(found), 1)
+        self.assertEqual(sorted((found[0].count, found[0].rows)), [7, 12])
+        self.assertCoversExactly(points, found)
+
+    def test_a_single_row_or_column_is_one_block(self):
+        for points in (_grid(9, 1), _grid(1, 9)):
+            found = cg.blocks(points)
+            self.assertEqual(len(found), 1)
+            self.assertCoversExactly(points, found)
+
+    def test_a_staggered_grid_is_two_blocks(self):
+        """Alternate rows offset by half a pitch -- what the stitching
+        grid does. Each set of rows is a lattice of its own."""
+        even = _grid(10, 5, pitch_v=0.8)
+        odd = _grid(10, 5, pitch_v=0.8, u0=-2.75, v0=-1.6)
+        found = cg.blocks(even + odd)
+        self.assertEqual(len(found), 2)
+        self.assertCoversExactly(even + odd, found)
+
+    def test_a_grid_with_a_hole_in_it_is_four_blocks(self):
+        """The die opening: the rows either side of it run straight
+        through, and the rows beside it are cut in two."""
+        points = _grid(20, 20, skip=lambda i, j: 7 <= i < 13 and 7 <= j < 13)
+        found = cg.blocks(points)
+        self.assertEqual(len(found), 4)
+        self.assertCoversExactly(points, found)
+
+    def test_nanometres_off_the_lattice_is_still_on_it(self):
+        """Altium holds coordinates in 1/10000 mil, so a pitch that is not
+        a whole number of those lands every via a few nanometres off the
+        ideal grid. That must not break a row into pieces."""
+        rng = random.Random(7)
+        points = [(u + rng.uniform(-3e-6, 3e-6), v + rng.uniform(-3e-6, 3e-6))
+                  for u, v in _grid(30, 20)]
+        found = cg.blocks(points)
+        self.assertEqual(len(found), 1)
+        self.assertCoversExactly(points, found)
+
+    def test_a_slow_drift_is_not_mistaken_for_a_row(self):
+        """Each step 50 nm longer than the last: every neighbour is within
+        tolerance of the one before, but by the end of the row the copies
+        would be microns out. The run has to end before that happens."""
+        points = [(i * 0.5 + 25e-6 * i * i, 0.0) for i in range(40)]
+        found = cg.blocks(points)
+        self.assertGreater(len(found), 1)
+        self.assertCoversExactly(points, found)
+
+    def test_points_with_no_pattern_still_all_come_back(self):
+        rng = random.Random(11)
+        points = [(rng.uniform(-30, 30), rng.uniform(-10, 10)) for _ in range(300)]
+        found = cg.blocks(points)
+        self.assertLessEqual(len(found), len(points))
+        self.assertCoversExactly(points, found)
+
+    def test_a_point_given_twice_is_built_twice(self):
+        """Not this module's call to drop one -- and the two copies unite
+        into the same metal either way."""
+        points = [(1.0, 2.0), (1.0, 2.0), (1.5, 2.0)]
+        self.assertCoversExactly(points, cg.blocks(points))
+
+    def test_nothing_in_nothing_out(self):
+        self.assertEqual(cg.blocks([]), [])
+
+    def test_the_real_board_packs_into_a_few_blocks(self):
+        if not os.path.isfile(REAL_COPPER):
+            self.skipTest("copper.txt not present -- run the Altium generator first")
+        for board in cg.read_file(REAL_COPPER).values():
+            if not board.vias:
+                continue
+            points = [(v.x, v.y) for v in board.vias]
+            found = cg.blocks(points)
+            self.assertLess(len(found), 40, f"{len(points)} vias took {len(found)} blocks")
+            self.assertCoversExactly(points, found)
+
+
+class TestBuildingInBlocks(unittest.TestCase):
+    """Copies are cloned by AEDT, not built one call at a time.
+
+    Building every via with calls of its own is what made a model take
+    hours: each call is a round trip, and each boolean costs more the
+    more bodies the model already holds. These pin the number of things
+    the builder makes itself, and that the clones land where the copies
+    belong.
+    """
+
+    def _build(self, board, modeler=None):
         modeler = modeler if modeler is not None else FakeModeler()
-        cg.drill_vias(modeler, "pcb_substrate", self.VIAS, FRAME,
-                      top_face=STACK.pcb_top, bottom_face=STACK.pcb_bottom,
-                      log=lambda _m: None)
-        return modeler
+        messages = []
+        created = cg.build(modeler, board, FRAME, top_face=STACK.pcb_top,
+                           bottom_face=STACK.pcb_bottom, thickness=STACK.copper_thickness,
+                           prefix="pcb", log=messages.append)
+        return modeler, created, messages
 
-    def test_the_board_loses_the_whole_footprint_with_its_own_tool(self):
-        """The barrels are hollow, so drilling with the barrels
-        themselves would leave a dielectric plug where the hole belongs.
-        The drill is a separate solid tool at the via's full outer
-        radius, and it is consumed by the cut."""
-        modeler = self._drill()
-        drills = [c for c in modeler.cylinders if abs(c[2] - 0.15) < 1e-9]
-        self.assertEqual(len(drills), 2, "one solid drill per via, at the outer radius")
-        target, tools, keep = modeler.subtractions[-1]
-        self.assertEqual(target, "pcb_substrate")
-        self.assertEqual(tools, ["via_drill_tool"])
-        self.assertFalse(keep, "the drill tool must be consumed by the cut")
+    def _via_grid(self):
+        points = _grid(12, 9)
+        return points, cg.BoardCopper(
+            name="package", vias=[cg.Via(u, v, 0.3, 0.15) for u, v in points])
 
-    def test_the_hole_runs_right_through_the_board(self):
-        """A shade proud of both faces, so nothing is left as a skin of
-        dielectric across the via mouth."""
-        modeler = self._drill()
-        drill = [c for c in modeler.cylinders if abs(c[2] - 0.15) < 1e-9][0]
-        low = drill[1][1]
-        high = drill[1][1] + drill[3]
-        self.assertLess(low, STACK.pcb_bottom)
-        self.assertGreater(high, STACK.pcb_top)
+    def test_a_grid_of_vias_is_one_post_cloned_twice(self):
+        points, board = self._via_grid()
+        modeler, created, _ = self._build(board)
+        self.assertEqual(modeler.created, 1, "one post, whatever the count")
+        self.assertEqual(len(modeler.duplicates), 2, "one clone along each side of the block")
+        self.assertTrue(all(attach for *_rest, attach in modeler.duplicates),
+                        "clones must join the original's body, not each become one")
+        self.assertEqual(created["pcb_vias"], ["pcb_vias"])
 
-    def test_nothing_to_drill_is_a_no_op(self):
+    def test_every_via_is_in_the_model_where_the_layout_put_it(self):
+        points, board = self._via_grid()
+        modeler, _, _ = self._build(board)
+        posts = sorted((round(c[1][0], 9), round(c[1][2], 9)) for c in modeler.cylinders)
+        wanted = sorted((round(p[0], 9), round(p[2], 9))
+                        for p in (FRAME.point(u, v, 0.0) for u, v in points))
+        self.assertEqual(posts, wanted)
+
+    def test_clones_step_along_the_board_not_the_assembly(self):
+        """The same axis flip as `Frame.point`: a step along v is a step
+        along -Z. A clone vector left in board axes would lay the grid out
+        mirrored, which no count would notice."""
+        self.assertEqual(FRAME.vector(1.0, 0.0), [1.0, 0.0, 0.0])
+        self.assertEqual(FRAME.vector(0.0, 1.0), [0.0, 0.0, -1.0])
+        for u, v, w in ((1.0, 2.0, 3.0), (-0.5, 0.25, 0.0)):
+            moved = FRAME.point(u, v, w)
+            origin = FRAME.point(0.0, 0.0, 0.0)
+            self.assertEqual(FRAME.vector(u, v, w), [a - b for a, b in zip(moved, origin)])
+
+    def test_a_block_aedt_will_not_clone_is_built_one_by_one(self):
+        """Slow and right beats fast and wrong -- and says so."""
+        class NoClones(FakeModeler):
+            def duplicate_along_line(self, *a, **k):
+                raise RuntimeError("nope")
+
+        points, board = self._via_grid()
+        modeler, _, messages = self._build(board, NoClones())
+        self.assertEqual(len(modeler.cylinders), len(points))
+        self.assertTrue(modeler.deleted, "the half-cloned original must go")
+        self.assertTrue(any("WARNING" in m for m in messages))
+
+    def test_pads_of_one_shape_are_one_pad_cloned(self):
+        board = cg.BoardCopper(name="package", pads=[
+            cg.Pad(cg.TOP, -2.4 + 0.4 * i, 3.5, 0.3, 0.15) for i in range(13)
+        ] + [cg.Pad(cg.TOP, 5.0, 0.0, 1.0, 1.0)])
+        modeler, _, _ = self._build(board)
+        self.assertEqual(modeler.created, 2, "one pad per shape")
+        self.assertEqual(len(modeler.boxes), 14, "and every pad in the model")
+
+    def test_a_row_of_bonds_is_one_bond_cloned(self):
+        from microwave_package.design.bonds import Bond
+
+        row = [Bond("ground", -3.5, -2.4 + 0.4 * i, -2.85, -2.4 + 0.4 * i) for i in range(12)]
         modeler = FakeModeler()
-        cg.drill_vias(modeler, "pcb_substrate", [], FRAME,
-                      top_face=STACK.pcb_top, bottom_face=STACK.pcb_bottom,
-                      log=lambda _m: None)
-        self.assertEqual(modeler.cylinders, [])
-        self.assertEqual(modeler.subtractions, [])
+        names = cg.build_bond_wires(modeler, row, FRAME, pcb_top=1.381, chip_top=1.381,
+                                    height=0.2, diameter=0.025, log=lambda _m: None)
+        self.assertEqual(names, ["wirebond"])
+        self.assertEqual(modeler.created, 3, "one wire on its two feet")
+        self.assertEqual(len(modeler.polylines), 12)
+        self.assertEqual(len(modeler.cylinders), 24)
+        for bond, path in zip(row, modeler.polylines):
+            self.assertAlmostEqual(path[0][0], FRAME.point(bond.pcb_x, bond.pcb_y, 0)[0])
+            self.assertAlmostEqual(path[0][2], FRAME.point(bond.pcb_x, bond.pcb_y, 0)[2])
+            self.assertAlmostEqual(path[-1][0], FRAME.point(bond.chip_x, bond.chip_y, 0)[0])
+            self.assertAlmostEqual(path[-1][2], FRAME.point(bond.chip_x, bond.chip_y, 0)[2])
 
-    def test_a_failure_is_loud(self):
-        class Failing(FakeModeler):
-            def subtract(self, *a, **k):
-                raise RuntimeError("nope")
-
-        messages = []
-        cg.drill_vias(Failing(), "pcb_substrate", self.VIAS, FRAME,
-                      top_face=STACK.pcb_top, bottom_face=STACK.pcb_bottom,
-                      log=messages.append)
-        self.assertTrue(any("WARNING" in m for m in messages))
-        self.assertTrue(any("overlap" in m for m in messages))
-
-
-class TestOpenViaHoles(unittest.TestCase):
-    """The barrel is bored and the substrate is drilled, but the lands
-    and planes on the two layers are still solid over the via. A real
-    plated through-hole is open through the annular ring on every layer,
-    not capped by a copper disc at each end."""
-
-    COPPERS = ["pcb_copper_top", "pcb_copper_bottom"]
-    VIAS = [cg.Via(11.8, -0.67131, 0.3, 0.15), cg.Via(11.8, 0.67131, 0.3, 0.15)]
-
-    def _open(self, modeler=None, vias=None, coppers=None):
-        modeler = modeler if modeler is not None else FakeModeler()
-        cg.open_via_holes(
-            modeler, self.COPPERS if coppers is None else coppers,
-            self.VIAS if vias is None else vias, FRAME,
-            top_face=STACK.pcb_top, bottom_face=STACK.pcb_bottom,
-            copper_thickness=STACK.copper_thickness, log=lambda _m: None,
-        )
-        return modeler
-
-    def test_only_the_drill_diameter_comes_out_not_the_land(self):
-        """Cutting the barrel OD would sink an anti-pad into every plane
-        the board does not have. The hole is `via.hole` across, so the
-        annular ring survives."""
-        modeler = self._open()
-        radii = {round(c[2], 6) for c in modeler.cylinders}
-        self.assertEqual(radii, {0.075}, "every tool is hole/2, never diameter/2")
-
-    def test_both_layers_lose_the_hole_together_and_the_tool_is_consumed(self):
-        modeler = self._open()
-        target, tools, keep = modeler.subtractions[-1]
-        self.assertEqual(target, self.COPPERS)
-        self.assertEqual(tools, ["via_hole_tool"])
-        self.assertFalse(keep, "the tool must be consumed by the cut")
-
-    def test_the_hole_reaches_past_both_copper_layers(self):
-        """It has to start below the bottom copper and end above the top
-        copper, or one layer keeps its cap."""
-        modeler = self._open()
-        tool = modeler.cylinders[0]
-        low = tool[1][1]
-        high = tool[1][1] + tool[3]
-        self.assertLess(low, STACK.pcb_bottom - STACK.copper_thickness)
-        self.assertGreater(high, STACK.pcb_top + STACK.copper_thickness)
-
-    def test_a_filled_via_keeps_its_copper(self):
-        """`hole` = 0 is a filled or tented via -- solid copper over it,
-        matching the solid post `_via_barrel` leaves."""
-        modeler = self._open(vias=[cg.Via(1.0, 2.0, 0.3, 0.0)])
-        self.assertEqual(modeler.cylinders, [])
-        self.assertEqual(modeler.subtractions, [])
-
-    def test_no_copper_on_a_layer_is_a_no_op(self):
-        modeler = self._open(coppers=[])
-        self.assertEqual(modeler.cylinders, [])
-        self.assertEqual(modeler.subtractions, [])
-
-    def test_a_failure_is_loud(self):
-        class Failing(FakeModeler):
-            def subtract(self, *a, **k):
-                raise RuntimeError("nope")
-
-        messages = []
-        cg.open_via_holes(Failing(), self.COPPERS, self.VIAS, FRAME,
-                          top_face=STACK.pcb_top, bottom_face=STACK.pcb_bottom,
-                          copper_thickness=STACK.copper_thickness,
-                          log=messages.append)
-        self.assertTrue(any("WARNING" in m for m in messages))
-        self.assertTrue(any("capped" in m for m in messages))
+    def test_the_real_board_takes_a_few_hundred_calls_not_thousands(self):
+        if not os.path.isfile(REAL_COPPER):
+            self.skipTest("copper.txt not present -- run the Altium generator first")
+        board = cg.read_file(REAL_COPPER)["package"]
+        modeler, _, _ = self._build(board)
+        calls = (modeler.created + len(modeler.duplicates)
+                 + len(modeler.unites) + len(modeler.subtractions))
+        self.assertLess(calls, 300, f"{len(board)} records took {calls} modeller calls")
+        posts = [c for c in modeler.cylinders
+                 if any(abs(c[2] - v.diameter / 2.0) < 1e-9 for v in board.vias[:1])]
+        self.assertEqual(len(posts), len(board.vias))
 
 
 class TestExportedLayoutIsSane(unittest.TestCase):
@@ -1416,12 +1578,68 @@ class TestBondWireFeet(unittest.TestCase):
             for low in _tube_underside(points, self.DIAMETER / 2.0):
                 self.assertGreater(low, floor)
 
+    def _pair(self, kinds=(bond_mod.SIGNAL, bond_mod.SIGNAL)):
+        """Two wires side by side whose feet touch along a line -- the two
+        signal wires at each end of the line, on pads that tile the trace."""
+        radius, _height = cg.foot_of(self.DIAMETER)
+        return [bond_mod.Bond(kinds[0], -4.0, -radius, -3.0, -radius),
+                bond_mod.Bond(kinds[1], -4.0, radius, -3.0, radius)]
+
+    def test_feet_that_touch_are_bridged(self):
+        """Feet that meet along a single line are a contact the modeller
+        cannot carve around: the vacuum came out with no volume at all.
+        Two ball bonds that touch are one blob on the bench, so the waist
+        between them is filled -- on the board and on the die."""
+        radius, height = cg.foot_of(self.DIAMETER)
+        modeler, names = self.build(self._pair())
+        self.assertEqual(names, ["wirebond"])
+        self.assertEqual(len(modeler.boxes), 2, "one bridge on the board, one on the die")
+        pads = {round(STACK.pcb_copper_top, 9), round(STACK.chip_copper_top, 9)}
+        for origin, sizes in modeler.boxes:
+            self.assertIn(round(origin[1], 9), pads, "a bridge stands on the pad, like a foot")
+            self.assertAlmostEqual(sizes[1], height)
+            self.assertAlmostEqual(sizes[2], 2 * radius, msg="it reaches centre to centre")
+            self.assertLess(sizes[0], 2 * radius,
+                            "narrower than a foot, or its sides only graze the feet")
+        self.assertEqual(len(modeler.carried("poly1")), 2 + 4 + 2,
+                         "wires, feet and bridges are all the one body")
+
+    def test_a_unite_aedt_refuses_is_reported(self):
+        """PyAEDT does not raise when AEDT will not join bodies -- it
+        returns False -- and the pieces then stay behind with no
+        material. That has to reach the run log."""
+        class Refusing(FakeModeler):
+            def unite(self, parts):
+                super().unite(parts)
+                return False
+
+        messages = []
+        cg.build_bond_wires(Refusing(), self.bonds(), FRAME,
+                            pcb_top=STACK.pcb_copper_top, chip_top=STACK.chip_copper_top,
+                            height=self.HEIGHT, diameter=self.DIAMETER, log=messages.append)
+        self.assertTrue(any("WARNING" in m and "unite" in m for m in messages))
+
+    def test_feet_apart_are_left_alone(self):
+        modeler, _ = self.build(self.bonds())
+        self.assertEqual(modeler.boxes, [])
+
+    def test_a_signal_foot_touching_a_ground_foot_is_a_short_not_a_bridge(self):
+        messages = []
+        modeler = FakeModeler()
+        cg.build_bond_wires(modeler, self._pair((bond_mod.SIGNAL, bond_mod.GROUND)), FRAME,
+                            pcb_top=STACK.pcb_copper_top, chip_top=STACK.chip_copper_top,
+                            height=self.HEIGHT, diameter=self.DIAMETER, log=messages.append)
+        self.assertEqual(modeler.boxes, [])
+        self.assertTrue(any("WARNING" in m and "short" in m for m in messages))
+
     def test_wires_and_feet_unite_into_the_one_named_body(self):
         """The material rules match on the name, and only the first body
-        in a unite keeps its own -- so the first thing built has to be a
-        wire, not a foot."""
+        in a unite keeps its own -- so every unite has to lead with a
+        wire, not a foot, and the one body left at the end has to carry
+        all of them: three wires on six feet."""
         modeler, names = self.build(self.bonds())
         self.assertEqual(names, ["wirebond"])
-        self.assertEqual(len(modeler.unites), 1)
-        self.assertEqual(len(modeler.unites[0]), 9)
+        self.assertTrue(all(parts[0].startswith("poly") for parts in modeler.unites),
+                        f"a unite led with something other than a wire: {modeler.unites}")
         self.assertEqual(modeler["poly1"].name, "wirebond")
+        self.assertEqual(len(modeler.carried("poly1")), 9)

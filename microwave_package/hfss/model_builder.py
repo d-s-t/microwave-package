@@ -670,47 +670,19 @@ def build_layout(hfss, combo_dir: str, dimensions_txt_content: str,
             targets=[name for names in made.values() for name in names],
             log=log,
         )
-        # A via barrel and the board cannot share a volume: drill them.
-        if "pcb_vias" in made:
-            cg.drill_vias(
-                hfss.modeler, "pcb_substrate", package.vias, frame,
-                top_face=stack.pcb_top, bottom_face=stack.pcb_bottom, log=log,
-            )
-            # The drill stops at the substrate faces; the plated hole does
-            # not. Carry it through the lands and planes on both layers,
-            # so the through-hole is open end to end and not capped by
-            # copper.
-            cg.open_via_holes(
-                hfss.modeler,
-                made.get("pcb_copper_top", []) + made.get("pcb_copper_bottom", []),
-                package.vias, frame,
-                top_face=stack.pcb_top, bottom_face=stack.pcb_bottom,
-                copper_thickness=stack.copper_thickness, log=log,
-            )
+        # The vias are solid posts standing in the undrilled board -- the
+        # material override lets the metal win where they overlap. See
+        # `copper_geometry._via_post` for why they are not drilled.
 
     chip = boards.get("chip")
     if chip is not None and len(chip):
-        made_chip = cg.build(
+        # Through-vias in the die, if it ever carries any, are posts in
+        # the die in the same way.
+        cg.build(
             hfss.modeler, chip, frame,
             top_face=stack.chip_top, bottom_face=stack.chip_bottom,
             thickness=stack.chip_metal_thickness, prefix="chip", log=log,
         )
-        # Same reasoning as the package: if the die carries through-vias,
-        # the die substrate has to lose their footprint too, and the die
-        # metal on both faces has to lose the drilled hole.
-        if "chip_vias" in made_chip:
-            cg.drill_vias(
-                hfss.modeler, "chip_substrate", chip.vias, frame,
-                top_face=stack.chip_top, bottom_face=stack.chip_bottom, log=log,
-            )
-            cg.open_via_holes(
-                hfss.modeler,
-                made_chip.get("chip_copper_top", [])
-                + made_chip.get("chip_copper_bottom", []),
-                chip.vias, frame,
-                top_face=stack.chip_top, bottom_face=stack.chip_bottom,
-                copper_thickness=stack.chip_metal_thickness, log=log,
-            )
 
     # The connectors are real vendor geometry rather than a stand-in, so
     # the launch is represented rather than left as bare copper. They
@@ -880,17 +852,28 @@ def assign_materials_and_boundaries(hfss, mat_settings: dict, log=logger.info) -
     return objects_dict
 
 
+# Bodies the vacuum never reaches. The via posts stand wholly inside the
+# board (see copper_geometry._via_post), which is carved out already, so
+# carving them as well only has AEDT cut thousands of holes into the
+# vacuum and fill every one straight back in -- on the densest boards,
+# minutes of a single call.
+INSIDE_THE_BOARD = ("pcb_via", "chip_via")
+
+
 def carve_vacuum(hfss, objects_dict, log=logger.info) -> None:
     """Cut everything else in the model out of the vacuum body.
 
     `build_vacuum` makes vacuum a plain block spanning box's own measured
     envelope -- it does not know box's floor, pedestal or any other
     feature's shape, and does not try to. So unlike the old SolidWorks-
-    hand-fitted vacuum this replaces, NOTHING is assumed pre-excluded:
-    box, lid_inside, the substrates, copper, vias, bonds and connectors
-    are all subtracted from it here. Two solids claiming one region is
-    not a small inaccuracy: HFSS either errors or silently resolves it by
+    hand-fitted vacuum this replaces, nothing is assumed pre-excluded:
+    box, lid_inside, the substrates, copper, bonds and connectors are all
+    subtracted from it here. Two solids claiming one region is not a
+    small inaccuracy: HFSS either errors or silently resolves it by
     material priority, which is worse because the model still solves.
+    The one exception is INSIDE_THE_BOARD: bodies that sit wholly inside
+    another body that is carved, so that there is no vacuum left where
+    they are.
 
     The tool list is read straight from `hfss.modeler.solid_objects`,
     not from `objects_dict`. Several material rules legitimately match
@@ -909,6 +892,7 @@ def carve_vacuum(hfss, objects_dict, log=logger.info) -> None:
         obj.name
         for obj in hfss.modeler.solid_objects
         if obj.name.lower() != "vacuum"
+        and not any(inside in obj.name.lower() for inside in INSIDE_THE_BOARD)
     ]
     if not tools:
         return
@@ -1090,8 +1074,28 @@ def build_model(
         # folder where nothing else opens them, so a lock here is a leftover.
         remove_lock=True,
     )
+    odesktop = hfss.odesktop
+    autosave_was_on = _pause_autosave(odesktop, log)
 
     try:
+        # The via posts stand in the undrilled board, so this model relies
+        # on metal winning where it overlaps a dielectric (see
+        # copper_geometry._via_post). Set here, not left to the default --
+        # which is off.
+        #
+        # It is a setting of the whole design, not of the posts: with it
+        # on, HFSS no longer refuses ANY body of metal overlapping a
+        # dielectric, so a slip that sinks copper or a connector into a
+        # substrate now solves as metal instead of failing validation.
+        # That is the price of not drilling the board for every via, which
+        # on a dense board is minutes of one AEDT call. Two dielectrics
+        # overlapping are still refused.
+        try:
+            hfss.change_material_override(True)
+        except Exception as exc:
+            log(f"WARNING: could not turn material override on ({exc}). The via posts "
+                "overlap the board, and HFSS may refuse the model.")
+
         if hfss.modeler.object_names:
             hfss.modeler.delete(hfss.modeler.object_names)
         for bound in hfss.boundaries:
@@ -1160,6 +1164,36 @@ def build_model(
 
     finally:
         close_project_safely(hfss, log=log)
+        _resume_autosave(odesktop, autosave_was_on)
+
+
+def _pause_autosave(odesktop, log: Callable[[str], None]) -> Optional[bool]:
+    """Switch AEDT's autosave off for a build; returns whether it was on.
+
+    AEDT rewrites the whole project every few edits, and a board with
+    thousands of vias makes a project of tens of megabytes -- on a
+    1960-via board that was a fifth of the build. The project is saved
+    explicitly once it is done, so nothing is lost by building without.
+    None means the state could not be read, and then it is left alone.
+    """
+    try:
+        was_on = bool(odesktop.GetAutoSaveEnabled())
+        if was_on:
+            odesktop.EnableAutoSave(False)
+        return was_on
+    except Exception as exc:
+        log(f"Could not pause AEDT's autosave ({exc}); building with it as it is.")
+        return None
+
+
+def _resume_autosave(odesktop, was_on: Optional[bool]) -> None:
+    """Put autosave back the way `_pause_autosave` found it. It is an
+    AEDT-wide option, not the project's, so it must not stay off."""
+    if was_on:
+        try:
+            odesktop.EnableAutoSave(True)
+        except Exception:
+            pass
 
 
 def build_and_queue(
