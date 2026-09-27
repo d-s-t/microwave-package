@@ -111,8 +111,8 @@ class TestQueueModelSkips(unittest.TestCase):
     def test_an_already_queued_combination_is_not_queued_twice(self):
         run = FakeRun(task_id="task_1")
         messages = []
-        model_builder.queue_model("c1", "x.STEP", run, object_names={}, queue=None,
-                                  log=messages.append)
+        model_builder.queue_model("c1", {"box": "x.STEP", "lid_inside": "y.STEP"}, run,
+                                  object_names={}, queue=None, log=messages.append)
         self.assertTrue(any("already queued" in m for m in messages))
 
 

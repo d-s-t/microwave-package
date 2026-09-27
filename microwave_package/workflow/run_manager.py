@@ -280,7 +280,7 @@ class Run:
                 combo_id_for(combo): {
                     "params": combo,
                     "step_status": None,
-                    "step_path": None,
+                    "step_paths": None,
                     "step_error": None,
                     # Why this combination will not be built, or None when
                     # it is buildable (see constraints.py).

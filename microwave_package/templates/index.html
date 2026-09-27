@@ -357,7 +357,7 @@
     {{ material_field('mat_pcb', 'PCB material', material_options.mat_pcb) }}
     {{ material_field('mat_chip', 'Chip material', material_options.mat_chip) }}
     {{ material_field('mat_vacuum', 'Vacuum material', material_options.mat_vacuum) }}
-    <label><input type="checkbox" name="perfect_e_box" {% if materials.perfect_e_box %}checked{% endif %}> Perfect E on box/lid/chip_lid</label><br>
+    <label><input type="checkbox" name="perfect_e_box" {% if materials.perfect_e_box %}checked{% endif %}> Perfect E on box/lid_inside</label><br>
     {{ material_field('mat_conductor_pcb', 'PCB conductor', material_options.mat_conductor_pcb) }}
     {{ material_field('mat_conductor_chip', 'Chip conductor', material_options.mat_conductor_chip) }}
     <label><input type="checkbox" name="perfect_e_conductors" {% if materials.perfect_e_conductors %}checked{% endif %}> Perfect E on the conductors</label>

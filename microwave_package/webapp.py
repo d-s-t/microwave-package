@@ -902,7 +902,8 @@ def _results_frame(run):
 def _plot_filters(args) -> Dict[str, list]:
     """The results filter, read out of the plot URL.
 
-    One `f_<column>` per swept parameter, holding the values still
+    One `f_<column>` per swept parameter (and `f_mode` for a run with
+    several modes), holding the values still
     ticked (`f_distortion_radius=0.25,0.5`). A parameter with no entry is
     not filtered, which is what leaving every box ticked means.
     """
@@ -1076,9 +1077,17 @@ def combo_step_file(run_id, combo_id):
     if combo_id not in run.state.get("combos", {}):
         return Response("unknown combination", status=404)
 
-    step_path = run.state["combos"][combo_id].get("step_path")
+    # box is the representative preview -- lid_inside is the rest of the
+    # enclosure, but this endpoint (and the in-browser viewer behind it)
+    # only ever shows one file at a time. A run exported before the parts
+    # were split has a single assembly STEP instead, found by the glob.
+    step_paths = run.state["combos"][combo_id].get("step_paths") or {}
+    step_path = step_paths.get("box")
     if not step_path or not os.path.exists(step_path):
-        matches = sorted(glob.glob(os.path.join(run.combo_dir(combo_id), "*.STEP")))
+        combo_dir = run.combo_dir(combo_id)
+        matches = sorted(glob.glob(os.path.join(combo_dir, "*_box.STEP"))) or sorted(
+            glob.glob(os.path.join(combo_dir, "*.STEP"))
+        )
         step_path = matches[0] if matches else None
     if not step_path:
         return Response("no STEP file for this combination", status=404)

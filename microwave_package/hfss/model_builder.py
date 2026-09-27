@@ -165,7 +165,7 @@ CONNECTOR_CONDUCTOR_MATERIAL = "brass"
 MATERIAL_RULES = [
     # (substring, key in objects_dict, material setting, perfect-E setting)
     ("vacuum",          "vacuum",          "mat_vacuum",          None),
-    ("chip_lid",        "chip_lid",        "mat_box",             "perfect_e_box"),
+    ("lid_inside",      "lid_inside",      "mat_box",             "perfect_e_box"),
     ("chip_conductor",  "chip_conductor",  "mat_conductor_chip",  "perfect_e_conductors"),
     ("chip_copper",     "chip_copper",     "mat_conductor_chip",  "perfect_e_conductors"),
     ("chip_via",        "chip_vias",       "mat_conductor_chip",  "perfect_e_conductors"),
@@ -189,11 +189,12 @@ MATERIAL_RULES = [
 ]
 
 
-# The SolidWorks assembly still supplies the box, the lid and the
-# vacuum. It also still contains a PCB and a chip, but those are now
-# built here instead -- with the die pocketed into the board and the
-# copper in the same frame -- so the imported copies are removed rather
-# than left to overlap the ones we build.
+# box and lid_inside each come from their own standalone STEP now (see
+# step_generation.py) and carry no PCB or chip at all. This guards
+# against nothing in that pair, but stays in case either STEP is ever
+# built from a source that still carries superseded copies -- the die is
+# pocketed into the board and the copper built in the same frame here
+# instead, so an imported copy would overlap the one we build.
 SUPERSEDED_BY_LAYOUT = ("pcb", "chip")
 
 
@@ -207,8 +208,9 @@ def _drop_superseded_solids(hfss, log) -> None:
     doomed = []
     for obj in hfss.modeler.solid_objects:
         name = obj.name.lower()
-        # chip_lid is part of the enclosure, not the die, and the STEP
-        # names it with the same prefix.
+        # Anything lid-like is enclosure, not die. lid_inside shares no
+        # "pcb"/"chip" wording today; this is cheap insurance against a
+        # future part that does.
         if "lid" in name:
             continue
         if name in SUPERSEDED_BY_LAYOUT:
@@ -395,6 +397,89 @@ def place_connectors(hfss, frame, board_top: float, half_length: float,
     return placed
 
 
+def place_lid_inside(hfss, frame, stack, new_objects: List[str], log=logger.info) -> Optional[str]:
+    """Move the imported lid_inside body onto the board it sandwiches.
+
+    lid_inside comes from its own standalone STEP (base_parts/lid_inside.SLDPRT,
+    exported directly from the part -- see step_generation.py), not from
+    an assembly, so there is no SolidWorks mate that put it in place. This
+    is the AEDT-side equivalent, in the same style as `model_alignment`
+    below for the SMP connector: measure the imported body's real bounding
+    box and move it onto the reference points the design actually wants --
+    centred on the same frame as the board and the box's cavity, resting
+    on the board's actual top surface (the copper, not the bare substrate
+    under it) rather than wherever lid_inside's own part origin happened
+    to land it.
+
+    No rotation: unlike the SMP connector's vendor model, lid_inside is
+    authored in-house alongside box.SLDPRT, dimensioned the same way
+    (its Sketch1 is pcb_length/2 x pcb_side/2, exactly like box's own
+    outer sketch), so it already sits right-side up in the same axes as
+    the rest of the assembly.
+
+    Its top face is free to sit above box's own rim -- confirmed as the
+    intended design, not a fit problem this code should second-guess.
+    Whatever closes over it from there is outside this model.
+    """
+    if not new_objects:
+        log("WARNING: lid_inside did not import -- no body to place.")
+        return None
+
+    if len(new_objects) > 1:
+        hfss.modeler.unite(new_objects)
+    hfss.modeler[new_objects[0]].name = "lid_inside"
+
+    x_min, y_min, z_min, x_max, y_max, z_max = hfss.modeler["lid_inside"].bounding_box
+    dx = frame.x_offset - (x_min + x_max) / 2.0
+    dy = stack.pcb_copper_top - y_min
+    dz = frame.z_offset - (z_min + z_max) / 2.0
+    hfss.modeler.move(["lid_inside"], [dx, dy, dz])
+
+    log(f"Placed lid_inside: bounding box now {hfss.modeler['lid_inside'].bounding_box}")
+    return "lid_inside"
+
+
+def build_vacuum(hfss, frame, stack, pcb_half_length: float, pcb_half_side: float,
+                 log=logger.info) -> Optional[str]:
+    """Build the interior air fill directly, instead of importing one.
+
+    base_parts/vacuum.SLDPRT used to supply this, mated to box in the old
+    assembly -- but it turns out not to be linked to default.txt at all
+    (SolidWorks' own Equation Manager reports zero equations on it), so
+    its shape was likely held by in-context references to box/lid/
+    chip_lid's own edges rather than by parameters. None of that survives
+    lid_inside replacing lid and chip_lid outside the assembly, so rather
+    than carry a part whose size cannot be trusted to track a sweep,
+    vacuum is built here the same way the PCB and chip substrates already
+    are: from the frame the board uses and one measurement of box's own
+    imported envelope, so it is never stale.
+
+    It is deliberately a plain block, the full height of box's own
+    bounding box -- not trimmed to the cavity floor, the pedestal, or
+    lid_inside's pocket. `carve_vacuum` then subtracts every other solid
+    in the model from it unconditionally, box included, so nothing here
+    has to know the shape of what it is sized around.
+    """
+    try:
+        box_box = hfss.modeler["box"].bounding_box
+    except Exception as exc:
+        log(f"WARNING: could not measure 'box' to size the vacuum fill ({exc}); no vacuum body built.")
+        return None
+    box_bottom, box_top = box_box[1], box_box[4]
+
+    origin, sizes = frame.box(
+        -pcb_half_length, -pcb_half_side, pcb_half_length, pcb_half_side,
+        box_bottom, box_top - box_bottom,
+    )
+    vacuum = hfss.modeler.create_box(origin=origin, sizes=sizes)
+    vacuum.name = "vacuum"
+    log(
+        f"Built vacuum fill {2 * pcb_half_length:g} x {2 * pcb_half_side:g} x "
+        f"{box_top - box_bottom:.3f} mm from box's own measured envelope."
+    )
+    return "vacuum"
+
+
 def cavity_frame(hfss, fallback_x: float, fallback_z: float, log=logger.info):
     """Where the board sits, measured from the imported cavity.
 
@@ -402,9 +487,16 @@ def cavity_frame(hfss, fallback_x: float, fallback_z: float, log=logger.info):
     is the datum -- and measuring it beats computing it. The equations
     give box_length as pcb_length + 2*wall_width, but the assembly also
     carries mounting wings that extend it, so anything derived from
-    those two numbers alone lands half a wing out. Reading the imported
-    vacuum's bounding box gets it right without this code having to know
-    what else the mechanical design grew.
+    those two numbers alone lands half a wing out. Measuring the imported
+    body gets it right without this code having to know what else the
+    mechanical design grew.
+
+    That body is box now: vacuum is built later, from this very frame
+    (see build_vacuum), so there is none to measure yet. box's bounding
+    box includes its mounting wings, so its centre is the cavity's only
+    while the wings are symmetric -- which box.SLDPRT's are (it is drawn
+    about its own origin). "vacuum" is still looked for first, for a
+    STEP that brings its own.
 
     Falls back to the computed values, loudly, if the cavity is not
     there to measure.
@@ -453,9 +545,15 @@ class LayoutContext:
 
 
 def build_layout(hfss, combo_dir: str, dimensions_txt_content: str,
-                 include_wirebonds: bool = True,
+                 lid_inside_names: List[str], include_wirebonds: bool = True,
                  log=logger.info) -> Optional["LayoutContext"]:
     """Rebuild the boards from the layout: substrates, copper and bonds.
+
+    Also builds the vacuum fill and places lid_inside -- see `build_vacuum`
+    and `place_lid_inside`. Both need only the frame and the stack-up, not
+    the Altium layout, so they happen below whether or not this
+    combination has one; nothing else in the model can substitute for
+    them if this returns early.
 
     `include_wirebonds=False` skips only the bond wires themselves --
     everything else in this function runs exactly as it would otherwise,
@@ -465,19 +563,13 @@ def build_layout(hfss, combo_dir: str, dimensions_txt_content: str,
     combination comparable: the two models differ by the wire and nothing
     else.
 
-    Returns where it put them, or None when there is no copper file --
-    a run built from a SolidWorks-only assembly is still perfectly valid,
-    and was the only kind of run until the Altium stage existed.
+    Returns where the layout put things, or None when there is no copper
+    file -- a run built with Altium off is still perfectly valid, and was
+    the only kind of run until the Altium stage existed.
     """
     from ..design import cavity as cavity_plan, copper_geometry as cg, equations as eq
 
-    copper_path = os.path.join(combo_dir, "copper.txt")
-    if not os.path.isfile(copper_path):
-        log("No copper.txt for this combination -- building the model without a layout.")
-        return None
-
     v = eq.get_numeric_parameters(dimensions_txt_content)
-    boards = cg.read_file(copper_path)
 
     pcb_length = v.get("pcb_length", 26.0)
     pcb_side = v.get("pcb_side", 10.0)
@@ -498,9 +590,11 @@ def build_layout(hfss, combo_dir: str, dimensions_txt_content: str,
         log=log,
     )
 
-    # Heights follow box_height = wall_width + pedestal_depth +
-    # pcb_width: the board floats on the floor and the pedestal, and the
-    # die is let into the board so their faces finish flush.
+    # Heights follow box_height = wall_width*1.5 + pedestal_depth +
+    # pcb_width + 2*copper_thickness: the board floats on the floor and
+    # the pedestal, the die is let into the board so their faces finish
+    # flush, and the extra half wall_width above the copper is
+    # lid_inside's own headroom (see place_lid_inside).
     pcb_bottom = wall + pedestal
     pcb_top = pcb_bottom + pcb_width
     stack = cg.Stack(
@@ -513,6 +607,20 @@ def build_layout(hfss, combo_dir: str, dimensions_txt_content: str,
     )
 
     _drop_superseded_solids(hfss, log)
+    build_vacuum(
+        hfss, frame, stack,
+        pcb_half_length=pcb_length / 2.0, pcb_half_side=pcb_side / 2.0, log=log,
+    )
+    place_lid_inside(hfss, frame, stack, lid_inside_names, log=log)
+
+    copper_path = os.path.join(combo_dir, "copper.txt")
+    if not os.path.isfile(copper_path):
+        log(
+            "No copper.txt for this combination -- box, lid_inside and vacuum are "
+            "built, but there is no board to build a layout from."
+        )
+        return None
+    boards = cg.read_file(copper_path)
 
     # The opening the die sits in. Asked for rather than worked out here,
     # because the Altium generator asked the same function the same
@@ -757,15 +865,16 @@ def assign_materials_and_boundaries(hfss, mat_settings: dict, log=logger.info) -
 
 
 def carve_vacuum(hfss, objects_dict, log=logger.info) -> None:
-    """Cut everything this pipeline adds out of the vacuum body.
+    """Cut everything else in the model out of the vacuum body.
 
-    The vacuum arrives from the STEP as the cavity fill, sized in
-    SolidWorks around box/lid/chip_lid only -- it was never cut for the
-    substrates, copper, vias, bonds or connectors this pipeline builds
-    on top of that STEP. All of it now occupies volume vacuum also
-    claims, and two solids claiming one region is not a small
-    inaccuracy: HFSS either errors or silently resolves it by material
-    priority, which is worse because the model still solves.
+    `build_vacuum` makes vacuum a plain block spanning box's own measured
+    envelope -- it does not know box's floor, pedestal or any other
+    feature's shape, and does not try to. So unlike the old SolidWorks-
+    hand-fitted vacuum this replaces, NOTHING is assumed pre-excluded:
+    box, lid_inside, the substrates, copper, vias, bonds and connectors
+    are all subtracted from it here. Two solids claiming one region is
+    not a small inaccuracy: HFSS either errors or silently resolves it by
+    material priority, which is worse because the model still solves.
 
     The tool list is read straight from `hfss.modeler.solid_objects`,
     not from `objects_dict`. Several material rules legitimately match
@@ -780,14 +889,10 @@ def carve_vacuum(hfss, objects_dict, log=logger.info) -> None:
     if vacuum is None:
         return
 
-    # Bodies that come straight from the STEP, where the SolidWorks-built
-    # vacuum already accounts for them. Everything else in the model is
-    # new content this pipeline added.
-    ENCLOSURE = {"vacuum", "box", "lid", "chip_lid"}
     tools = [
         obj.name
         for obj in hfss.modeler.solid_objects
-        if obj.name.lower() not in ENCLOSURE
+        if obj.name.lower() != "vacuum"
     ]
     if not tools:
         return
@@ -923,7 +1028,7 @@ def reusable_model(run, combo_id: str, log=logger.info) -> Optional[Dict[str, st
 
 def build_model(
     combo_id: str,
-    step_path: str,
+    step_paths: Dict[str, str],
     dimensions_txt_content: str,
     run,
     analysis_settings: dict,
@@ -932,8 +1037,8 @@ def build_model(
     graphical: bool = False,
     log: Callable[[str], None] = logger.info,
 ) -> Optional[Dict[str, str]]:
-    """Build an HFSS model from step_path, assign materials and
-    boundaries, and create its single Eigenmode setup.
+    """Build an HFSS model from step_paths ({"box": ..., "lid_inside": ...}),
+    assign materials and boundaries, and create its single Eigenmode setup.
 
     Takes no queue and touches no network: this is local work, and it
     has to be possible with the share down. Returns the body names the
@@ -979,16 +1084,22 @@ def build_model(
             except Exception:
                 pass
 
-        log(f"Importing {step_path}...")
-        hfss.modeler.import_3d_cad(step_path)
+        log(f"Importing {step_paths['box']}...")
+        hfss.modeler.import_3d_cad(step_paths["box"])
+
+        log(f"Importing {step_paths['lid_inside']}...")
+        before_lid = set(hfss.modeler.object_names)
+        hfss.modeler.import_3d_cad(step_paths["lid_inside"])
+        lid_inside_names = [n for n in hfss.modeler.object_names if n not in before_lid]
 
         # The boards are not in the STEP in any usable form -- Altium's
         # export drops copper, and the substrates are rebuilt here so the
         # die can be pocketed into the board and everything shares one
         # frame. Must happen BEFORE materials are assigned, or the new
-        # bodies exist without any.
+        # bodies exist without any. lid_inside is placed and the vacuum
+        # fill built in here too -- see build_layout's docstring.
         layout = build_layout(
-            hfss, combo_dir, dimensions_txt_content,
+            hfss, combo_dir, dimensions_txt_content, lid_inside_names,
             include_wirebonds=analysis_settings["materials"].get("include_wirebonds", True),
             log=log,
         )
@@ -1037,7 +1148,7 @@ def build_model(
 
 def build_and_queue(
     combo_id: str,
-    step_path: str,
+    step_paths: Dict[str, str],
     dimensions_txt_content: str,
     run,
     queue: "queue_common.QueuePaths",
@@ -1054,12 +1165,12 @@ def build_and_queue(
     when both are available this is the whole job in one call.
     """
     object_names = build_model(
-        combo_id, step_path, dimensions_txt_content, run, analysis_settings,
+        combo_id, step_paths, dimensions_txt_content, run, analysis_settings,
         aedt_version, student_version=student_version, graphical=graphical, log=log,
     )
     if object_names is None:
         return
-    queue_model(combo_id, step_path, run, queue, object_names, log=log)
+    queue_model(combo_id, step_paths, run, queue, object_names, log=log)
 
 
 def _remember_built_model(run, combo_id, project_path, object_names,
@@ -1090,7 +1201,7 @@ def _remember_built_model(run, combo_id, project_path, object_names,
 
 def queue_model(
     combo_id: str,
-    step_path: str,
+    step_paths: Dict[str, str],
     run,
     queue: "queue_common.QueuePaths",
     object_names: Dict[str, str],
@@ -1143,7 +1254,7 @@ def queue_model(
         metadata={
             "combo_id": combo_id,
             "params": run.state["combos"][combo_id]["params"],
-            "source_step_file": os.path.abspath(step_path),
+            "source_step_files": {k: os.path.abspath(p) for k, p in step_paths.items()},
         },
     )
     task_path = queue_common.write_task_atomically(queue, task)
