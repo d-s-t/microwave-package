@@ -5,10 +5,14 @@ with no internet needed) plus a CSV, into the run's plots/ folder --
 also what the web UI embeds directly for live viewing.
 
 Either axis can be any swept parameter or any result quantity; the run
-page picks them and re-renders through `figure_html`.
+page picks them and re-renders through `figure_html`. The comparison
+page draws several runs' results through the same function, with each
+row tagged by the run it came from (see `RUN_COLUMN` and
+`workflow/compare.py`).
 """
 from __future__ import annotations
 
+import html
 import logging
 import os
 from typing import Dict, List, Optional
@@ -39,6 +43,10 @@ def result_fields() -> Dict[str, str]:
 # is kept because runs plotted before driven runs existed look for a file
 # with exactly this name.
 PLOT_FILENAME = "modes_scatter_plot.html"
+
+# The combined results table beside it, one row per mode (or frequency
+# point) per combination.
+RESULTS_FILENAME = "all_results.csv"
 
 
 def has_sparameters(df: pd.DataFrame) -> bool:
@@ -91,22 +99,82 @@ def solution_type_of(df: pd.DataFrame) -> Optional[str]:
 MODE_COLUMN = "mode"
 MODE_LABEL = "Mode"
 
+# A table holding several runs' results (the comparison page's) says on
+# every row which run it came from: the id, which is what the filter
+# matches on because a run's name can hold any character at all, and the
+# name the legend and the tooltips show.
+RUN_ID_COLUMN = "run_id"
+RUN_COLUMN = "run"
+RUN_LABEL = "Run"
 
-def _has_several_modes(df: pd.DataFrame) -> bool:
+# Each compared run's colour, by its position in the comparison -- the
+# validated categorical palette, both modes stepped for their own page
+# background (see _theme.html's --bg). A colour belongs to the run, not
+# to where it happens to fall in the filtered data, so hiding one run
+# never repaints the others. Eight is the cap: a ninth colour would have
+# to be generated, and one of these reused is worse than none.
+RUN_COLOURS = {
+    "light": ["#2a78d6", "#eb6834", "#1baf7a", "#eda100",
+              "#e87ba4", "#008300", "#4a3aa7", "#e34948"],
+    "dark": ["#3987e5", "#d95926", "#199e70", "#c98500",
+             "#d55181", "#008300", "#9085e9", "#e66767"],
+}
+# A marker shape per run as well, so a run is never told apart by colour
+# alone -- past three colours at once a scatter cannot promise every pair
+# reads apart for every reader, and two runs that agree put their points
+# on top of each other.
+RUN_SYMBOLS = ["circle", "diamond", "square", "triangle-up",
+               "x", "triangle-down", "pentagon", "star"]
+# The page background under the transparent figure, for the ring that
+# keeps overlapping markers apart.
+_SURFACE = {"light": "#ffffff", "dark": "#16181c"}
+
+
+def has_several_modes(df: pd.DataFrame) -> bool:
     return MODE_COLUMN in df.columns and df[MODE_COLUMN].dropna().nunique() > 1
+
+
+def _has_several_runs(df: pd.DataFrame) -> bool:
+    return RUN_ID_COLUMN in df.columns and df[RUN_ID_COLUMN].dropna().nunique() > 1
+
+
+def run_colours(names: List[str], dark: bool = False) -> Dict[str, str]:
+    """Run name -> its colour, in comparison order. See RUN_COLOURS."""
+    palette = RUN_COLOURS["dark" if dark else "light"]
+    return {name: palette[index] for index, name in enumerate(names[:len(palette)])}
+
+
+_RUN_NAME_SEPARATOR = " · "
+
+
+def run_name(letter: str, title: str) -> str:
+    """What a compared run is called in RUN_COLUMN: its letter in the
+    comparison, then its own name -- unique even when two runs share a
+    name, and short to refer to by the letter alone."""
+    return f"{letter}{_RUN_NAME_SEPARATOR}{title}"
+
+
+def _run_letter(name: str) -> str:
+    return name.split(_RUN_NAME_SEPARATOR, 1)[0]
 
 
 def axis_options(df: pd.DataFrame, sweep_param_names: List[str]) -> List[Dict[str, str]]:
     """Everything either axis can be set to, for this run's data:
     its swept parameters first, then the mode number when a run solved
-    several, then whichever results exist."""
+    several, the run itself in a comparison's table, then whichever
+    results exist.
+
+    The run is offered even when only one compared run has results: it
+    is still the colour that run is known by on the rest of the page."""
     options = []
     for name in sweep_param_names:
         column = parameter_meta.column_name(name)
         if column in df.columns:
             options.append({"value": column, "label": parameter_meta.axis_label(name), "kind": "parameter"})
-    if _has_several_modes(df):
+    if has_several_modes(df):
         options.append({"value": MODE_COLUMN, "label": MODE_LABEL, "kind": "parameter"})
+    if RUN_COLUMN in df.columns:
+        options.append({"value": RUN_COLUMN, "label": RUN_LABEL, "kind": "parameter"})
     for column, label in result_fields().items():
         if column in df.columns and df[column].notna().any():
             options.append({"value": column, "label": label, "kind": "result"})
@@ -124,10 +192,12 @@ def label_for_column(column: str, sweep_param_names: List[str]) -> str:
         return fields[column]
     if column == MODE_COLUMN:
         return MODE_LABEL
+    if column == RUN_COLUMN:
+        return RUN_LABEL
     return "Combination" if column == "combo_id" else column
 
 
-def _as_key(value) -> str:
+def filter_key(value) -> str:
     """One value rendered the same way on both sides of a filter match.
 
     The filter travels through a URL as text while the table holds
@@ -144,12 +214,24 @@ def filter_options(df: pd.DataFrame, sweep_param_names: List[str]) -> List[Dict]
     """The distinct value of each swept parameter, for the filter panel.
 
     Only swept parameters -- and the mode number, when a run solved
-    several -- get one: they are what a run varies, so they are what
-    there is any point picking apart. Values come back in numeric order
-    with the key the filter matches on alongside the label the form
-    shows.
+    several, and the runs themselves in a table of more than one -- get
+    one: they are what varies, so they are what there is any point
+    picking apart. Values come back in numeric order with the key the
+    filter matches on alongside the label the form shows.
     """
     options = []
+    if _has_several_runs(df):
+        # In the order the table holds them -- the comparison's own order
+        # -- and matched on the id, while the chip shows the name.
+        runs = df.drop_duplicates(RUN_ID_COLUMN)
+        options.append({
+            "column": RUN_ID_COLUMN,
+            "label": RUN_LABEL,
+            "values": [
+                {"key": str(run_id), "label": str(name)}
+                for run_id, name in zip(runs[RUN_ID_COLUMN], runs[RUN_COLUMN])
+            ],
+        })
     for name in sweep_param_names:
         column = parameter_meta.column_name(name)
         if column not in df.columns:
@@ -160,14 +242,14 @@ def filter_options(df: pd.DataFrame, sweep_param_names: List[str]) -> List[Dict]
         options.append({
             "column": column,
             "label": parameter_meta.axis_label(name),
-            "values": [{"key": _as_key(v), "label": _as_key(v)} for v in values],
+            "values": [{"key": filter_key(v), "label": filter_key(v)} for v in values],
         })
-    if _has_several_modes(df):
+    if has_several_modes(df):
         values = sorted(df[MODE_COLUMN].dropna().unique().tolist())
         options.append({
             "column": MODE_COLUMN,
             "label": MODE_LABEL,
-            "values": [{"key": _as_key(v), "label": _as_key(v)} for v in values],
+            "values": [{"key": filter_key(v), "label": filter_key(v)} for v in values],
         })
     return options
 
@@ -179,12 +261,17 @@ def apply_filters(df: pd.DataFrame, filters: Dict[str, List[str]]) -> pd.DataFra
     not mentioned is not filtered at all; a column with nothing ticked
     genuinely means "none of them", and the empty result is what the
     plot then says.
+
+    A row with no value in the column at all is not at any of its
+    values, so no choice among them hides it: unticking one distortion
+    radius hides the points at that radius, not a compared run -- or an
+    undistorted combination -- that never had a distortion.
     """
     for column, allowed in filters.items():
         if column not in df.columns:
             continue
         wanted = set(allowed)
-        df = df[df[column].map(_as_key).isin(wanted)]
+        df = df[df[column].map(filter_key).isin(wanted) | df[column].isna()]
     return df
 
 
@@ -197,6 +284,8 @@ def figure_html(
     solution_type: Optional[str] = None,
     dark: bool = False,
     plotlyjs_src: Optional[str] = None,
+    run_colours: Optional[Dict[str, str]] = None,
+    note: Optional[str] = None,
 ) -> str:
     """Render one scatter of this run's results as HTML.
 
@@ -208,6 +297,12 @@ def figure_html(
     browser caches it once rather than re-fetching several megabytes
     every time an axis changes. Without it the page is self-contained,
     which is what the saved plot file needs.
+
+    A table from several runs (one with a RUN_COLUMN) gives each run its
+    own marker, and `run_colours` -- every compared run's name to its
+    colour, in comparison order, including runs the filter has hidden --
+    keeps each run's colour and marker its own however many are shown.
+    `note` is a line to show above the figure.
     """
     options = [o["value"] for o in axis_options(df, sweep_param_names)]
     if not options:
@@ -239,15 +334,32 @@ def figure_html(
     draw = px.line if as_curve else px.scatter
     extra = {"line_group": "combo_id"} if as_curve and "combo_id" in df.columns else {}
 
+    compared = RUN_COLUMN in df.columns
+    if compared:
+        order = list(run_colours) if run_colours else list(dict.fromkeys(df[RUN_COLUMN]))
+        extra["category_orders"] = {RUN_COLUMN: order}
+        if run_colours and color == RUN_COLUMN:
+            extra["color_discrete_map"] = run_colours
+        if not as_curve:
+            extra["symbol"] = RUN_COLUMN
+            extra["symbol_map"] = {name: RUN_SYMBOLS[i % len(RUN_SYMBOLS)] for i, name in enumerate(order)}
+        elif color != RUN_COLUMN:
+            # Curves coloured by something else still need their run: two
+            # runs share combination ids, and one line_group across both
+            # would draw a single line zig-zagging between them.
+            extra["line_dash"] = RUN_COLUMN
+
     figure = draw(
         df.sort_values(x) if as_curve else df,
         x=x, y=y, color=color,
         hover_data=list(dict.fromkeys(
-            c for c in ("combo_id", MODE_COLUMN, *options) if c in df.columns and c not in (x, y))),
+            c for c in (RUN_COLUMN, "combo_id", MODE_COLUMN, *options)
+            if c in df.columns and c not in (x, y))),
         # always first in each point's customdata, whatever hover_data
         # holds -- the run page reads it back to tell which combination
-        # was clicked (see the click bridge below).
-        custom_data=["combo_id"] if "combo_id" in df.columns else None,
+        # was clicked (see the click bridge below). A comparison's rows
+        # also say which run, second.
+        custom_data=[c for c in ("combo_id", RUN_ID_COLUMN) if c in df.columns] or None,
         labels=labels,
         template="plotly_dark" if dark else "plotly_white",
         **extra,
@@ -259,6 +371,34 @@ def figure_html(
         plot_bgcolor="rgba(0,0,0,0)",
         margin=dict(l=60, r=30, t=30, b=60),
     )
+    if compared:
+        # Run names are whatever their runs were called, often a sentence:
+        # a legend beside the plot would take half its width, so it goes
+        # above, one row per run if need be.
+        figure.update_layout(legend=dict(orientation="h", yanchor="bottom", y=1.02,
+                                         xanchor="left", x=0, title_text=""))
+        # On an axis of their own, the runs go by their letters -- the
+        # legend spells them out, and a sentence per tick would push the
+        # plot itself off the page.
+        shown = set(df[RUN_COLUMN])
+        present = [name for name in order if name in shown]
+        ticks = dict(tickmode="array", tickvals=present, ticktext=[_run_letter(n) for n in present])
+        if x == RUN_COLUMN:
+            figure.update_xaxes(**ticks)
+        if y == RUN_COLUMN:
+            figure.update_yaxes(**ticks)
+        if not as_curve:
+            # Big enough to hit, and ringed in the page colour so two runs
+            # that agree still show both their markers.
+            figure.update_traces(marker=dict(
+                size=9, line=dict(width=1.5, color=_SURFACE["dark" if dark else "light"])))
+        if x == MODE_COLUMN and not as_curve:
+            # Runs that agree to a percent or two stack their markers into
+            # one at every mode, and the run underneath looks absent. The
+            # mode number is a count, not a measurement, so the runs can
+            # stand side by side at each one without misstating anything
+            # -- which is never true of a swept dimension.
+            figure.update_layout(scattermode="group", scattergap=0.55)
 
     if not plotlyjs_src:
         return figure.to_html(include_plotlyjs=True, full_html=True)
@@ -269,20 +409,23 @@ def figure_html(
     # whatever its CSS says, and a dark-themed figure ends up sitting on
     # a white rectangle.
     scheme = "dark" if dark else "light"
+    note_html = f"<p class='note'>{html.escape(note)}</p>" if note else ""
     return (
         "<!doctype html><html><head><meta charset='utf-8'>"
         f"<script src='{plotlyjs_src}'></script>"
         "<style>html,body{margin:0;padding:0;background:transparent;"
         f"color-scheme:{scheme}}}"
+        ".note{font:13px system-ui,sans-serif;color:#888;margin:.5rem .8rem 0}"
         ".js-plotly-plot .plotly .cursor-crosshair{cursor:pointer}</style>"
-        f"</head><body>{fragment}{_CLICK_BRIDGE}</body></html>"
+        f"</head><body>{note_html}{fragment}{_CLICK_BRIDGE}</body></html>"
     )
 
 
 # The figure is embedded in an iframe, so a click on a point has to be
 # handed out to the run page that owns the panel. Same origin either way;
 # postMessage keeps it to one explicit channel rather than reaching
-# across documents. combo_id is customdata[0] -- see `custom_data` above.
+# across documents. combo_id is customdata[0] -- see `custom_data` above
+# -- and on the comparison page the run id is customdata[1].
 _CLICK_BRIDGE = """
 <script>
 (function () {
@@ -293,7 +436,8 @@ _CLICK_BRIDGE = """
     var custom = point && point.customdata;
     var comboId = Array.isArray(custom) ? custom[0] : custom;
     if (!comboId) { return; }
-    parent.postMessage({ source: 'eigenmode-plot', comboId: String(comboId) }, '*');
+    var runId = Array.isArray(custom) && custom.length > 1 ? String(custom[1]) : null;
+    parent.postMessage({ source: 'eigenmode-plot', comboId: String(comboId), runId: runId }, '*');
   });
 })();
 </script>"""
@@ -305,7 +449,7 @@ def plot_results(df: pd.DataFrame, run, sweep_param_names: List[str], log=logger
         return None
 
     os.makedirs(run.plots_dir, exist_ok=True)
-    combined_csv = os.path.join(run.plots_dir, "all_results.csv")
+    combined_csv = os.path.join(run.plots_dir, RESULTS_FILENAME)
     df.to_csv(combined_csv, index=False)
     log(f"Combined {len(df)} rows into {combined_csv}")
 

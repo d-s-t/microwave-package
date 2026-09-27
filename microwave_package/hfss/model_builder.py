@@ -118,6 +118,22 @@ CUSTOM_MATERIAL = "__custom__"
 # offers exactly these two and nothing else.
 WIREBOND_MATERIALS = ["gold", "aluminum"]
 
+# What the web UI calls each material/boundary setting, in the order the
+# new-run form lists them -- for anything besides the form that has to
+# name one, like the comparison page's list of what two runs differ in.
+MATERIAL_LABELS: Dict[str, str] = {
+    "mat_box": "Box material",
+    "mat_pcb": "PCB material",
+    "mat_chip": "Chip material",
+    "mat_vacuum": "Vacuum material",
+    "perfect_e_box": "Perfect E on box/lid_inside",
+    "mat_conductor_pcb": "PCB conductor",
+    "mat_conductor_chip": "Chip conductor",
+    "perfect_e_conductors": "Perfect E on the conductors",
+    "mat_wirebond": "Wire bond material",
+    "include_wirebonds": "Include wire bonds",
+}
+
 
 # The SMP connector's materials. All of it is vendor geometry, not a
 # design variable, so it is hardcoded here rather than exposed as run

@@ -112,6 +112,14 @@
 <tr class="run-row{% if extra %} run-extra{% endif %}" tabindex="0"
     data-run-id="{{ r.run_id }}"
     data-href="{{ url_for('run_status', run_id=r.run_id) }}"{% if extra %} hidden{% endif %}>
+  <td class="pick">
+    <label title="{{ 'Tick to compare this run' if r.has_results else 'No results to compare yet' }}">
+      <input type="checkbox" class="compare-pick" name="runs" value="{{ r.run_id }}" form="compare-form"
+             aria-label="Compare {{ r.name }}"
+             {% if r.has_results and r.run_id in compare_ids %}checked{% endif %}
+             {% if not r.has_results %}disabled{% endif %}>
+    </label>
+  </td>
   <td>
     <a class="run-name" href="{{ url_for('run_status', run_id=r.run_id) }}">{{ r.name }}</a>
     <span class="run-id">{% if r.label and r.date_text %}{{ r.date_text }} · {% endif %}{{ r.started_ago }}</span>
@@ -127,18 +135,27 @@
 </tr>
 {%- endmacro %}
 
+<section id="runs">
 <h2>Runs</h2>
 {% if runs %}
+{# Tick runs, then Compare: their settings, numbers and plots on one
+   page. A GET form, so the comparison is a URL like any other page. #}
+<form id="compare-form" class="compare-bar" method="get" action="{{ url_for('compare_runs') }}">
+  <button type="submit" id="compare-button">Compare</button>
+  <span class="muted" id="compare-hint">Tick two or more runs to compare their results.</span>
+  <button type="button" class="link-ish" id="compare-clear" hidden>clear</button>
+</form>
 {% set recent = 3 %}
 <table class="runs">
-<thead><tr><th>Run</th><th>Swept</th><th>Progress</th><th>Stage</th></tr></thead>
+<thead><tr><th class="pick"><span class="visually-hidden">Compare</span></th>
+  <th>Run</th><th>Swept</th><th>Progress</th><th>Stage</th></tr></thead>
 <tbody>
 {% for r in runs[:recent] %}{{ run_row(r) }}{% endfor %}
 {% for r in runs[recent:] %}{{ run_row(r, extra=true) }}{% endfor %}
 </tbody>
 {% if runs|length > recent %}
 <tfoot id="runs-more-row">
-  <tr><td colspan="4">
+  <tr><td colspan="5">
     <button type="button" class="mini" id="runs-more">Show {{ runs|length - recent }} more</button>
   </td></tr>
 </tfoot>
@@ -147,6 +164,7 @@
 {% else %}
 <p class="muted">No runs yet.</p>
 {% endif %}
+</section>
 
 <h2>Start a new run</h2>
 
@@ -509,6 +527,51 @@
   });
 })();
 
+// Ticking runs to compare. The button only goes live with a comparison's
+// worth ticked -- two or more, and no more than there are run colours
+// for -- and says how many it will open. A run with no results yet has
+// nothing to compare, so its box stays disabled until it does.
+(function () {
+  var form = document.getElementById('compare-form');
+  if (!form) { return; }
+  var button = document.getElementById('compare-button');
+  var hint = document.getElementById('compare-hint');
+  var clear = document.getElementById('compare-clear');
+  var MAX = {{ max_compare }};
+
+  function picks() { return [].slice.call(document.querySelectorAll('input.compare-pick')); }
+  function ticked() { return picks().filter(function (b) { return b.checked && !b.disabled; }); }
+
+  function sync() {
+    var n = ticked().length;
+    button.disabled = n < 2 || n > MAX;
+    button.textContent = n >= 2 ? 'Compare ' + n + ' runs' : 'Compare';
+    if (n === 0) { hint.textContent = 'Tick two or more runs to compare their results.'; }
+    else if (n === 1) { hint.textContent = '1 run ticked -- tick at least one more.'; }
+    else if (n > MAX) { hint.textContent = n + ' runs ticked -- a comparison takes up to ' + MAX + '.'; }
+    else { hint.textContent = ''; }
+    clear.hidden = n === 0;
+  }
+  // the run list's poll can enable a box when its run finishes
+  window.syncComparePicks = sync;
+
+  document.addEventListener('change', function (e) {
+    if (e.target.matches('input.compare-pick')) { sync(); }
+  });
+  clear.addEventListener('click', function () {
+    picks().forEach(function (b) { b.checked = false; });
+    sync();
+  });
+
+  // Back from a comparison ("change which runs"), its runs arrive ticked
+  // -- and one of them may be past the few rows shown by default.
+  if (ticked().some(function (b) { return b.closest('tr').hidden; })) {
+    var more = document.getElementById('runs-more');
+    if (more) { more.click(); }
+  }
+  sync();
+})();
+
 // How much room is left for each distortion parameter, kept in step with
 // what is being typed. The limits move with the PCB and chip dimensions
 // as much as with the distortion itself, so a number rendered once would
@@ -678,15 +741,16 @@
 })();
 
 // The whole run row is a link to that run's page; the explicit name link
-// keeps it reachable by keyboard and screen reader.
+// keeps it reachable by keyboard and screen reader. The compare tick box
+// is the exception -- ticking a run must not also open it.
 (function () {
   document.querySelectorAll('tr.run-row').forEach(function (tr) {
     tr.addEventListener('click', function (e) {
-      if (e.target.closest('a, button')) { return; }
+      if (e.target.closest('a, button, label, input')) { return; }
       window.location.href = tr.dataset.href;
     });
     tr.addEventListener('keydown', function (e) {
-      if (e.key === 'Enter') { window.location.href = tr.dataset.href; }
+      if (e.key === 'Enter' && !e.target.closest('input')) { window.location.href = tr.dataset.href; }
     });
   });
 })();
@@ -730,6 +794,14 @@
       if (pill && r.stage_display) {
         pill.textContent = r.stage_display.label;
         KINDS.forEach(function (k) { pill.classList.toggle(k, k === r.stage_display.kind); });
+      }
+      // A run that has just produced its results can now be compared.
+      var pick = row.querySelector('input.compare-pick');
+      if (pick && pick.disabled === !!r.has_results) {
+        pick.disabled = !r.has_results;
+        if (!r.has_results) { pick.checked = false; }
+        pick.closest('label').title = r.has_results ? 'Tick to compare this run' : 'No results to compare yet';
+        if (window.syncComparePicks) { window.syncComparePicks(); }
       }
     });
   }

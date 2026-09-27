@@ -955,6 +955,11 @@ setInterval(poll, 4000);
   document.addEventListener("keydown", function (event) {
     if (event.key === "Escape" && dialog.open) { dialog.close(); }
   });
+
+  // A link can name a combination to open straight away -- which is
+  // where a point clicked on the comparison page leads.
+  var linked = new URLSearchParams(location.search).get("combo");
+  if (linked) { open(linked); }
 })();
 
 // --- open a combination's project in AEDT -----------------------
