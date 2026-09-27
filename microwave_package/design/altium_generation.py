@@ -75,6 +75,9 @@ BUSY_TIMEOUT = WARM_TIMEOUT
 # How often that wait asks again with a fresh launcher -- see
 # `_wait_until_idle` for why it is not left to one.
 PROBE_RETRY = 30.0
+# A free Altium takes the ping in about a second; a wait longer than
+# this is worth a line in the run log.
+PING_PATIENCE = 5.0
 
 # One Altium job at a time within this process. The web app runs each
 # run's pipeline in a thread of its own, and two runs drawing layouts at
@@ -103,16 +106,12 @@ def find_altium_exe() -> Optional[str]:
 
 def altium_is_running() -> bool:
     """Whether a session is already up -- decides the timeout budget, and
-    nothing else. Never used to skip a launch: the process forwards
-    itself either way."""
+    whether there can be an earlier script to wait for. Never used to
+    skip a launch: the process forwards itself either way."""
     try:
-        out = subprocess.run(
-            ["tasklist", "/FI", "IMAGENAME eq X2.EXE", "/NH"],
-            capture_output=True, text=True, timeout=30,
-        ).stdout
+        return bool(_altium_processes())
     except Exception:
         return False
-    return "X2.EXE" in out
 
 
 def write_params(path: str, values: Dict[str, float], extra: Optional[Dict[str, str]] = None) -> None:
@@ -219,6 +218,16 @@ def _launch(exe: str, script_path: str, procedure: str) -> subprocess.Popen:
     return subprocess.Popen('"' + exe + '" ' + argument, close_fds=True)
 
 
+def _altium_processes() -> Dict[int, Optional[float]]:
+    """Every X2.EXE running, as pid -> start time (epoch seconds), or
+    None for one whose start time could not be read."""
+    return {
+        p.pid: p.info["create_time"]
+        for p in psutil.process_iter(["name", "create_time"])
+        if (p.info["name"] or "").upper() == "X2.EXE"
+    }
+
+
 def _is_launcher_stub(launcher: subprocess.Popen) -> bool:
     """Whether `launcher` is a stub forwarding to an Altium that was
     already running, rather than Altium itself.
@@ -226,22 +235,18 @@ def _is_launcher_stub(launcher: subprocess.Popen) -> bool:
     Only a stub may ever be killed: killing Altium would take whatever
     the operator has open in it along with it. Told apart by age, since a
     stub always has an older X2.EXE to forward to and Altium never does.
+    A start time that cannot be read proves nothing, so it never makes
+    anything a stub.
     """
-    try:
-        me = psutil.Process(launcher.pid)
-        if me.name().upper() != "X2.EXE":
-            return False
-        born = me.create_time()
-        for other in psutil.process_iter(["name", "create_time"]):
-            if (
-                other.pid != launcher.pid
-                and (other.info["name"] or "").upper() == "X2.EXE"
-                and other.info["create_time"] < born
-            ):
-                return True
-    except psutil.Error:
+    processes = _altium_processes()
+    born = processes.get(launcher.pid)
+    if born is None:
         return False
-    return False
+    return any(
+        started is not None and started < born
+        for pid, started in processes.items()
+        if pid != launcher.pid
+    )
 
 
 def _withdraw(launcher: subprocess.Popen) -> bool:
@@ -260,17 +265,6 @@ def _withdraw(launcher: subprocess.Popen) -> bool:
     except subprocess.TimeoutExpired:
         pass
     return True
-
-
-def _altium_started() -> Optional[float]:
-    """When the running Altium started (epoch seconds), or None if none
-    is. The oldest X2.EXE: every other one is a stub forwarding to it."""
-    born = [
-        p.info["create_time"]
-        for p in psutil.process_iter(["name", "create_time"])
-        if (p.info["name"] or "").upper() == "X2.EXE"
-    ]
-    return min(born) if born else None
 
 
 def _still_running(report: str) -> bool:
@@ -296,8 +290,13 @@ def _still_running(report: str) -> bool:
         return True
     if read_sentinel(report).get("stage") == "end" or age >= BUSY_TIMEOUT:
         return False
-    started = _altium_started()
-    return started is not None and written >= started
+    # The oldest X2.EXE is Altium itself; every other one is a stub. No
+    # Altium, nothing running; one whose start is unknown, assume it may be.
+    processes = _altium_processes()
+    if not processes:
+        return False
+    known = [started for started in processes.values() if started is not None]
+    return not known or written >= min(known)
 
 
 def _wait_until_idle(
@@ -330,13 +329,14 @@ def _wait_until_idle(
 
     started = time.monotonic()
     deadline = started + timeout
-    said = False
+    # Said once for each half, so a dialog found after a long wait on a
+    # report still gets named in the log.
+    said = set()
 
-    def waiting(what):
-        nonlocal said
-        if not said:
+    def waiting(half, what):
+        if half not in said:
             log(f"{what} -- waiting up to {timeout:.0f}s before launching another.")
-            said = True
+            said.add(half)
 
     while True:
         running = [r for r in reports if _still_running(r)]
@@ -349,7 +349,7 @@ def _wait_until_idle(
                 f"({names} has not reached its end). Nothing was launched; if "
                 "Altium is showing a dialog, it is waiting for you."
             )
-        waiting(f"An earlier Altium script is still running ({names} has not reached its end)")
+        waiting("reports", f"An earlier Altium script is still running ({names} has not reached its end)")
         time.sleep(POLL_SECONDS)
 
     # However long that took, the ping gets one full try.
@@ -358,8 +358,8 @@ def _wait_until_idle(
         probe = _launch(exe, str(paths.ALTIUM_PING), "Ping")
         retry_at = min(time.monotonic() + PROBE_RETRY, deadline)
         while probe.poll() is None and time.monotonic() < retry_at:
-            if time.monotonic() - started > 5:
-                waiting("Altium is not taking scripts yet")
+            if time.monotonic() - started > PING_PATIENCE:
+                waiting("ping", "Altium is not taking scripts yet")
             time.sleep(0.25)
         # A stub that exited by itself was taken; one that is not a stub
         # at all started a fresh Altium, which has nothing before it.
@@ -417,14 +417,17 @@ def run_script(
             "Altium Designer not found -- looked for X2.EXE under "
             + " and ".join(_ALTIUM_ROOTS)
         )
-    if not os.path.isfile(script_path):
-        raise FileNotFoundError(f"Altium script not found: {script_path}")
+    from .. import paths
+
+    # The ping is launched too, and a script Altium cannot find is a
+    # dialog -- the very thing the ping is there to catch.
+    for script in (script_path, paths.ALTIUM_PING):
+        if not os.path.isfile(script):
+            raise FileNotFoundError(f"Altium script not found: {script}")
 
     with _one_at_a_time(log):
         warm = altium_is_running()
         if warm:
-            from .. import paths
-
             # Every script of ours, not just this one: an export launched
             # while an abandoned generator is still drawing reads a board
             # that is half one combination and half the next.
@@ -480,7 +483,9 @@ def run_script(
 
         # Only a script that never started can be taken back. One that
         # did carries on after this returns; the next launch waits for it.
-        if _withdraw(launcher):
+        # And only when Altium was already up: otherwise what was launched
+        # is Altium itself, however old any other X2.EXE looks.
+        if warm and _withdraw(launcher):
             reason = (
                 f"Altium never started {procedure} -- it was busy with something "
                 f"else for all {timeout:.0f}s, so the request was withdrawn."

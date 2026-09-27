@@ -265,7 +265,7 @@ class TestAScriptGivenUpOnDoesNotPoisonTheNext(unittest.TestCase):
             patcher.start()
             self.addCleanup(patcher.stop)
         # An Altium that has been up since long before any report here.
-        patcher = mock.patch.object(ag, "_altium_started", return_value=0.0)
+        patcher = mock.patch.object(ag, "_altium_processes", return_value={1: 0.0})
         patcher.start()
         self.addCleanup(patcher.stop)
 
@@ -375,10 +375,18 @@ class TestAScriptGivenUpOnDoesNotPoisonTheNext(unittest.TestCase):
 
     def test_a_report_from_an_altium_since_closed_is_not_waited_for(self):
         self._report("stage=start", age=30)
-        with mock.patch.object(ag, "_altium_started", return_value=time.time() - 10):
+        restarted = {1: time.time() - 10, 2: time.time() - 5}
+        with mock.patch.object(ag, "_altium_processes", return_value=restarted):
             self.assertFalse(ag._still_running(self.sentinel))
-        with mock.patch.object(ag, "_altium_started", return_value=None):
+        with mock.patch.object(ag, "_altium_processes", return_value={}):
             self.assertFalse(ag._still_running(self.sentinel), "no Altium, nothing running")
+
+    def test_an_altium_whose_start_cannot_be_read_is_assumed_busy(self):
+        """psutil reports a start time it cannot read as None. Guessing
+        "not running" there is the guess that launches into a live script."""
+        self._report("stage=start", age=30)
+        with mock.patch.object(ag, "_altium_processes", return_value={1: None}):
+            self.assertTrue(ag._still_running(self.sentinel))
 
     def test_a_report_nobody_has_written_for_the_whole_budget_is_not_waited_for(self):
         """A script stopped by hand at a dialog never writes its end. Without
@@ -446,25 +454,69 @@ class TestAScriptGivenUpOnDoesNotPoisonTheNext(unittest.TestCase):
         self.assertIn("never started", report["error"])
         self.assertIsNotNone(self.launched[-1].poll(), "the queued request was left in place")
 
-    def test_a_launch_that_is_altium_itself_is_never_killed(self):
+    def test_something_that_is_not_x2_is_never_a_stub(self):
+        other = self._spawn(busy=True)
+        self.assertFalse(ag._is_launcher_stub(other))
+        self.assertFalse(ag._withdraw(other))
+        self.assertIsNone(other.poll())
+
+    def test_a_stub_is_an_x2_with_an_older_x2_to_forward_to(self):
         """On a cold start the process launched IS Altium. Killing it at
         a timeout would take the operator's open documents with it."""
-        altium = self._spawn(busy=True)
-        self.assertFalse(ag._is_launcher_stub(altium))
-        self.assertFalse(ag._withdraw(altium))
-        self.assertIsNone(altium.poll())
+        launcher = mock.Mock(pid=20)
+        for processes, stub in (
+            ({10: 100.0, 20: 200.0}, True),     # Altium, then this stub
+            ({20: 200.0}, False),               # this one is Altium
+            ({20: 200.0, 30: 300.0}, False),    # only a younger stub about
+            ({10: None, 20: 200.0}, False),     # an age that proves nothing
+            ({10: 100.0, 20: None}, False),     # nor does its own
+            ({10: 100.0}, False),               # not an X2.EXE at all
+        ):
+            with self.subTest(processes=processes), \
+                    mock.patch.object(ag, "_altium_processes", return_value=processes):
+                self.assertIs(ag._is_launcher_stub(launcher), stub)
 
     def test_a_timed_out_cold_start_leaves_altium_running(self):
+        """Even if it looks like a stub: an X2.EXE left over from a session
+        since closed is older than the Altium this launch just started."""
         launch, calls = self._fake_launch(lambda proc, n: True)
         with mock.patch.object(ag, "_launch", launch), \
                 mock.patch.object(ag, "find_altium_exe", return_value="X2.EXE"), \
                 mock.patch.object(ag, "altium_is_running", return_value=False), \
+                mock.patch.object(ag, "_is_launcher_stub", return_value=True), \
                 mock.patch.object(ag, "POLL_SECONDS", 0.05):
             ok, report = ag.run_script(self.script, "Real", self.sentinel, timeout=0.3,
                                        log=self.messages.append)
         self.assertFalse(ok)
         self.assertEqual(calls, ["Real"], "a cold start has nothing to wait for")
         self.assertIsNone(self.launched[0].poll())
+
+    def test_a_missing_ping_is_refused_before_anything_is_launched(self):
+        """Asking Altium to run a file that is not there is itself a dialog."""
+        launch, calls = self._fake_launch(lambda proc, n: False)
+        with mock.patch.object(ag, "_launch", launch), \
+                mock.patch.object(ag, "find_altium_exe", return_value="X2.EXE"), \
+                mock.patch.object(ag, "altium_is_running", return_value=True), \
+                mock.patch.object(paths, "ALTIUM_PING", os.path.join(self.dir, "nope.pas")):
+            with self.assertRaises(FileNotFoundError):
+                ag.run_script(self.script, "Real", self.sentinel, log=self.messages.append)
+        self.assertEqual(calls, [])
+
+    def test_a_dialog_after_a_report_wait_is_still_named(self):
+        """The two halves each say what they are waiting for, so a dialog
+        found after a long wait on a report does not hide behind it."""
+        self._report("stage=start", age=5)
+        threading.Timer(0.3, lambda: self._report("stage=start", "stage=end", age=5)).start()
+        launch, calls = self._fake_launch(lambda proc, n: True)
+        with mock.patch.object(ag, "_launch", launch), \
+                mock.patch.object(ag, "_is_launcher_stub", return_value=True), \
+                mock.patch.object(ag, "POLL_SECONDS", 0.1), \
+                mock.patch.object(ag, "PROBE_RETRY", 0.3), \
+                mock.patch.object(ag, "PING_PATIENCE", 0.1):
+            reason = ag._wait_until_idle("X2.EXE", [self.sentinel], 1.0, self.messages.append)
+        self.assertIn("dialog", reason)
+        self.assertTrue(any("still running" in m for m in self.messages))
+        self.assertTrue(any("not taking scripts" in m for m in self.messages))
 
 
 class TestOneAltiumJobAtATime(unittest.TestCase):
@@ -491,8 +543,10 @@ class TestOneAltiumJobAtATime(unittest.TestCase):
         threads = [threading.Thread(target=first), threading.Thread(target=second)]
         for t in threads:
             t.start()
-        holding.wait(5)
-        time.sleep(0.2)
+        # The second says it is waiting just before it blocks.
+        deadline = time.monotonic() + 5
+        while not said and time.monotonic() < deadline:
+            time.sleep(0.01)
         self.assertEqual(order, ["first in"], "the second job did not wait")
         release.set()
         for t in threads:
