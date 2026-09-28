@@ -1159,8 +1159,10 @@ def combo_details(run_id, combo_id):
         ],
         "skip_reason": combo.get("skip_reason"),
         "altium_error": combo.get("altium_error"),
-        "error": (combo.get("post_error") or combo.get("model_error")
-                  or combo.get("step_error")),
+        # None once its results are in: whatever went wrong before a retry
+        # succeeded is history, not something to show beside "Done".
+        "error": None if combo.get("post_status") == "done" else (
+            combo.get("post_error") or combo.get("model_error") or combo.get("step_error")),
         "results": results,
         "actions": {
             "step_url": (url_for("combo_step_file", run_id=run_id, combo_id=combo_id)

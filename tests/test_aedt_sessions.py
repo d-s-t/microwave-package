@@ -95,7 +95,8 @@ class TestRetryingAfterTheFetch(unittest.TestCase):
             open(project, "w").close()
             run = FakeRun(root, {"c": {
                 "task_id": "t1", "queue_status": "done", "fetch_status": "done",
-                "post_status": "failed", "object_names": {"chip": "chip_substrate"},
+                "post_status": "failed", "post_error": "Version argument is not valid.",
+                "object_names": {"chip": "chip_substrate"},
             }})
             seen = {}
 
@@ -110,6 +111,8 @@ class TestRetryingAfterTheFetch(unittest.TestCase):
                                             analysis_settings={"solution_type": "Eigenmode"})
 
             self.assertEqual(run.state["combos"]["c"]["post_status"], "done")
+            self.assertIsNone(run.state["combos"]["c"]["post_error"],
+                              "the error from before is history once the retry succeeds")
             self.assertEqual(seen["project_file"], project)
             self.assertEqual(seen["objects"], {"chip": "chip_substrate"})
             self.assertEqual(seen["solution_type"], "Eigenmode")
@@ -128,6 +131,43 @@ class TestRetryingAfterTheFetch(unittest.TestCase):
                                                   analysis_settings={"solution_type": "Eigenmode"},
                                                   announce_idle=False, retry_results=False)
         self.assertEqual(handled, 0)
+
+
+
+class TestADoneCombinationShowsNoError(unittest.TestCase):
+    """Its details used to show the error from before a retry that
+    succeeded, right beside "Done"."""
+
+    def setUp(self):
+        import logging
+
+        from microwave_package import paths, webapp
+        from microwave_package.design.sweep import SweepParameter
+        from microwave_package.workflow.run_manager import Run
+
+        logging.disable(logging.INFO)
+        self.addCleanup(logging.disable, logging.NOTSET)
+        saved = paths.RUNS_ROOT
+        paths.RUNS_ROOT = tempfile.mkdtemp(prefix="runs_")
+        self.addCleanup(setattr, paths, "RUNS_ROOT", saved)
+        self.client = webapp.app.test_client()
+        self.run = Run.create([SweepParameter(name="pedestal_depth", values=[0.0])],
+                              dict(webapp.pipeline.DEFAULT_ANALYSIS_SETTINGS))
+        self.combo_id = next(iter(self.run.state["combos"]))
+
+    def error_shown(self):
+        response = self.client.get(f"/runs/{self.run.run_id}/combos/{self.combo_id}/details.json")
+        self.assertEqual(response.status_code, 200)
+        return response.get_json()["error"]
+
+    def test_an_error_from_before_a_successful_retry_is_not_shown(self):
+        self.run.update_combo(self.combo_id, post_status="done",
+                              post_error="Version argument is not valid.")
+        self.assertIsNone(self.error_shown())
+
+    def test_a_failed_one_still_says_why(self):
+        self.run.update_combo(self.combo_id, post_status="failed", post_error="it broke")
+        self.assertEqual(self.error_shown(), "it broke")
 
 
 if __name__ == "__main__":

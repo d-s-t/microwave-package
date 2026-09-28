@@ -297,7 +297,7 @@ def postprocess_run(
             client_result = {"status": "success", "task_id": task_id, "combo_id": combo_id, "result": result}
             with open(os.path.join(local_dir, "client_result.json"), "w") as f:
                 json.dump(client_result, f, indent=2, default=str)
-            run.update_combo(combo_id, post_status="done", analysis_dir=local_dir)
+            run.update_combo(combo_id, post_status="done", post_error=None, analysis_dir=local_dir)
             log(f"{combo_id}: post-processing done ({result['row_count']} result row(s)).")
         except Exception as exc:
             # The files are already local by this point, so a failure here
