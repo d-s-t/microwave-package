@@ -10,6 +10,8 @@ assigned, so the rules can be checked without AEDT.
 
 Run: python -m unittest discover -s tests
 """
+import os
+import re
 import unittest
 
 from microwave_package.hfss import model_builder
@@ -21,6 +23,37 @@ class FakeObject:
         self.material_name = None
 
 
+class FakeMaterial:
+    """What PyAEDT's `add_material` hands back for a name the library
+    lacks: a BLANK material -- permittivity 1, conductivity 0 -- until
+    someone sets its properties."""
+
+    def __init__(self, name):
+        self.name = name
+        self.permittivity = 1
+        self.conductivity = 0
+
+    def update(self):
+        pass
+
+
+class FakeLibrary:
+    STOCK = {"copper", "aluminum", "gold", "silicon", "vacuum", "rogers tmm 10i (tm)"}
+
+    def __init__(self, project=()):
+        self.project = {m.name.lower(): m for m in project}
+
+    def exists_material(self, name):
+        return self.project.get(name.lower(), False)
+
+    def add_material(self, name):
+        self.project[name.lower()] = FakeMaterial(name)
+        return self.project[name.lower()]
+
+    def knows(self, name):
+        return name.lower() in self.STOCK or name.lower() in self.project
+
+
 class FakeHfss:
     """Records assignments instead of performing them."""
 
@@ -28,6 +61,7 @@ class FakeHfss:
         self._objects = [FakeObject(n) for n in names]
         self.perfect_e = []
         self.subtractions = []
+        self.materials = FakeLibrary()
 
     @property
     def modeler(self):
@@ -369,6 +403,142 @@ class TestMaterialFallbacks(unittest.TestCase):
         used = {rule[2] for rule in model_builder.MATERIAL_RULES if rule[2] is not None}
         missing = used - set(model_builder.MATERIAL_FALLBACKS)
         self.assertEqual(missing, set(), f"no fallback for {missing}")
+
+
+class PickyObject:
+    """A body that, like AEDT's, silently keeps its material when handed
+    a name the library does not know."""
+
+    def __init__(self, name, library):
+        self.name = name
+        self._library = library
+        self._material = "vacuum"
+
+    @property
+    def material_name(self):
+        return self._material
+
+    @material_name.setter
+    def material_name(self, value):
+        if self._library.knows(value):
+            self._material = value
+
+
+class HfssWithALibrary(FakeHfss):
+    def __init__(self, names, project=()):
+        super().__init__([])
+        self.materials = FakeLibrary(project)
+        self._objects = [PickyObject(n, self.materials) for n in names]
+
+
+class TestMetalsMissingFromTheLibrary(unittest.TestCase):
+    """Niobium is not in the stock library, and adding it by name makes a
+    blank material -- vacuum under the name "niobium". Every chip
+    conductor was that until 2026-09-28."""
+
+    def assign(self, names, settings=None, project=()):
+        hfss = HfssWithALibrary(names, project)
+        messages = []
+        model_builder.assign_materials_and_boundaries(
+            hfss, dict(settings or SETTINGS), log=messages.append)
+        return hfss, messages
+
+    def test_niobium_is_created_as_a_metal(self):
+        hfss, _ = self.assign(["chip_copper_top"])
+        self.assertEqual(hfss.modeler.solid_objects[0].material_name, "niobium")
+        self.assertEqual(hfss.materials.project["niobium"].conductivity,
+                         model_builder.MISSING_FROM_LIBRARY["niobium"]["conductivity"])
+
+    def test_it_is_conductive_enough_not_to_be_solved_inside(self):
+        """HFSS meshes and solves inside anything below 1e5 S/m -- which
+        for a 200 nm film is a layer of elements a fraction of a micron
+        thick."""
+        self.assertGreater(model_builder.MISSING_FROM_LIBRARY["niobium"]["conductivity"], 1e5)
+
+    def test_a_blank_niobium_left_in_the_project_is_corrected(self):
+        """A project an earlier build left behind already carries the
+        blank one, and it would be assigned without complaint."""
+        hfss, _ = self.assign(["chip_copper_top"], project=[FakeMaterial("niobium")])
+        self.assertGreater(hfss.materials.project["niobium"].conductivity, 1e5)
+
+    def test_an_unknown_metal_is_the_stand_in_not_a_blank_material(self):
+        settings = dict(SETTINGS, mat_conductor_chip="unobtainium")
+        hfss, messages = self.assign(["chip_copper_top"], settings)
+        self.assertEqual(hfss.modeler.solid_objects[0].material_name,
+                         model_builder.LAST_RESORT_CONDUCTOR)
+        self.assertNotIn("unobtainium", hfss.materials.project)
+        self.assertTrue(any("WARNING" in m and "unobtainium" in m for m in messages))
+
+    def test_an_unknown_dielectric_is_the_stand_in_too(self):
+        settings = dict(SETTINGS, mat_pcb="mystery laminate")
+        hfss, _ = self.assign(["pcb_substrate"], settings)
+        self.assertEqual(hfss.modeler.solid_objects[0].material_name,
+                         model_builder.LAST_RESORT_DIELECTRIC)
+        self.assertNotIn("mystery laminate", hfss.materials.project)
+
+    def test_making_it_is_said_in_the_run_log(self):
+        """It changes the physics of every model, so it is on record."""
+        _, messages = self.assign(["chip_copper_top"])
+        self.assertTrue(any("'niobium' is not in the AEDT library" in m for m in messages))
+
+    def test_one_that_cannot_be_made_right_is_not_used(self):
+        """The project may hold the blank one under that very name."""
+        class Broken(FakeMaterial):
+            def update(self):
+                raise RuntimeError("AEDT said no")
+
+        hfss, messages = self.assign(["chip_copper_top"], project=[Broken("niobium")])
+        self.assertEqual(hfss.modeler.solid_objects[0].material_name,
+                         model_builder.LAST_RESORT_CONDUCTOR)
+        self.assertTrue(any("WARNING" in m and "niobium" in m for m in messages))
+
+    def test_sic_is_created_as_a_dielectric(self):
+        """The library's SiC entries are thermal only: no permittivity."""
+        settings = dict(SETTINGS, mat_chip="SiC")
+        hfss, _ = self.assign(["chip_substrate"], settings)
+        self.assertEqual(hfss.modeler.solid_objects[0].material_name, "SiC")
+        self.assertGreater(hfss.materials.project["sic"].permittivity, 9)
+
+
+def _aedt_stock_library():
+    """AEDT's stock material library as {lowercase name: its block}, or
+    None when there is no AEDT on this machine."""
+    roots = [v for k, v in os.environ.items() if k.upper().startswith(("ANSYSEM_ROOT", "ANSYSEMSV_ROOT"))]
+    roots += [r"C:\Program Files\ANSYS Inc\ANSYS Student\v252\AnsysEM",
+              r"C:\Program Files\ANSYS Inc\v252\AnsysEM"]
+    for root in roots:
+        path = os.path.join(root, "syslib", "Materials.amat")
+        if os.path.isfile(path):
+            with open(path, encoding="utf-8", errors="replace") as f:
+                text = f.read()
+            return {m.group(1).lower(): m.group(2) for m in re.finditer(
+                r"^\$begin '([^']+)'\n(.*?)^\$end '\1'", text, re.M | re.S)}
+    return None
+
+
+class TestEveryOfferedMaterialIsReal(unittest.TestCase):
+    """Every material the form offers or falls back to is one AEDT's
+    library has with electromagnetic properties, or one
+    MISSING_FROM_LIBRARY makes. "GaAs", "SiC" and "Rogers RT/duroid
+    6010LM (tm)" were offered and were none of those -- each a vacuum
+    substrate in the model."""
+
+    def test_against_the_installed_library(self):
+        library = _aedt_stock_library()
+        if library is None:
+            self.skipTest("no AEDT material library on this machine")
+        offered = {name for names in model_builder.MATERIAL_OPTIONS.values() for name in names}
+        offered |= set(model_builder.MATERIAL_FALLBACKS.values())
+        offered |= set(model_builder.WIREBOND_MATERIALS)
+        offered |= {model_builder.LAST_RESORT_CONDUCTOR, model_builder.LAST_RESORT_DIELECTRIC}
+        for name in sorted(offered):
+            if name.lower() in model_builder.MISSING_FROM_LIBRARY:
+                continue
+            block = library.get(name.lower())
+            self.assertIsNotNone(block, f"{name!r} is not in AEDT's library")
+            # \b keeps thermal_conductivity out: "_" is a word character.
+            self.assertRegex(block, r"\b(permittivity|conductivity)\b",
+                             f"{name!r} has no electromagnetic properties in AEDT's library")
 
 
 class TestRuleTableIsSane(unittest.TestCase):
