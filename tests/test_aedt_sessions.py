@@ -115,6 +115,20 @@ class TestRetryingAfterTheFetch(unittest.TestCase):
             self.assertEqual(seen["solution_type"], "Eigenmode")
             self.assertTrue(seen["post_processing"], "the solver's own post-processing ops")
 
+    def test_but_not_on_every_poll(self):
+        """The poll comes round every few seconds while analyses are out,
+        and a retry reopens the project in AEDT: one that fails every
+        time must wait for the final pass."""
+        run = FakeRun("unused", {"c": {
+            "task_id": "t1", "queue_status": "done", "fetch_status": "done", "post_status": "failed",
+        }})
+        with mock.patch.object(postprocess, "postprocess_task",
+                               side_effect=AssertionError("retried while polling")):
+            handled = postprocess.postprocess_run(run, queue=None, log=lambda _m: None,
+                                                  analysis_settings={"solution_type": "Eigenmode"},
+                                                  announce_idle=False, retry_results=False)
+        self.assertEqual(handled, 0)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -286,6 +286,7 @@ def _run_stages(run: Run, queue: "queue_common.QueuePaths", log=logger.info, sto
             resilient_io.call_with_retry(
                 postprocess.postprocess_run, run, queue, analysis_settings,
                 queue_root=queue.root, log=log, stop_event=stop_event, announce_idle=False,
+                retry_results=False,
             )
         if not monitor_thread.is_alive():
             outstanding = still_analyzing()

@@ -208,6 +208,7 @@ def postprocess_run(
     log: Callable[[str], None] = logger.info,
     stop_event=None,
     announce_idle: bool = True,
+    retry_results: bool = True,
 ) -> int:
     """For every combo whose worker task finished successfully, reopen its
     analyzed project and extract results -- one at a time, never in
@@ -216,7 +217,10 @@ def postprocess_run(
     poll this while analyses are still coming in.
 
     `announce_idle` is for that polling caller: it would otherwise log
-    "nothing to do" on every pass."""
+    "nothing to do" on every pass. So is `retry_results=False`, which
+    leaves a combo whose files are here but whose results failed for a
+    pass that is not polling: retrying it reopens its project in AEDT,
+    and one that fails every time would otherwise do so every poll."""
     aedt_version = analysis_settings.get("aedt_version")
     student_version = analysis_settings.get("student_version", True)
     graphical = analysis_settings.get("graphical", False)
@@ -224,6 +228,8 @@ def postprocess_run(
     todo = [
         combo_id for combo_id, combo in run.state["combos"].items()
         if combo.get("queue_status") == "done" and combo.get("post_status") != "done"
+        and (retry_results or not (combo.get("post_status") == "failed"
+                                   and combo.get("fetch_status") == "done"))
     ]
     if not todo:
         if announce_idle:
