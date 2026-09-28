@@ -541,6 +541,52 @@ class TestEveryOfferedMaterialIsReal(unittest.TestCase):
                              f"{name!r} has no electromagnetic properties in AEDT's library")
 
 
+class TestSheetMetal(unittest.TestCase):
+    """A film drawn as a sheet (see SHEET_BELOW_MM) has no material to
+    give it; its metal is a boundary instead."""
+
+    def assign(self, **settings):
+        class Hfss(HfssWithALibrary):
+            def __init__(self):
+                super().__init__([])
+                self.finite = []
+
+            def __getitem__(self, name):
+                return FakeObject(name)
+
+            def assign_finite_conductivity(self, assignment, **kw):
+                self.finite.append((assignment, kw))
+
+        hfss = Hfss()
+        objects = model_builder.assign_materials_and_boundaries(
+            hfss, dict(SETTINGS, **settings), log=lambda _m: None,
+            sheets=["chip_copper_top"])
+        return hfss, objects
+
+    def test_the_die_film_is_a_sheet_and_the_board_copper_is_not(self):
+        self.assertLess(0.0002, model_builder.SHEET_BELOW_MM)
+        self.assertGreater(0.035, model_builder.SHEET_BELOW_MM)
+
+    def test_perfect_e_when_the_conductors_are_perfect(self):
+        hfss, _ = self.assign(perfect_e_conductors=True)
+        self.assertEqual(hfss.perfect_e, ["chip_copper_top"])
+        self.assertEqual(hfss.finite, [])
+
+    def test_otherwise_its_metal_as_a_surface_impedance(self):
+        hfss, _ = self.assign(perfect_e_conductors=False)
+        (name, kw), = hfss.finite
+        self.assertEqual(name, "chip_copper_top")
+        self.assertEqual(kw["material"], "niobium")
+        self.assertFalse(kw.get("use_thickness"),
+                         "an Eigenmode design refuses a thickness on this boundary")
+        self.assertGreater(hfss.materials.project["niobium"].conductivity, 1e5,
+                           "the niobium a sheet refers to is a metal, not a blank")
+
+    def test_the_sheet_is_what_the_task_names(self):
+        _, objects = self.assign()
+        self.assertEqual(objects["chip_copper"].name, "chip_copper_top")
+
+
 class TestRuleTableIsSane(unittest.TestCase):
     def test_defined_exactly_once(self):
         """It was defined twice for a while, and the second, stale copy
@@ -1003,6 +1049,37 @@ class TestCarveVacuum(unittest.TestCase):
         model_builder.carve_vacuum(hfss, {"vacuum": hfss.solid_objects[0]}, log=messages.append)
         self.assertTrue(any("WARNING" in m for m in messages))
         self.assertTrue(any("overlapping" in m for m in messages))
+
+
+class TestPinMesher(unittest.TestCase):
+    """Left on Auto, HFSS gave the 70 x 30 mm boards the Classic mesher,
+    which had not finished one mesh after a night."""
+
+    def pin(self, fail=False):
+        calls = []
+
+        class Mesh:
+            def assign_initial_mesh_from_slider(self, **kw):
+                if fail:
+                    raise RuntimeError("nope")
+                calls.append(kw)
+
+        class Hfss:
+            mesh = Mesh()
+
+        messages = []
+        model_builder._pin_mesher(Hfss(), messages.append)
+        return calls, messages
+
+    def test_tau_flex_with_no_fallback_to_classic(self):
+        (kw,), _ = self.pin()
+        self.assertEqual(kw["method"], "AnsoftTAU")
+        self.assertTrue(kw["flex_mesh"])
+        self.assertFalse(kw["fallback"], "a fallback is how a mesh ends up on Classic for days")
+
+    def test_a_failure_is_loud(self):
+        _, messages = self.pin(fail=True)
+        self.assertTrue(any("WARNING" in m for m in messages))
 
 
 if __name__ == "__main__":
