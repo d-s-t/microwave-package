@@ -17,7 +17,7 @@ import logging
 import os
 import re
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional
 
 from ansys_analyze_common import queue_common
@@ -559,6 +559,20 @@ class LayoutContext:
     frame: "copper_geometry.Frame"
     stack: "copper_geometry.Stack"
     values: Dict[str, float]
+    # The metal drawn as sheets (see SHEET_BELOW_MM), which carries its
+    # metal as a boundary instead of a material.
+    sheets: List[str] = field(default_factory=list)
+
+
+# Metal thinner than this is drawn as a sheet on the face it lies on, with
+# a conductor boundary, instead of as a solid.
+#
+# The die's 200 nm film is the case: the TAU mesher cannot resolve a body
+# that thin next to a 70 mm board, and reports a "mesh leak" on it --
+# HFSS's word for a body whose mesh is more than 10% off its own surface,
+# i.e. largely missing. A sheet is how thin films are meshed anyway. The
+# board's 35 um copper is resolved as a solid, and stays one.
+SHEET_BELOW_MM = 0.001
 
 
 def build_layout(hfss, combo_dir: str, dimensions_txt_content: str,
@@ -614,14 +628,25 @@ def build_layout(hfss, combo_dir: str, dimensions_txt_content: str,
     # lid_inside's own headroom (see place_lid_inside).
     pcb_bottom = wall + pedestal
     pcb_top = pcb_bottom + pcb_width
+    # The metal's thickness AS DRAWN: a film below SHEET_BELOW_MM is a
+    # sheet, so it has none in the model, and whatever rests on it --
+    # a bond foot on the die -- rests on the face it lies on.
+    copper = v.get("copper_thickness", 0.035)
+    chip_metal = v.get("chip_metal_thickness", 0.0002)
     stack = cg.Stack(
         pcb_bottom=pcb_bottom,
         pcb_top=pcb_top,
         chip_bottom=pcb_top - chip_width,
         chip_top=pcb_top,
-        copper_thickness=v.get("copper_thickness", 0.035),
-        chip_metal_thickness=v.get("chip_metal_thickness", 0.0002),
+        copper_thickness=0.0 if copper < SHEET_BELOW_MM else copper,
+        chip_metal_thickness=0.0 if chip_metal < SHEET_BELOW_MM else chip_metal,
     )
+    sheets: List[str] = []
+
+    def remember_sheets(made, drawn):
+        if not drawn:
+            sheets.extend(name for key, names in made.items() if "_copper_" in key
+                          for name in names)
 
     _drop_superseded_solids(hfss, log)
     build_vacuum(
@@ -662,6 +687,7 @@ def build_layout(hfss, combo_dir: str, dimensions_txt_content: str,
             top_face=stack.pcb_top, bottom_face=stack.pcb_bottom,
             thickness=stack.copper_thickness, prefix="pcb", log=log,
         )
+        remember_sheets(made, stack.copper_thickness)
         # The generator already draws the copper round the opening, so
         # this normally cuts nothing. It is here for the copper.txt an
         # older generator wrote, where it is the difference between a
@@ -679,11 +705,12 @@ def build_layout(hfss, combo_dir: str, dimensions_txt_content: str,
     if chip is not None and len(chip):
         # Through-vias in the die, if it ever carries any, are posts in
         # the die in the same way.
-        cg.build(
+        made = cg.build(
             hfss.modeler, chip, frame,
             top_face=stack.chip_top, bottom_face=stack.chip_bottom,
             thickness=stack.chip_metal_thickness, prefix="chip", log=log,
         )
+        remember_sheets(made, stack.chip_metal_thickness)
 
     # The connectors are real vendor geometry rather than a stand-in, so
     # the launch is represented rather than left as bare copper. They
@@ -720,7 +747,7 @@ def build_layout(hfss, combo_dir: str, dimensions_txt_content: str,
     else:
         log("No bonds.txt for this combination -- the die is not bonded.")
 
-    return LayoutContext(frame=frame, stack=stack, values=v)
+    return LayoutContext(frame=frame, stack=stack, values=v, sheets=sheets)
 
 
 # Tried in turn when the preferred material will not stick. The last
@@ -822,13 +849,21 @@ def _assign_material(hfss, obj, material: str, is_conductor: bool, log) -> bool:
     return False
 
 
-def assign_materials_and_boundaries(hfss, mat_settings: dict, log=logger.info) -> Dict[str, object]:
+def assign_materials_and_boundaries(hfss, mat_settings: dict, log=logger.info,
+                                    sheets: Optional[List[str]] = None) -> Dict[str, object]:
     """Give every solid in the imported model its material and boundary.
 
     A body whose name matches no rule is left alone and WARNED ABOUT
     rather than silently defaulting. A mis-exported or renamed body is
     the kind of thing that otherwise shows up as a puzzling frequency
     shift days later.
+
+    `sheets` is the metal drawn as sheets (see SHEET_BELOW_MM). A sheet
+    has no material of its own, so its metal is a boundary instead:
+    perfect-E under the same setting as a solid, and otherwise a
+    finite-conductivity boundary of the rule's material -- the surface
+    impedance a solid film's faces get anyway. Not at the film's
+    thickness: an Eigenmode design refuses a thickness on that boundary.
     """
     objects_dict = {}
     unmatched = []
@@ -861,6 +896,26 @@ def assign_materials_and_boundaries(hfss, mat_settings: dict, log=logger.info) -
             break
         else:
             unmatched.append(obj.name)
+
+    for name in sheets or ():
+        rule = next((r for r in MATERIAL_RULES if r[0] in name.lower()), None)
+        if rule is None or rule[2] is None:
+            unmatched.append(name)
+            continue
+        _pattern, key, material_key, perfect_e_key = rule
+        objects_dict.setdefault(key, hfss.modeler[name])
+        if perfect_e_key and mat_settings.get(perfect_e_key):
+            hfss.assign_perfect_e(assignment=name)
+            continue
+        material = mat_settings.get(material_key) or MATERIAL_FALLBACKS[material_key]
+        if not mat_settings.get(material_key):
+            fell_back.add(material_key)
+        if not (_ensure_missing_material(hfss, material, log)
+                and hfss.materials.exists_material(material)):
+            log(f"WARNING: the material library does not have {material!r} for the sheet "
+                f"{name}, so it is {LAST_RESORT_CONDUCTOR!r} instead.")
+            material = LAST_RESORT_CONDUCTOR
+        hfss.assign_finite_conductivity(name, material=material)
 
     if rejected:
         log(
@@ -1136,6 +1191,7 @@ def build_model(
         except Exception as exc:
             log(f"WARNING: could not turn material override on ({exc}). The via posts "
                 "overlap the board, and HFSS may refuse the model.")
+        _pin_mesher(hfss, log)
 
         if hfss.modeler.object_names:
             hfss.modeler.delete(hfss.modeler.object_names)
@@ -1165,7 +1221,10 @@ def build_model(
             log=log,
         )
 
-        objects_dict = assign_materials_and_boundaries(hfss, analysis_settings["materials"], log=log)
+        objects_dict = assign_materials_and_boundaries(
+            hfss, analysis_settings["materials"], log=log,
+            sheets=layout.sheets if layout else None,
+        )
         carve_vacuum(hfss, objects_dict, log=log)
         object_names = {key: obj.name for key, obj in objects_dict.items()}
 
@@ -1206,6 +1265,34 @@ def build_model(
     finally:
         close_project_safely(hfss, log=log)
         _resume_autosave(odesktop, autosave_was_on)
+
+
+def _pin_mesher(hfss, log: Callable[[str], None]) -> None:
+    """Mesh with TAU Flex, and never fall back to the Classic mesher.
+
+    Left on Auto, HFSS chooses the mesher from the geometry -- among other
+    things it looks for "stacks of large planar parallel facets with small
+    gaps", which is what a 70 x 30 mm board of 35 um copper is. The
+    26 x 10 mm boards got TAU and meshed in 82 s; the 70 x 30 mm ones got
+    Classic ("Stitch" in the profile), which does not parallelise, and on
+    three thousand via posts it had not finished one mesh after a night.
+    TAU Flex meshed that same model in six minutes on four cores.
+
+    Flex is the TAU made for this model: it meshes by material priority,
+    which is what the material override the via posts rely on asks for.
+
+    No fallback, so a mesh TAU cannot make fails in minutes instead of
+    falling back to Classic and running for days. Level 5 and no dynamic
+    surface resolution are the settings every model had before.
+    """
+    try:
+        hfss.mesh.assign_initial_mesh_from_slider(
+            level=5, method="AnsoftTAU", dynamic_surface=False, flex_mesh=True,
+            fallback=False, phi=False,
+        )
+    except Exception as exc:
+        log(f"WARNING: could not set the initial mesh to TAU Flex ({exc}). HFSS will choose "
+            "its own mesher, and on a large board that is Classic, which can take days.")
 
 
 def _pause_autosave(odesktop, log: Callable[[str], None]) -> Optional[bool]:

@@ -163,6 +163,7 @@ class FakeModeler:
     def __init__(self):
         self.boxes = []
         self.cylinders = []
+        self.circles = []
         self.polylines = []
         self.thickened = []
         self.swept = []
@@ -187,6 +188,9 @@ class FakeModeler:
 
     def create_cylinder(self, orientation, origin, radius, height, **kw):
         return self._make("cyl", self.cylinders, (orientation, list(origin), radius, height))
+
+    def create_circle(self, orientation, origin, radius, **kw):
+        return self._make("circle", self.circles, (orientation, list(origin), radius))
 
     def create_polyline(self, points, **kw):
         return self._make("poly", self.polylines, [list(p) for p in points])
@@ -268,6 +272,9 @@ def _moved(store, modeler, record, offset):
     if store is modeler.cylinders:
         orientation, origin, radius, height = record
         return (orientation, shift(origin), radius, height)
+    if store is modeler.circles:
+        orientation, origin, radius = record
+        return (orientation, shift(origin), radius)
     return [shift(p) for p in record]
 
 
@@ -387,6 +394,21 @@ class TestBuildingCopper(unittest.TestCase):
         self.assertNotIn(0.075, radii, "no bore at the drill's radius")
         self.assertEqual(modeler.subtractions, [])
 
+    def test_each_via_post_has_flat_sides(self):
+        """A true cylinder is a curved face for the mesher to facet, finer
+        than this, thousands of times over."""
+        sides = []
+
+        class Recording(FakeModeler):
+            def create_cylinder(self, orientation, origin, radius, height, **kw):
+                sides.append(kw.get("num_sides", 0))
+                return super().create_cylinder(orientation, origin, radius, height, **kw)
+
+        cg._via_post(Recording(), cg.Via(0.0, 0.0, 0.3, 0.15), FRAME,
+                     STACK.pcb_bottom, STACK.pcb_top)
+        self.assertEqual(sides, [cg.VIA_SIDES])
+        self.assertGreaterEqual(cg.VIA_SIDES, 6, "coarser than a hexagon stops looking like a via")
+
     def test_several_via_blocks_stay_bodies_of_their_own(self):
         """Joining the blocks is a boolean over every via at once -- on a
         dense board, one of the long AEDT calls. They are named instead,
@@ -439,6 +461,32 @@ class TestBuildingCopper(unittest.TestCase):
     def test_a_board_with_no_vias_makes_no_via_body(self):
         _, created = self._build(board="chip", prefix="chip")
         self.assertNotIn("chip_vias", created)
+
+    def _build_sheets(self):
+        modeler = FakeModeler()
+        created = cg.build(
+            modeler, cg.parse(SAMPLE)["chip"], FRAME,
+            top_face=STACK.chip_top, bottom_face=STACK.chip_bottom,
+            thickness=0.0, prefix="chip", log=lambda _m: None,
+        )
+        return modeler, created
+
+    def test_a_film_too_thin_to_mesh_is_drawn_as_sheets(self):
+        """Thickness 0: covered outlines lying on the die's face, nothing
+        boxed, swept or thickened into a solid."""
+        modeler, created = self._build_sheets()
+        self.assertEqual(created["chip_copper_top"], ["chip_copper_top"])
+        self.assertEqual((modeler.boxes, modeler.cylinders, modeler.swept, modeler.thickened),
+                         ([], [], [], []))
+        heights = {round(p[1], 9) for poly in modeler.polylines for p in poly}
+        heights |= {round(c[1][1], 9) for c in modeler.circles}
+        self.assertEqual(heights, {round(STACK.chip_top, 9)})
+
+    def test_a_sheet_track_keeps_its_round_caps_in_the_board_plane(self):
+        modeler, _ = self._build_sheets()
+        caps = [c for c in modeler.circles if c[2] == 0.1]
+        self.assertEqual(len(caps), 2)
+        self.assertTrue(all(c[0] == "ZX" for c in caps), "ZX is the plane: the disc's axis is Y")
 
 
 class TestBondWires(unittest.TestCase):

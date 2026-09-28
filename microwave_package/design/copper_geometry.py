@@ -351,6 +351,11 @@ def build(
     outward from `bottom_face`, and vias span between them. Returns the
     names created, so the caller can check they are the ones the material
     rules match on.
+
+    A `thickness` of 0 draws the layers as sheets lying on the faces
+    instead -- for a film too thin to mesh as a solid, see
+    `model_builder.SHEET_BELOW_MM`. The metal is then a boundary on the
+    sheet rather than a material.
     """
     created: Dict[str, List[str]] = {}
 
@@ -433,13 +438,27 @@ def _via_post(modeler, via: Via, frame: Frame, bottom_face: float,
     substrate, and the model's material override lets the metal win
     there (see `model_builder.build_model`). Nor is it carved out of the
     vacuum, which it never reaches -- see `model_builder.carve_vacuum`.
+
+    And it has VIA_SIDES flat sides rather than a round one -- see there.
     """
     return modeler.create_cylinder(
         orientation="Y",
         origin=frame.point(via.x, via.y, bottom_face),
         radius=via.diameter / 2.0,
         height=top_face - bottom_face,
+        num_sides=VIA_SIDES,
     ).name
+
+
+# How many flat sides a via post has, with its corners on the via's own
+# circle. The mesher has to cut a true cylinder into facets anyway, finer
+# than this, and a board carries thousands of them: with octagons the
+# 2959 posts of a 70 x 30 mm board on a 0.8 mm grid mesh to 419k elements
+# in half the time, where true cylinders made 950k. An octagon's
+# perimeter is 2.6% short of the circle's -- far below anything that
+# moves a mode here, where the post is a twentieth of a wavelength across
+# even at 15 GHz in the board.
+VIA_SIDES = 8
 
 
 # Two vertices closer than this are the same vertex. 0.1 um is orders
@@ -505,6 +524,8 @@ def _extrude_polygon(modeler, points, base, height, frame: Frame) -> str:
     would fill that void back in with solid copper -- silently, since
     the layer is united into one body afterwards and the result looks
     exactly like a correctly-built plane.
+
+    A `height` of 0 leaves it a sheet, whatever its shape -- see `build`.
     """
     # Before anything else: a duplicate vertex makes a four-cornered
     # rectangle look like a five-sided polygon to the check below, as
@@ -515,6 +536,13 @@ def _extrude_polygon(modeler, points, base, height, frame: Frame) -> str:
             f"a region collapsed to {len(points)} distinct vertices and cannot be "
             f"built as a solid -- it carries no area"
         )
+
+    if height == 0:
+        return modeler.create_polyline(
+            points=[frame.point(u, v, base) for u, v in points],
+            close_surface=True,
+            cover_surface=True,
+        ).name
 
     if _is_rectangle(points):
         us = [u for u, _v in points]
@@ -546,7 +574,13 @@ def _cylinder(modeler, frame: Frame, u: float, v: float, w_base: float,
     independently confirmed to extrude the right way, so this always
     passes a positive height from the lower face upward instead of
     trusting the sign.
+
+    A `height` of 0 makes it a disc lying in the board plane -- see `build`.
     """
+    if height == 0:
+        # "ZX" is the plane, so the disc's axis is Y, the up axis.
+        return modeler.create_circle(orientation="ZX", origin=frame.point(u, v, w_base),
+                                     radius=radius)
     w0 = min(w_base, w_base + height)
     return modeler.create_cylinder(
         orientation="Y", origin=frame.point(u, v, w0),
@@ -572,11 +606,24 @@ def _extrude_track(modeler, track: Track, base, height, frame: Frame,
     if abs(dv) < 1e-9:
         # Horizontal run -- every track this generator draws is one of
         # these (there is exactly one AddTrack call per board, always
-        # along the feedline). A box is unambiguous regardless of
-        # extrusion direction, unlike thicken_sheet.
+        # along the feedline). As a rectangle it becomes a box, which is
+        # unambiguous regardless of extrusion direction, unlike
+        # thicken_sheet -- or a sheet, at height 0.
         x_lo, x_hi = sorted((track.x1, track.x2))
-        origin, sizes = frame.box(x_lo, track.y1 - half, x_hi, track.y1 + half, base, height)
-        names = [modeler.create_box(origin=origin, sizes=sizes).name]
+        names = [_extrude_polygon(
+            modeler,
+            [(x_lo, track.y1 - half), (x_hi, track.y1 - half),
+             (x_hi, track.y1 + half), (x_lo, track.y1 + half)],
+            base, height, frame,
+        )]
+    elif height == 0:
+        nu, nv = -dv / length * half, du / length * half
+        names = [_extrude_polygon(
+            modeler,
+            [(track.x1 + nu, track.y1 + nv), (track.x2 + nu, track.y2 + nv),
+             (track.x2 - nu, track.y2 - nv), (track.x1 - nu, track.y1 - nv)],
+            base, height, frame,
+        )]
     else:
         log(
             "WARNING: a non-horizontal track was extruded via thicken_sheet, whose "
