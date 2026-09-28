@@ -29,11 +29,12 @@ from typing import Any, Callable, Dict, List, Optional
 from ansys_analyze_common import queue_common
 
 from ..hfss import registry
-from ..hfss.model_builder import close_project_safely
+from ..hfss.model_builder import aedt_version_for, close_project_safely, one_aedt_at_a_time
 
 logger = logging.getLogger("microwave_package")
 
 
+@one_aedt_at_a_time
 def postprocess_task(
     task: Dict[str, Any],
     aedt_version,
@@ -54,7 +55,7 @@ def postprocess_task(
 
     kwargs = dict(
         project=task["project_file"],
-        version=aedt_version,
+        version=aedt_version_for(aedt_version),
         new_desktop=False,
         student_version=student_version,
         non_graphical=not graphical,
@@ -169,6 +170,26 @@ def bring_task_local(run, queue: "queue_common.QueuePaths", combo_id: str, task_
     return combo_dir
 
 
+def task_from_run(run, combo_id: str, analysis_settings: dict) -> Dict[str, Any]:
+    """The task a combination was queued with, rebuilt from the run's record.
+
+    What `model_builder.queue_model` wrote into it that post-processing
+    reads, with the local project in place of the queue's.
+    """
+    from ..hfss import model_builder
+
+    combo = run.state["combos"][combo_id]
+    solver = registry.for_settings(analysis_settings)
+    return {
+        "task_id": combo["task_id"],
+        "project_file": model_builder.project_file_for(run, combo_id),
+        "output_dir": run.combo_dir(combo_id),
+        "solution_type": solver.value,
+        "objects": combo.get("object_names") or {},
+        "post_processing": solver.post_processing_ops(analysis_settings),
+    }
+
+
 def find_project_file(folder: str, remote_project_file: str) -> Optional[str]:
     """The local .aedt to open, now that the files have been brought over."""
     expected = os.path.join(folder, os.path.basename(remote_project_file))
@@ -187,6 +208,7 @@ def postprocess_run(
     log: Callable[[str], None] = logger.info,
     stop_event=None,
     announce_idle: bool = True,
+    retry_results: bool = True,
 ) -> int:
     """For every combo whose worker task finished successfully, reopen its
     analyzed project and extract results -- one at a time, never in
@@ -195,7 +217,10 @@ def postprocess_run(
     poll this while analyses are still coming in.
 
     `announce_idle` is for that polling caller: it would otherwise log
-    "nothing to do" on every pass."""
+    "nothing to do" on every pass. So is `retry_results=False`, which
+    leaves a combo whose files are here but whose results failed for a
+    pass that is not polling: retrying it reopens its project in AEDT,
+    and one that fails every time would otherwise do so every poll."""
     aedt_version = analysis_settings.get("aedt_version")
     student_version = analysis_settings.get("student_version", True)
     graphical = analysis_settings.get("graphical", False)
@@ -203,6 +228,8 @@ def postprocess_run(
     todo = [
         combo_id for combo_id, combo in run.state["combos"].items()
         if combo.get("queue_status") == "done" and combo.get("post_status") != "done"
+        and (retry_results or not (combo.get("post_status") == "failed"
+                                   and combo.get("fetch_status") == "done"))
     ]
     if not todo:
         if announce_idle:
@@ -215,34 +242,52 @@ def postprocess_run(
         if stop_event is not None and stop_event.is_set():
             return handled
 
-        task_id = run.state["combos"][combo_id]["task_id"]
-        task = queue_common.read_task(queue, task_id)
-        if task is None:
-            log(f"{combo_id}: task {task_id} is no longer in the queue -- skipping.")
-            run.update_combo(combo_id, post_status="failed", post_error="task file not found")
-            handled += 1
-            continue
+        combo = run.state["combos"][combo_id]
+        task_id = combo["task_id"]
+        if combo.get("fetch_status") == "done":
+            # Already brought over -- and bring_task_local cleared the task
+            # off the queue once it had, so the queue has nothing left to
+            # read, and a post-processing that failed after the fetch used
+            # to be marked "task file not found" and never tried again. It
+            # is retried from the local files and the run's own record.
+            task = task_from_run(run, combo_id, analysis_settings)
+            local_dir = combo.get("analysis_dir") or run.combo_dir(combo_id)
+            if not os.path.isdir(local_dir):
+                # Checked here, not left to the listing below: that would
+                # raise an OSError, which call_with_retry takes for the
+                # share being down and waits out forever.
+                log(f"{combo_id}: its analysed files are no longer at {local_dir}.")
+                run.update_combo(combo_id, post_status="failed",
+                                 post_error=f"the analysed files are no longer at {local_dir}")
+                handled += 1
+                continue
+        else:
+            task = queue_common.read_task(queue, task_id)
+            if task is None:
+                log(f"{combo_id}: task {task_id} is no longer in the queue -- skipping.")
+                run.update_combo(combo_id, post_status="failed", post_error="task file not found")
+                handled += 1
+                continue
 
-        remote_project_file = task["project_file"]
-        remote_output_dir = queue_common.resolve_path(queue, task["output_dir"])
+            remote_output_dir = queue_common.resolve_path(queue, task["output_dir"])
 
-        # Everything is brought over the network first and AEDT is then
-        # pointed at the local copy: opening a solved project across a
-        # share is slow, and it was what put O:\ paths into the results.
-        # Recorded as its own phase, because a solved project coming back
-        # over a share is minutes of a combination's life, not a moment.
-        log(f"{combo_id}: fetching analysed files for task {task_id}...")
-        run.update_combo(combo_id, fetch_status="running")
-        local_dir = bring_task_local(run, queue, combo_id, task_id, remote_output_dir, log)
-        if local_dir is None:
-            run.update_combo(combo_id, fetch_status="failed", post_status="failed",
-                             post_error="could not copy the analysed files off the queue")
-            handled += 1
-            continue
+            # Everything is brought over the network first and AEDT is then
+            # pointed at the local copy: opening a solved project across a
+            # share is slow, and it was what put O:\ paths into the results.
+            # Recorded as its own phase, because a solved project coming back
+            # over a share is minutes of a combination's life, not a moment.
+            log(f"{combo_id}: fetching analysed files for task {task_id}...")
+            run.update_combo(combo_id, fetch_status="running")
+            local_dir = bring_task_local(run, queue, combo_id, task_id, remote_output_dir, log)
+            if local_dir is None:
+                run.update_combo(combo_id, fetch_status="failed", post_status="failed",
+                                 post_error="could not copy the analysed files off the queue")
+                handled += 1
+                continue
 
-        run.update_combo(combo_id, fetch_status="done")
+            run.update_combo(combo_id, fetch_status="done")
 
-        project_file = find_project_file(local_dir, remote_project_file)
+        project_file = find_project_file(local_dir, task["project_file"])
         if project_file is None:
             # The copy itself was fine and verified -- there is just
             # nothing in it to read, which is the next phase's failure.
@@ -262,7 +307,7 @@ def postprocess_run(
             client_result = {"status": "success", "task_id": task_id, "combo_id": combo_id, "result": result}
             with open(os.path.join(local_dir, "client_result.json"), "w") as f:
                 json.dump(client_result, f, indent=2, default=str)
-            run.update_combo(combo_id, post_status="done", analysis_dir=local_dir)
+            run.update_combo(combo_id, post_status="done", post_error=None, analysis_dir=local_dir)
             log(f"{combo_id}: post-processing done ({result['row_count']} result row(s)).")
         except Exception as exc:
             # The files are already local by this point, so a failure here

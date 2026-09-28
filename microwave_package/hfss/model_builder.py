@@ -13,9 +13,11 @@ solver rather than branched on. See registry.py for that contract.
 """
 from __future__ import annotations
 
+import functools
 import logging
 import os
 import re
+import threading
 import time
 from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional
@@ -65,6 +67,45 @@ def get_installed_versions() -> List[str]:
     cleaned = {re.sub(r"[A-Za-z]+$", "", v).strip() for v in raw_versions}
     cleaned = {v for v in cleaned if v}
     return sorted(cleaned, reverse=True)
+
+
+def aedt_version_for(requested: Optional[str]) -> Optional[str]:
+    """The version to hand PyAEDT: the run's own, or the newest installed.
+
+    Never None while AEDT is installed. Given None, PyAEDT falls back to a
+    setting shared by the whole process, which its own version check sets
+    to the internal "2025.2SV" while a Desktop is starting -- and then
+    rejects that very string ("Version argument is not valid"). A start
+    that fails partway leaves it there, and every later call in the
+    process fails the same way until the web app is restarted.
+    """
+    if requested:
+        return requested
+    versions = get_installed_versions()
+    return versions[0] if versions else None
+
+
+# One stretch of AEDT work at a time, across the whole process.
+#
+# The Student licence runs a single AEDT, and PyAEDT keeps one Desktop per
+# process in module globals, so every run the web app drives at once --
+# each in a pipeline thread of its own -- shares it without knowing. On
+# 2026-09-29 two runs post-processed at the same moment: one thread was
+# starting the Desktop, and the other, finding none registered yet, read
+# PyAEDT's half-set version and failed ("Version argument is not valid").
+# Had it got past that, it would have started a second AEDT, which the
+# licence refuses. A model build and a post-processing each hold this
+# for their whole length.
+AEDT_LOCK = threading.RLock()
+
+
+def one_aedt_at_a_time(fn):
+    """Run `fn` holding AEDT_LOCK -- see there."""
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        with AEDT_LOCK:
+            return fn(*args, **kwargs)
+    return wrapper
 
 
 # What a material setting falls back to when the run does not carry one.
@@ -1126,6 +1167,7 @@ def reusable_model(run, combo_id: str, log=logger.info) -> Optional[Dict[str, st
     return names
 
 
+@one_aedt_at_a_time
 def build_model(
     combo_id: str,
     step_paths: Dict[str, str],
@@ -1161,7 +1203,7 @@ def build_model(
 
     hfss = Hfss(
         project=project_path,
-        version=aedt_version,
+        version=aedt_version_for(aedt_version),
         solution_type=solver.value,
         new_desktop=False,
         student_version=student_version,

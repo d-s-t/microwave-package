@@ -278,6 +278,9 @@ def _run_stages(run: Run, queue: "queue_common.QueuePaths", log=logger.info, sto
         log("Waiting for the remaining analyses to finish...")
         run.set_stage("monitoring")
 
+    # Results that failed are tried again on the first pass after the run
+    # (re)starts, and at the end -- not on every poll: see postprocess_run.
+    retry_results = True
     while True:
         if _stopped(stop_event):
             return
@@ -286,7 +289,9 @@ def _run_stages(run: Run, queue: "queue_common.QueuePaths", log=logger.info, sto
             resilient_io.call_with_retry(
                 postprocess.postprocess_run, run, queue, analysis_settings,
                 queue_root=queue.root, log=log, stop_event=stop_event, announce_idle=False,
+                retry_results=retry_results,
             )
+            retry_results = False
         if not monitor_thread.is_alive():
             outstanding = still_analyzing()
             if not outstanding:
