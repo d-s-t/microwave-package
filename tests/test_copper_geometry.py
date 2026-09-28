@@ -488,6 +488,20 @@ class TestBuildingCopper(unittest.TestCase):
         self.assertEqual(len(caps), 2)
         self.assertTrue(all(c[0] == "ZX" for c in caps), "ZX is the plane: the disc's axis is Y")
 
+    def test_a_refused_unite_is_said(self):
+        """The pieces left over carry no material -- or, as sheets, no
+        boundary, which nothing downstream would notice."""
+        class Refusing(FakeModeler):
+            def unite(self, parts):
+                super().unite(parts)
+                return False
+
+        messages = []
+        cg.build(Refusing(), cg.parse(SAMPLE)["chip"], FRAME,
+                 top_face=STACK.chip_top, bottom_face=STACK.chip_bottom,
+                 thickness=0.0, prefix="chip", log=messages.append)
+        self.assertTrue(any("WARNING" in m and "chip_copper_top" in m for m in messages))
+
 
 class TestBondWires(unittest.TestCase):
     """Wires are built from the same file Altium places the pads from,

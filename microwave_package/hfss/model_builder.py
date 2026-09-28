@@ -643,10 +643,14 @@ def build_layout(hfss, combo_dir: str, dimensions_txt_content: str,
     )
     sheets: List[str] = []
 
-    def remember_sheets(made, drawn):
-        if not drawn:
-            sheets.extend(name for key, names in made.items() if "_copper_" in key
-                          for name in names)
+    def remember_sheets(made, drawn, real):
+        names = [name for key, built in made.items() if "_copper_" in key for name in built]
+        if names and not drawn:
+            sheets.extend(names)
+            # Said, because a sweep of this thickness changes nothing below it.
+            log(f"{', '.join(names)}: {real * 1000:g} um of metal, under "
+                f"{SHEET_BELOW_MM * 1000:g} um, so drawn as a sheet -- its thickness "
+                "does not enter the model.")
 
     _drop_superseded_solids(hfss, log)
     build_vacuum(
@@ -687,7 +691,7 @@ def build_layout(hfss, combo_dir: str, dimensions_txt_content: str,
             top_face=stack.pcb_top, bottom_face=stack.pcb_bottom,
             thickness=stack.copper_thickness, prefix="pcb", log=log,
         )
-        remember_sheets(made, stack.copper_thickness)
+        remember_sheets(made, stack.copper_thickness, copper)
         # The generator already draws the copper round the opening, so
         # this normally cuts nothing. It is here for the copper.txt an
         # older generator wrote, where it is the difference between a
@@ -710,7 +714,7 @@ def build_layout(hfss, combo_dir: str, dimensions_txt_content: str,
             top_face=stack.chip_top, bottom_face=stack.chip_bottom,
             thickness=stack.chip_metal_thickness, prefix="chip", log=log,
         )
-        remember_sheets(made, stack.chip_metal_thickness)
+        remember_sheets(made, stack.chip_metal_thickness, chip_metal)
 
     # The connectors are real vendor geometry rather than a stand-in, so
     # the launch is represented rather than left as bare copper. They

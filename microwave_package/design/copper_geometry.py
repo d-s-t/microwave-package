@@ -391,7 +391,7 @@ def build(
             parts.extend(_replicate(modeler, frame, where, pad_at, log=log))
 
         name = f"{prefix}_copper_{layer}"
-        created[name] = _unite_as(modeler, parts, name)
+        created[name] = _unite_as(modeler, parts, name, log)
 
     if copper.vias:
         # Vias run along the up axis, which is Y here rather than Z, and
@@ -616,48 +616,42 @@ def _extrude_track(modeler, track: Track, base, height, frame: Frame,
              (x_hi, track.y1 + half), (x_lo, track.y1 + half)],
             base, height, frame,
         )]
-    elif height == 0:
-        nu, nv = -dv / length * half, du / length * half
-        names = [_extrude_polygon(
-            modeler,
-            [(track.x1 + nu, track.y1 + nv), (track.x2 + nu, track.y2 + nv),
-             (track.x2 - nu, track.y2 - nv), (track.x1 - nu, track.y1 - nv)],
-            base, height, frame,
-        )]
     else:
-        log(
-            "WARNING: a non-horizontal track was extruded via thicken_sheet, whose "
-            "direction is not independently confirmed for this orientation -- "
-            "check it in the model."
-        )
         # Unit normal in the board plane, to reach the edges of the track.
         nu, nv = -dv / length * half, du / length * half
-        corners = [
-            frame.point(track.x1 + nu, track.y1 + nv, base),
-            frame.point(track.x2 + nu, track.y2 + nv, base),
-            frame.point(track.x2 - nu, track.y2 - nv, base),
-            frame.point(track.x1 - nu, track.y1 - nv, base),
-        ]
-        poly = modeler.create_polyline(points=corners, close_surface=True, cover_surface=True)
-        modeler.thicken_sheet(poly, height)
-        names = [poly.name]
+        corners = [(track.x1 + nu, track.y1 + nv), (track.x2 + nu, track.y2 + nv),
+                   (track.x2 - nu, track.y2 - nv), (track.x1 - nu, track.y1 - nv)]
+        if height == 0:
+            names = [_extrude_polygon(modeler, corners, base, height, frame)]
+        else:
+            log(
+                "WARNING: a non-horizontal track was extruded via thicken_sheet, whose "
+                "direction is not independently confirmed for this orientation -- "
+                "check it in the model."
+            )
+            poly = modeler.create_polyline(points=[frame.point(u, v, base) for u, v in corners],
+                                           close_surface=True, cover_surface=True)
+            modeler.thicken_sheet(poly, height)
+            names = [poly.name]
 
     for u, v in ((track.x1, track.y1), (track.x2, track.y2)):
         names.append(_cylinder(modeler, frame, u, v, base, height, half).name)
     return names
 
 
-def _unite_as(modeler, parts: Sequence[str], name: str) -> List[str]:
+def _unite_as(modeler, parts: Sequence[str], name: str, log=logger.info) -> List[str]:
     """Unite `parts` into one solid called `name`.
 
     The name is what matters: `model_builder.MATERIAL_RULES` matches on
-    it, so a rename here silently changes a material.
+    it, so a rename here silently changes a material. A refused unite is
+    said out loud: the pieces left over would carry no material -- or,
+    drawn as sheets, no boundary, which nothing else would notice.
     """
     parts = [p for p in parts if p]
     if not parts:
         return []
     if len(parts) > 1:
-        modeler.unite(parts)
+        _unite_or_warn(modeler, parts, f"the pieces of {name!r}", log)
     modeler[parts[0]].name = name
     return [name]
 
