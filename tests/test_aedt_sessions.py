@@ -118,6 +118,37 @@ class TestRetryingAfterTheFetch(unittest.TestCase):
             self.assertEqual(seen["solution_type"], "Eigenmode")
             self.assertTrue(seen["post_processing"], "the solver's own post-processing ops")
 
+    def test_from_wherever_the_run_recorded_them(self):
+        with tempfile.TemporaryDirectory() as root:
+            elsewhere = os.path.join(root, "c", "analysis")
+            os.makedirs(elsewhere)
+            open(os.path.join(elsewhere, "r__c.aedt"), "w").close()
+            run = FakeRun(root, {"c": {
+                "task_id": "t1", "queue_status": "done", "fetch_status": "done",
+                "post_status": "failed", "analysis_dir": elsewhere,
+            }})
+            seen = {}
+            with mock.patch.object(postprocess, "postprocess_task",
+                                   lambda task, *a, **k: seen.update(task) or {"rows": [], "row_count": 0}):
+                postprocess.postprocess_run(run, queue=None, log=lambda _m: None,
+                                            analysis_settings={"solution_type": "Eigenmode"})
+            self.assertEqual(seen["project_file"], os.path.join(elsewhere, "r__c.aedt"))
+
+    def test_files_that_are_gone_fail_it_instead_of_waiting_forever(self):
+        """A missing local folder is an OSError, which call_with_retry
+        waits out as though the share were down -- forever."""
+        with tempfile.TemporaryDirectory() as root:
+            run = FakeRun(root, {"c": {
+                "task_id": "t1", "queue_status": "done", "fetch_status": "done", "post_status": "failed",
+            }})
+            with mock.patch.object(postprocess, "postprocess_task",
+                                   side_effect=AssertionError("nothing to open")):
+                handled = postprocess.postprocess_run(run, queue=None, log=lambda _m: None,
+                                                      analysis_settings={"solution_type": "Eigenmode"})
+            self.assertEqual(handled, 1)
+            self.assertEqual(run.state["combos"]["c"]["post_status"], "failed")
+            self.assertIn("no longer at", run.state["combos"]["c"]["post_error"])
+
     def test_but_not_on_every_poll(self):
         """The poll comes round every few seconds while analyses are out,
         and a retry reopens the project in AEDT: one that fails every

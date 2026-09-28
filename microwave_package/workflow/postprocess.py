@@ -242,15 +242,25 @@ def postprocess_run(
         if stop_event is not None and stop_event.is_set():
             return handled
 
-        task_id = run.state["combos"][combo_id]["task_id"]
-        if run.state["combos"][combo_id].get("fetch_status") == "done":
+        combo = run.state["combos"][combo_id]
+        task_id = combo["task_id"]
+        if combo.get("fetch_status") == "done":
             # Already brought over -- and bring_task_local cleared the task
             # off the queue once it had, so the queue has nothing left to
             # read, and a post-processing that failed after the fetch used
             # to be marked "task file not found" and never tried again. It
             # is retried from the local files and the run's own record.
             task = task_from_run(run, combo_id, analysis_settings)
-            local_dir = run.combo_dir(combo_id)
+            local_dir = combo.get("analysis_dir") or run.combo_dir(combo_id)
+            if not os.path.isdir(local_dir):
+                # Checked here, not left to the listing below: that would
+                # raise an OSError, which call_with_retry takes for the
+                # share being down and waits out forever.
+                log(f"{combo_id}: its analysed files are no longer at {local_dir}.")
+                run.update_combo(combo_id, post_status="failed",
+                                 post_error=f"the analysed files are no longer at {local_dir}")
+                handled += 1
+                continue
         else:
             task = queue_common.read_task(queue, task_id)
             if task is None:
