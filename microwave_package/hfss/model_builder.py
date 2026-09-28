@@ -728,6 +728,44 @@ def build_layout(hfss, combo_dir: str, dimensions_txt_content: str,
 LAST_RESORT_CONDUCTOR = "copper"
 LAST_RESORT_DIELECTRIC = "Rogers TMM 10i (tm)"
 
+# Metals a run can ask for that the stock AEDT library does not carry,
+# with the properties to create them with.
+#
+# Only these are ever added to a project. For any other name the library
+# does not know, PyAEDT's `add_material` does not fail -- it quietly
+# creates a BLANK material, permittivity 1 and conductivity 0, which is
+# vacuum under the metal's name. That is what every "niobium" chip
+# conductor was until 2026-09-28: with "Perfect E on the conductors" off,
+# no metal on the die at all.
+#
+# Bulk room-temperature values, like the library's own copper and
+# aluminum. At the package's millikelvin operating point niobium
+# superconducts; "Perfect E on the conductors" is the setting for that.
+MISSING_FROM_LIBRARY: Dict[str, Dict[str, float]] = {
+    # Resistivity 152 nOhm m.
+    "niobium": {"conductivity": 6.58e6},
+}
+
+
+def _ensure_missing_material(hfss, material: str, log) -> None:
+    """Make sure a MISSING_FROM_LIBRARY metal exists with its real properties.
+
+    Corrects one that is already in the project too: a project an earlier
+    build left behind carries the blank "niobium" from before, and
+    assigning that would pass every check while still being vacuum.
+    """
+    properties = MISSING_FROM_LIBRARY.get(material.strip().lower())
+    if properties is None:
+        return
+    try:
+        existing = hfss.materials.exists_material(material)
+        made = existing or hfss.materials.add_material(material)
+        for key, value in properties.items():
+            setattr(made, key, value)
+        made.update()
+    except Exception as exc:
+        log(f"WARNING: could not create {material!r} with its real properties ({exc}).")
+
 
 def _try_material(hfss, obj, material: str) -> bool:
     """Set a body's material and check it actually took.
@@ -750,23 +788,16 @@ def _assign_material(hfss, obj, material: str, is_conductor: bool, log) -> bool:
     """Give a body a material, falling back until one sticks.
 
     Niobium is the case this exists for: it is the right material for a
-    superconducting die but many libraries do not carry it, and the
+    superconducting die but the stock library does not carry it, and the
     failure is silent. Rather than leave the body as vacuum -- which is
     not a conductor at all, and changes the physics rather than
-    approximating it -- try to add the material, then settle for a plain
-    metal and say so.
+    approximating it -- a metal in MISSING_FROM_LIBRARY is created with
+    its real properties, and any other name the library lacks settles for
+    a plain stand-in, and says so.
     """
+    _ensure_missing_material(hfss, material, log)
     if _try_material(hfss, obj, material):
         return True
-
-    # Some libraries will take it once it exists.
-    try:
-        hfss.materials.add_material(material)
-        if _try_material(hfss, obj, material):
-            log(f"Added {material!r} to the project material library for {obj.name}.")
-            return True
-    except Exception:
-        pass
 
     stand_in = LAST_RESORT_CONDUCTOR if is_conductor else LAST_RESORT_DIELECTRIC
     if stand_in != material and _try_material(hfss, obj, stand_in):

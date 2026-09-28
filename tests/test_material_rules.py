@@ -371,6 +371,109 @@ class TestMaterialFallbacks(unittest.TestCase):
         self.assertEqual(missing, set(), f"no fallback for {missing}")
 
 
+class FakeMaterial:
+    """What PyAEDT's `add_material` hands back for a name the library
+    lacks: a BLANK material -- permittivity 1, conductivity 0 -- until
+    someone sets its properties."""
+
+    def __init__(self, name):
+        self.name = name
+        self.permittivity = 1
+        self.conductivity = 0
+
+    def update(self):
+        pass
+
+
+class FakeLibrary:
+    STOCK = {"copper", "aluminum", "gold", "silicon", "vacuum", "rogers tmm 10i (tm)"}
+
+    def __init__(self, project=()):
+        self.project = {m.name.lower(): m for m in project}
+
+    def exists_material(self, name):
+        return self.project.get(name.lower(), False)
+
+    def add_material(self, name):
+        self.project[name.lower()] = FakeMaterial(name)
+        return self.project[name.lower()]
+
+    def knows(self, name):
+        return name.lower() in self.STOCK or name.lower() in self.project
+
+
+class PickyObject:
+    """A body that, like AEDT's, silently keeps its material when handed
+    a name the library does not know."""
+
+    def __init__(self, name, library):
+        self.name = name
+        self._library = library
+        self._material = "vacuum"
+
+    @property
+    def material_name(self):
+        return self._material
+
+    @material_name.setter
+    def material_name(self, value):
+        if self._library.knows(value):
+            self._material = value
+
+
+class HfssWithALibrary(FakeHfss):
+    def __init__(self, names, project=()):
+        super().__init__([])
+        self.materials = FakeLibrary(project)
+        self._objects = [PickyObject(n, self.materials) for n in names]
+
+
+class TestMetalsMissingFromTheLibrary(unittest.TestCase):
+    """Niobium is not in the stock library, and adding it by name makes a
+    blank material -- vacuum under the name "niobium". Every chip
+    conductor was that until 2026-09-28."""
+
+    def assign(self, names, settings=None, project=()):
+        hfss = HfssWithALibrary(names, project)
+        messages = []
+        model_builder.assign_materials_and_boundaries(
+            hfss, dict(settings or SETTINGS), log=messages.append)
+        return hfss, messages
+
+    def test_niobium_is_created_as_a_metal(self):
+        hfss, _ = self.assign(["chip_copper_top"])
+        self.assertEqual(hfss.modeler.solid_objects[0].material_name, "niobium")
+        self.assertEqual(hfss.materials.project["niobium"].conductivity,
+                         model_builder.MISSING_FROM_LIBRARY["niobium"]["conductivity"])
+
+    def test_it_is_conductive_enough_not_to_be_solved_inside(self):
+        """HFSS meshes and solves inside anything below 1e5 S/m -- which
+        for a 200 nm film is a layer of elements a fraction of a micron
+        thick."""
+        self.assertGreater(model_builder.MISSING_FROM_LIBRARY["niobium"]["conductivity"], 1e5)
+
+    def test_a_blank_niobium_left_in_the_project_is_corrected(self):
+        """A project an earlier build left behind already carries the
+        blank one, and it would be assigned without complaint."""
+        hfss, _ = self.assign(["chip_copper_top"], project=[FakeMaterial("niobium")])
+        self.assertGreater(hfss.materials.project["niobium"].conductivity, 1e5)
+
+    def test_an_unknown_metal_is_the_stand_in_not_a_blank_material(self):
+        settings = dict(SETTINGS, mat_conductor_chip="unobtainium")
+        hfss, messages = self.assign(["chip_copper_top"], settings)
+        self.assertEqual(hfss.modeler.solid_objects[0].material_name,
+                         model_builder.LAST_RESORT_CONDUCTOR)
+        self.assertNotIn("unobtainium", hfss.materials.project)
+        self.assertTrue(any("WARNING" in m and "unobtainium" in m for m in messages))
+
+    def test_an_unknown_dielectric_is_the_stand_in_too(self):
+        settings = dict(SETTINGS, mat_pcb="mystery laminate")
+        hfss, _ = self.assign(["pcb_substrate"], settings)
+        self.assertEqual(hfss.modeler.solid_objects[0].material_name,
+                         model_builder.LAST_RESORT_DIELECTRIC)
+        self.assertNotIn("mystery laminate", hfss.materials.project)
+
+
 class TestRuleTableIsSane(unittest.TestCase):
     def test_defined_exactly_once(self):
         """It was defined twice for a while, and the second, stale copy
