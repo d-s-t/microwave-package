@@ -168,9 +168,9 @@ A run is Eigenmode unless told otherwise. For S-parameters:
 python -m microwave_package.pipeline --solution-type DrivenModal --f-start-ghz 1 --f-stop-ghz 15 --sweep pedestal_depth=0:10:2
 ```
 
-`--reference-plane connector` (the default) puts a wave port on the SMP
-bead's coax cross-section, so the connector transition is inside the
-measurement; `--reference-plane launch` puts a lumped port under the CPW
+`--reference-plane connector` (the default) puts a wave port across the SMP's
+air bore just above its bead (the barrel above is capped off), so the
+connector transition is inside the measurement; `--reference-plane launch` puts a lumped port under the CPW
 trace instead and measures the board alone.
 
 Run `python -m microwave_package.pipeline --help` for every analysis

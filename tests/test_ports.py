@@ -49,18 +49,51 @@ class FakeFace:
 
 
 class FakeObject:
-    def __init__(self, faces):
+    def __init__(self, faces, name=None, material=None):
         self.faces = list(faces)
+        self.name = name
+        self.material = material
+        self.solve_inside = True
 
 
 class FakeModeler:
+    # What a cylinder in the bore is left as once the pin and the bore
+    # wall are subtracted from it: the annulus between them.
+    BORE_INNER = 0.30
+    BORE_OUTER = 1.00
+
     def __init__(self, objects):
         self._objects = objects
         self.object_names = list(objects)
         self.rectangles = []
+        self.cylinders = []
+        self.subtractions = []
+        # Set to make the bore's cut-out faces disagree with their edges.
+        self.bore_area_scale = 1.0
 
     def __getitem__(self, name):
         return self._objects[name]
+
+    def create_cylinder(self, orientation, origin, radius, height, name, material):
+        self.cylinders.append({
+            "orientation": orientation, "origin": list(origin), "radius": radius,
+            "height": height, "name": name, "material": material,
+        })
+        along, bottom, across = origin
+        faces = annulus_faces(1000 * (len(self.cylinders) + 1), bottom + height, bottom,
+                              inner=self.BORE_INNER, outer=self.BORE_OUTER,
+                              along=along, across=across)
+        for face in faces[:2]:
+            if face.area:
+                face.area *= self.bore_area_scale
+        body = FakeObject(faces, name=name, material=material)
+        self._objects[name] = body
+        self.object_names.append(name)
+        return body
+
+    def subtract(self, blank, tools, keep_originals):
+        self.subtractions.append((blank, list(tools), keep_originals))
+        return True
 
     def create_rectangle(self, orientation, origin, sizes, name):
         self.rectangles.append(
@@ -84,8 +117,9 @@ class FakeHfss:
         return True
 
 
-def annulus_faces(prefix_id, top_height, bottom_height, inner=0.45, outer=2.20):
-    """A bead: two flat annular ends and a curved wall between them.
+def annulus_faces(prefix_id, top_height, bottom_height, inner=0.45, outer=2.20,
+                  along=0.0, across=0.0):
+    """Two flat annular ends and a curved wall between them.
 
     The curved wall's centre sits at mid-height, which is what makes
     "the highest face centre" pick an end rather than the wall.
@@ -94,17 +128,25 @@ def annulus_faces(prefix_id, top_height, bottom_height, inner=0.45, outer=2.20):
     area = math.pi * (outer ** 2 - inner ** 2)
     middle = (top_height + bottom_height) / 2.0
     return [
-        FakeFace(prefix_id + 1, [0.0, top_height, 0.0], circumferences, area),
-        FakeFace(prefix_id + 2, [0.0, bottom_height, 0.0], circumferences, area),
-        FakeFace(prefix_id + 3, [0.0, middle, 0.0], (), None, is_planar=False),
+        FakeFace(prefix_id + 1, [along, top_height, across], circumferences, area),
+        FakeFace(prefix_id + 2, [along, bottom_height, across], circumferences, area),
+        FakeFace(prefix_id + 3, [along, middle, across], (), None, is_planar=False),
     ]
 
 
+# Where the two connectors' axes sit, port 1 at the -x end.
+AXES = {1: (-12.5, 0.3), 2: (12.5, 0.3)}
+
+
 def bead_model(top=1.5, bottom=0.95):
-    return FakeHfss({
-        "connector_1_dielectric": FakeObject(annulus_faces(100, top, bottom)),
-        "connector_2_dielectric": FakeObject(annulus_faces(200, top, bottom)),
-    })
+    objects = {}
+    for index, (along, across) in AXES.items():
+        objects[f"connector_{index}_dielectric"] = FakeObject(
+            annulus_faces(100 * index, top, bottom, along=along, across=across))
+        objects[f"connector_{index}_center"] = FakeObject([])
+        objects[f"connector_{index}_outer"] = FakeObject([])
+    objects["vacuum"] = FakeObject([])
+    return FakeHfss(objects)
 
 
 class FakeLayout:
@@ -156,14 +198,47 @@ class TestConnectorWavePorts(unittest.TestCase):
         self.assertEqual(names, ["port_1", "port_2"])
         self.assertEqual(len(hfss.wave_ports), 2)
 
-    def test_the_port_goes_on_the_face_toward_the_mating_end(self):
-        """The lower face's far side is the connector's SMD layer -- an
-        off-axis centre tab and a void ring, not a coax cross-section."""
+    def test_an_air_bore_and_a_pec_cap_stack_on_the_bead_top(self):
+        """The model's vacuum stops at the box ceiling, below the bead's
+        top, so the bore above it has to be added to have a coax to put a
+        port on -- and closed, so the port is on the solved region's
+        outside."""
         hfss = bead_model(top=1.5, bottom=0.95)
         ports.place_ports(hfss, FakeLayout(), self.SETTINGS)
-        # face id 101 is the top face of the first bead (see annulus_faces)
-        self.assertEqual(hfss.wave_ports[0]["assignment"], 101)
-        self.assertEqual(hfss.wave_ports[1]["assignment"], 201)
+        bore, cap = hfss.modeler.cylinders[:2]
+        self.assertEqual((bore["name"], bore["material"]), ("port_1_bore", "vacuum"))
+        self.assertEqual((cap["name"], cap["material"]), ("port_1_cap", "pec"))
+        self.assertAlmostEqual(bore["origin"][ports.UP], 1.5)
+        self.assertAlmostEqual(cap["origin"][ports.UP], 1.5 + ports.BORE_PORT_HEIGHT)
+        self.assertTrue(hfss.modeler["port_1_bore"].solve_inside)
+        self.assertFalse(hfss.modeler["port_1_cap"].solve_inside)
+
+    def test_the_bore_is_centred_on_the_connector_axis(self):
+        """Not on a bounding box: the centre conductor's runs out along
+        its SMD tab. The bead top's annular face is on the axis."""
+        hfss = bead_model()
+        ports.place_ports(hfss, FakeLayout(), self.SETTINGS)
+        for cylinder, index in zip(hfss.modeler.cylinders[::2], (1, 2)):
+            along, across = AXES[index]
+            self.assertAlmostEqual(cylinder["origin"][ports.ALONG], along)
+            self.assertAlmostEqual(cylinder["origin"][2], across)
+
+    def test_both_bodies_are_cut_to_the_conductors_and_out_of_the_vacuum(self):
+        hfss = bead_model()
+        ports.place_ports(hfss, FakeLayout(), self.SETTINGS)
+        subtractions = hfss.modeler.subtractions
+        self.assertIn(("port_1_bore", ["connector_1_center", "connector_1_outer"], True), subtractions)
+        self.assertIn(("port_1_cap", ["connector_1_center", "connector_1_outer"], True), subtractions)
+        self.assertIn(("vacuum", ["port_1_bore", "port_1_cap"], True), subtractions)
+
+    def test_the_port_goes_on_top_of_the_air_bore(self):
+        """Its top face is where the cap sits: the solved region's edge."""
+        hfss = bead_model(top=1.5, bottom=0.95)
+        ports.place_ports(hfss, FakeLayout(), self.SETTINGS)
+        # Cylinders are numbered in creation order (bore, cap, bore, cap);
+        # face +1 is each one's top (see annulus_faces).
+        self.assertEqual(hfss.wave_ports[0]["assignment"], 2001)
+        self.assertEqual(hfss.wave_ports[1]["assignment"], 4001)
 
     def test_the_integration_line_crosses_the_annulus_radially(self):
         """A coax's TEM field is radial, so the line has to run from the
@@ -172,11 +247,12 @@ class TestConnectorWavePorts(unittest.TestCase):
         hfss = bead_model()
         ports.place_ports(hfss, FakeLayout(), self.SETTINGS)
         start, stop = hfss.wave_ports[0]["integration_line"]
+        across = AXES[1][1]
         # Up is Y and the feedline is X, so radial here means Z.
         self.assertAlmostEqual(start[ports.UP], stop[ports.UP])
         self.assertAlmostEqual(start[ports.ALONG], stop[ports.ALONG])
-        self.assertAlmostEqual(start[2], 0.45, places=6)
-        self.assertAlmostEqual(stop[2], 2.20, places=6)
+        self.assertAlmostEqual(start[2], across + 0.30, places=6)
+        self.assertAlmostEqual(stop[2], across + 1.00, places=6)
 
     def test_it_renormalises_to_the_runs_port_impedance(self):
         hfss = bead_model()
@@ -196,19 +272,26 @@ class TestConnectorWavePorts(unittest.TestCase):
     def test_a_face_that_is_not_an_annulus_is_refused(self):
         """A wave port on it would still solve, and would not mean what
         the reference plane says it means."""
-        faces = annulus_faces(100, 1.5, 0.95)
-        faces[0].area = faces[0].area * 2  # edges and area no longer agree
-        hfss = FakeHfss({"connector_1_dielectric": FakeObject(faces)})
+        hfss = bead_model()
+        hfss.modeler.bore_area_scale = 2.0  # edges and area no longer agree
         with self.assertRaises(ports.PortPlacementError) as caught:
             ports.place_ports(hfss, FakeLayout(), self.SETTINGS)
         self.assertIn("annulus", str(caught.exception))
 
     def test_a_bead_with_only_one_flat_end_is_refused(self):
-        faces = annulus_faces(100, 1.5, 0.95)
-        del faces[1]
-        hfss = FakeHfss({"connector_1_dielectric": FakeObject(faces)})
+        hfss = bead_model()
+        del hfss.modeler["connector_1_dielectric"].faces[1]
         with self.assertRaises(ports.PortPlacementError):
             ports.place_ports(hfss, FakeLayout(), self.SETTINGS)
+
+    def test_a_bead_top_with_no_annular_face_is_refused(self):
+        """Then there is nothing to find the axis from, and a bore drawn
+        off-axis would cut into the pin or the wall."""
+        hfss = bead_model()
+        hfss.modeler["connector_1_dielectric"].faces[0].area *= 2
+        with self.assertRaises(ports.PortPlacementError) as caught:
+            ports.place_ports(hfss, FakeLayout(), self.SETTINGS)
+        self.assertIn("axis", str(caught.exception))
 
 
 # --- the launch reference plane ---------------------------------------

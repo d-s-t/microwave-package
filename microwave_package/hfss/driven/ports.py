@@ -7,23 +7,25 @@ a detail: it fixes the reference plane, and an S11 referenced at the
 connector is a different number from an S11 referenced at the CPW. So the
 run picks one of two, and this module builds it.
 
-**`connector`** -- a wave port on the coax cross-section through the SMP
-bead. The vendor bead is the one place in the connector that is genuinely
-50 ohm: `github.com/d-s-t/wr-smp-connector` reconstructs it as a Ø0.9 mm
-centre post inside a Ø4.4 mm LCP insulator, which is
-`60/sqrt(3.6) * ln(2.2/0.45) = 50.2 ohm` -- the datasheet's number. Its
-face toward the mating end is a flat annulus bounded by the centre post
-inside and the outer conductor outside, which is exactly what an internal
-wave port wants. Everything from there down -- bead, SMD tab, land
-pattern, CPW -- is inside the measurement.
+**`connector`** -- a wave port across the SMP's air bore, just above the
+bead. `github.com/d-s-t/wr-smp-connector` reconstructs the bead as a
+Ø0.9 mm centre post inside a Ø4.4 mm LCP insulator (50.2 ohm, the
+datasheet's number), topped by a short Ø2.0 mm air bore around the
+Ø0.6 mm pin. The bead's own top face is not a coax cross-section -- it
+is the step from the Ø4.4 insulator to the Ø2.0 bore, split into several
+faces -- so the port goes in the bore instead, which is a plain air coax
+(about 72 ohm, renormalised to the port impedance). Everything from
+there down -- the bead, SMD tab, land pattern, CPW -- is inside the
+measurement.
 
-What is NOT inside it: the centre pin and the empty barrel above the
-port, which stay in the model as an unmated stub. A real measurement has
-a plug mated there instead, filling that space with the mating coax. So
-the barrel's own resonances are an artefact of measuring an unmated
-connector, and they are real in the model even though they would not be
-on the bench. This is the honest cost of referencing an unmated jack;
-there is no port plane that avoids it.
+The connector stands well above the box, whose vacuum stops at its
+ceiling, so the bore is not otherwise in the model: `_bore_section`
+adds the short air section between the bead and the port, and closes it
+with a thin PEC annulus, because a wave port has to be on the outside
+of the solved region. The empty barrel above stays out of the solve: it
+is the unmated stub a real measurement has a plug in, and its
+resonances would be an artefact of the model, not something the bench
+sees.
 
 **`launch`** -- a lumped port under the CPW trace, spanning the substrate
 from the backing ground plane up to the trace, placed just inboard of
@@ -31,10 +33,10 @@ where the land pattern stops (`smp.launch_inner_edge`). The connector and
 its launch are outboard of it and take no part in the measurement. This
 is the board on its own.
 
-Neither option changes the geometry. The connectors are placed either
-way, the cavity is the same cavity, and only the excitation moves -- so
-two runs that differ only in reference plane are the same model measured
-in two places, which is the only way the comparison means anything.
+Neither option changes the board. The connectors are placed either way
+and the cavity is the same cavity; beyond the excitation, the only
+difference is the connector plane's bore caps, which sit above the
+port and outside the measurement.
 
 Port 1 is always the -x end of the board and port 2 the +x end, matching
 `place_connectors`' own index-to-end convention, so S21 always runs the
@@ -62,11 +64,11 @@ REFERENCE_PLANE_LAUNCH = "launch"
 REFERENCE_PLANES = [
     {
         "value": REFERENCE_PLANE_CONNECTOR,
-        "label": "Connector -- wave port in the SMP bead",
+        "label": "Connector -- wave port in the SMP bore",
         "help": "Includes the connector transition and the launch. The port "
-                "sits on the coax cross-section through the vendor bead, "
-                "which is the connector's own 50 ohm section. Closest to "
-                "what a VNA sees at the connector.",
+                "sits across the air bore just above the vendor bead, with the "
+                "barrel above it capped off. Closest to what a VNA sees at "
+                "the connector.",
     },
     {
         "value": REFERENCE_PLANE_LAUNCH,
@@ -87,14 +89,20 @@ UP = 1
 # Along the feedline. Frame maps Altium's u to X.
 ALONG = 0
 
-# The vendor bead's radii in millimetres, from the reconstruction in
-# github.com/d-s-t/wr-smp-connector: Ø4.4 insulator around a Ø0.9 centre
-# post. Only used to sanity-check what is measured off the real face --
-# never to place anything, so a re-split of the vendor model that moves
-# these does not silently disagree with the model being solved.
-_EXPECTED_OUTER_RADIUS = 2.20
-_EXPECTED_INNER_RADIUS = 0.45
-_RADIUS_TOLERANCE = 0.25
+# The air bore right above the bead, from the reconstruction in
+# github.com/d-s-t/wr-smp-connector: a Ø2.0 bore, 0.25 mm tall, around
+# the Ø0.6 pin, before the barrel opens out to Ø3.2. The port goes
+# halfway up it and the cap stops short of the step.
+BORE_RADIUS = 1.00
+BORE_PORT_HEIGHT = 0.125
+BORE_CAP_HEIGHT = 0.10
+
+# What the port face should measure: pin inside, bore outside. Only a
+# sanity check on what is measured off the real face, so a re-split of
+# the vendor model that moves the pin is reported rather than silent.
+_EXPECTED_OUTER_RADIUS = BORE_RADIUS
+_EXPECTED_INNER_RADIUS = 0.30
+_RADIUS_TOLERANCE = 0.05
 
 
 def place_ports(hfss, layout, analysis_settings: Dict[str, Any], log=logger.info) -> List[str]:
@@ -141,7 +149,7 @@ def place_ports(hfss, layout, analysis_settings: Dict[str, Any], log=logger.info
 # --- the connector reference plane ------------------------------------
 
 def _connector_wave_ports(hfss, impedance: float, log) -> List[str]:
-    """A wave port on each SMP bead's outward coax cross-section."""
+    """A PEC-backed wave port across each SMP connector's air bore."""
     beads = sorted(
         name for name in hfss.modeler.object_names
         if name.startswith("connector_") and name.endswith("_dielectric")
@@ -154,13 +162,25 @@ def _connector_wave_ports(hfss, impedance: float, log) -> List[str]:
             "build log above. Use the 'launch' reference plane instead, which "
             "does not need the connector."
         )
+    vacuum = next((n for n in hfss.modeler.object_names if n.lower() == "vacuum"), None)
 
     names: List[str] = []
     for bead in beads:
-        face = _mating_end_face(hfss, bead)
-        inner, outer = _annulus_radii(face, bead, log=log)
+        index = bead.split("_")[1]
+        centre = f"connector_{index}_center"
+        if centre not in hfss.modeler.object_names:
+            raise PortPlacementError(
+                f"{bead} has no {centre} beside it, so there is no centre conductor "
+                "to put the port's inner edge on."
+            )
+        port_name = f"port_{index}"
+        air = _bore_section(hfss, bead, centre, vacuum, port_name, log=log)
+        face = max(
+            (f for f in hfss.modeler[air].faces if f.is_planar),
+            key=lambda f: f.center[UP],
+        )
+        inner, outer = _annulus_radii(face, air, log=log)
         start, stop = _radial_integration_line(face, inner, outer)
-        port_name = f"port_{bead.split('_')[1]}"
         try:
             port = hfss.wave_port(
                 assignment=face.id,
@@ -172,17 +192,98 @@ def _connector_wave_ports(hfss, impedance: float, log) -> List[str]:
             )
         except Exception as exc:
             raise PortPlacementError(
-                f"Could not create a wave port on {bead}'s coax face (id {face.id}, "
+                f"Could not create a wave port on top of {air} (id {face.id}, "
                 f"centre {face.center}): {exc}"
             ) from exc
         if not port:
-            raise PortPlacementError(f"HFSS refused a wave port on {bead}'s coax face.")
+            raise PortPlacementError(f"HFSS refused a wave port on top of {air}.")
         log(
-            f"Wave port {port_name} on {bead}: annulus r={inner:.3f}..{outer:.3f} mm "
-            f"at height {face.center[UP]:.3f} mm, renormalised to {impedance} ohm."
+            f"Wave port {port_name} across connector_{index}'s bore: annulus "
+            f"r={inner:.3f}..{outer:.3f} mm at height {face.center[UP]:.3f} mm, "
+            f"renormalised to {impedance} ohm."
         )
         names.append(port_name)
     return names
+
+
+def _bore_section(hfss, bead: str, centre: str, vacuum, port_name: str, log) -> str:
+    """Model the air bore just above the bead and close it; return the air body.
+
+    Two annuli stacked on the bead's top face, both cut to fit between
+    the pin and the bore wall:
+
+    * `<port>_bore` -- vacuum, solved, BORE_PORT_HEIGHT tall. The
+      connector stands well above the box, and the model's vacuum stops
+      at the box ceiling, so without this the bore is not in the model at
+      all and there is no air coax to put a port on. Its top face is the
+      port.
+    * `<port>_cap` -- PEC, BORE_CAP_HEIGHT tall, right above it. A wave
+      port has to be on the outside of the solved region -- HFSS solves
+      its 2D mode as if the guide ran on forever behind it -- and the
+      cap guarantees that even in a box tall enough for its vacuum to
+      reach the bore. It also leaves the empty barrel above out of the
+      solve: that is the unmated stub a real measurement has a plug in.
+
+    The port sits in the plain Ø2.0 air section above the bead, whose top
+    face is the highest flat face of the bead body. The pin is Ø0.6 there,
+    so the port sees a uniform air coax, and the bead's step out to Ø4.4
+    is BORE_PORT_HEIGHT below it -- inside the measurement, as the
+    connector transition is meant to be.
+    """
+    top = _mating_end_face(hfss, bead).center[UP]
+    along, across = _connector_axis(hfss, bead, top)
+    outer = f"connector_{bead.split('_')[1]}_outer"
+    conductors = [body for body in (centre, outer) if body in hfss.modeler.object_names]
+
+    bodies = []
+    for name, bottom, height, material in (
+        (f"{port_name}_bore", top, BORE_PORT_HEIGHT, "vacuum"),
+        (f"{port_name}_cap", top + BORE_PORT_HEIGHT, BORE_CAP_HEIGHT, "pec"),
+    ):
+        # Drawn wider than the bore and cut back by both conductors, so
+        # each meets the pin and the bore wall exactly -- no sliver
+        # between them and no metal overlap, whatever the true radii are.
+        body = hfss.modeler.create_cylinder(
+            orientation="Y", origin=[along, bottom, across], radius=BORE_RADIUS + 0.1,
+            height=height, name=name, material=material,
+        )
+        if not body:
+            raise PortPlacementError(f"Could not create {name} for the wave port.")
+        body.solve_inside = material != "pec"
+        hfss.modeler.subtract(name, conductors, keep_originals=True)
+        bodies.append(name)
+    if vacuum is not None:
+        hfss.modeler.subtract(vacuum, bodies, keep_originals=True)
+    log(
+        f"{bodies[0]}: air bore from {top:.3f} to {top + BORE_PORT_HEIGHT:.3f} mm, "
+        f"closed by {bodies[1]} above it."
+    )
+    return bodies[0]
+
+
+def _connector_axis(hfss, bead: str, top: float) -> tuple:
+    """The connector's axis, as its (along, across) position.
+
+    Not a bounding box: the centre conductor's includes the SMD tab
+    running off to one side, and the bead's the tab's slot. The bead's
+    top carries at least one face that is an exact annulus about the
+    axis -- two full circles, area pi*(R^2 - r^2) -- and its centroid is
+    the axis.
+    """
+    across = [axis for axis in range(3) if axis not in (UP, ALONG)][0]
+    for face in hfss.modeler[bead].faces:
+        if not face.is_planar or abs(face.center[UP] - top) > 1e-6:
+            continue
+        lengths = [edge.length for edge in face.edges]
+        if len(lengths) != 2 or not all(lengths):
+            continue
+        r, big_r = sorted(length / (2.0 * math.pi) for length in lengths)
+        if abs(face.area - math.pi * (big_r ** 2 - r ** 2)) < 0.01 * face.area:
+            return face.center[ALONG], face.center[across]
+    raise PortPlacementError(
+        f"{bead}'s top has no annular face to find the connector's axis from; "
+        "the connector model is not the one this code expects."
+    )
 
 
 def _mating_end_face(hfss, bead: str):
@@ -232,7 +333,7 @@ def _annulus_radii(face, bead: str, log) -> tuple:
     circumferences = sorted(edge.length for edge in face.edges if edge.length)
     if len(circumferences) != 2:
         raise PortPlacementError(
-            f"{bead}'s mating-end face has {len(circumferences)} edges, expected 2 "
+            f"{bead}'s port face has {len(circumferences)} edges, expected 2 "
             "(the inner and outer circles of an annulus). It is not the coax "
             "cross-section this code expects."
         )
@@ -241,7 +342,7 @@ def _annulus_radii(face, bead: str, log) -> tuple:
     expected_area = math.pi * (outer ** 2 - inner ** 2)
     if face.area and abs(face.area - expected_area) > 0.02 * expected_area:
         raise PortPlacementError(
-            f"{bead}'s mating-end face measures r={inner:.3f}, R={outer:.3f} mm from "
+            f"{bead}'s port face measures r={inner:.3f}, R={outer:.3f} mm from "
             f"its edges but has area {face.area:.4f} mm^2, not the "
             f"{expected_area:.4f} mm^2 an annulus of those radii would have. The face "
             "is not a plain annulus, so a coax wave port on it would not mean what "
@@ -256,8 +357,8 @@ def _annulus_radii(face, bead: str, log) -> tuple:
             log(
                 f"WARNING: {bead}'s {what} radius measures {measured:.3f} mm, not the "
                 f"{expected:.3f} mm the vendor reconstruction documents. The port is "
-                "built to the measured geometry, but the bead may no longer be the "
-                "50 ohm section this reference plane assumes."
+                "built to the measured geometry, but the connector model may have "
+                "changed under it."
             )
     return inner, outer
 
