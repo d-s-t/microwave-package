@@ -30,6 +30,7 @@ from ansys_analyze_common import queue_common
 
 from ..hfss import registry
 from ..hfss.model_builder import aedt_version_for, close_project_safely, one_aedt_at_a_time
+from . import resilient_io
 
 logger = logging.getLogger("microwave_package")
 
@@ -130,6 +131,11 @@ def bring_task_local(run, queue: "queue_common.QueuePaths", combo_id: str, task_
     Returns the combo folder once its files are local, or None if the
     transfer did not complete -- in which case the remote copy is still
     the good one and is left alone.
+
+    Raises the OSError instead when the share itself has gone, rather
+    than these files: the laptop's standby drops the network, and a copy
+    it cut off is not a failure of that combination. The caller's
+    call_with_retry waits for the share and tries again.
     """
     combo_dir = run.combo_dir(combo_id)
     staging = os.path.join(combo_dir, ".incoming")
@@ -138,8 +144,11 @@ def bring_task_local(run, queue: "queue_common.QueuePaths", combo_id: str, task_
     try:
         missing = copy_tree_verified(output_dir, staging)
     except OSError as exc:
-        log(f"{combo_id}: could not copy the analysed files off the queue ({exc}); leaving them there.")
         shutil.rmtree(staging, ignore_errors=True)
+        if not resilient_io.path_available(queue.root):
+            log(f"{combo_id}: the queue went away mid-copy ({exc}); waiting for it to come back.")
+            raise
+        log(f"{combo_id}: could not copy the analysed files off the queue ({exc}); leaving them there.")
         return None
 
     if missing:

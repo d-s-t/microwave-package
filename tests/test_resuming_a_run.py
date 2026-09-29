@@ -80,5 +80,34 @@ class TestTheRunPageOffersResume(ResumeTest):
         self.assertNotIn('id="resume-form"', self.page())
 
 
+class TestACopyBackTheNetworkCutOff(unittest.TestCase):
+    """Standby drops the laptop's network mid-copy. That is the share
+    going away, not a failure of the combination being copied."""
+
+    def bring(self, share_there):
+        from types import SimpleNamespace
+        from unittest import mock
+
+        from microwave_package.workflow import postprocess
+
+        root = tempfile.mkdtemp(prefix="run_")
+        run = SimpleNamespace(combo_dir=lambda combo_id: root)
+        queue = SimpleNamespace(root="A:\\")
+        with mock.patch.object(postprocess, "copy_tree_verified",
+                               side_effect=OSError("The network path was not found")), \
+                mock.patch.object(postprocess.resilient_io, "path_available",
+                                  return_value=share_there):
+            return postprocess.bring_task_local(run, queue, "c", "t1", "A:\\projects\\t1",
+                                                log=lambda _m: None)
+
+    def test_waits_for_the_share_instead_of_failing(self):
+        """Raised, so the caller's call_with_retry waits it out."""
+        with self.assertRaises(OSError):
+            self.bring(share_there=False)
+
+    def test_a_copy_that_fails_with_the_share_there_still_fails(self):
+        self.assertIsNone(self.bring(share_there=True))
+
+
 if __name__ == "__main__":
     unittest.main()
