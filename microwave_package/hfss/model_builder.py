@@ -1397,6 +1397,28 @@ def build_and_queue(
     queue_model(combo_id, step_paths, run, queue, object_names, log=log)
 
 
+def design_name_in_project(project_path: str) -> Optional[str]:
+    """The name of the HFSS design in a saved .aedt project, or None.
+
+    Read from the file rather than recorded at build time, so a combo
+    built before the name was needed still hands over correctly. The
+    design block sits near the top of the file -- ahead of the geometry
+    that makes a big project tens of megabytes -- so this stops early.
+    """
+    try:
+        with open(project_path, encoding="utf-8", errors="replace") as handle:
+            in_model = False
+            for line in handle:
+                stripped = line.strip()
+                if stripped == "$begin 'HFSSModel'":
+                    in_model = True
+                elif in_model and stripped.startswith("Name='"):
+                    return stripped[len("Name='"):].rstrip("'")
+    except OSError:
+        pass
+    return None
+
+
 def _remember_built_model(run, combo_id, project_path, object_names,
                           port_names, log) -> Dict[str, str]:
     """Record that this combination's model exists and is ready to hand over.
@@ -1473,6 +1495,12 @@ def queue_model(
         # from the AEDT session when it reopens the project. See
         # queue_common.build_task()'s docstring for why that matters.
         solution_type=solver.value,
+        # Named, or PyAEDT does not find it: it matches the saved design
+        # against the solution type, and a driven design saves as "HFSS
+        # Modal Network", which PyAEDT 1.0.0 does not take for
+        # "DrivenModal". It then inserts a new, empty design and the
+        # worker finds no setup in it.
+        design_name=design_name_in_project(project_path),
         objects=object_names,
         post_processing=solver.post_processing_ops(analysis_settings),
         metadata={
