@@ -439,7 +439,7 @@ def parse_args() -> argparse.Namespace:
         "--reference-plane", choices=[p["value"] for p in ports.REFERENCE_PLANES],
         default=ports.DEFAULT_REFERENCE_PLANE,
         help="Where the driven run's ports go: 'connector' puts a wave port on the "
-             "SMP bead's coax cross-section (connector transition included); 'launch' "
+             "SMP's air bore just above its bead (connector transition included); 'launch' "
              "puts a lumped port under the CPW trace just inboard of the land pattern "
              "(board only).",
     )

@@ -116,6 +116,39 @@ class TestQueueModelSkips(unittest.TestCase):
         self.assertTrue(any("already queued" in m for m in messages))
 
 
+class TestDesignNameInProject(unittest.TestCase):
+    """The task names the design, because PyAEDT 1.0.0 does not match a
+    saved driven design ("HFSS Modal Network") to "DrivenModal" and opens
+    a new, empty one instead -- which the worker then fails for having no
+    setup."""
+
+    PROJECT = (
+        "$begin 'AnsoftProject'\n"
+        "\t$begin 'Desktop'\n\t\tName='Desktop'\n\t$end 'Desktop'\n"
+        "\t$begin 'HFSSModel'\n"
+        "\t\tRepRewriteV2=true\n"
+        "\t\tName='HFSS_LLS'\n"
+        "\t\tSolutionType='HFSS Modal Network'\n"
+        "\t$end 'HFSSModel'\n"
+        "$end 'AnsoftProject'\n"
+    )
+
+    def _project(self, text):
+        folder = tempfile.mkdtemp()
+        path = os.path.join(folder, "p.aedt")
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write(text)
+        return path
+
+    def test_it_reads_the_hfss_designs_own_name(self):
+        """Not the first Name= in the file -- other blocks have one too."""
+        self.assertEqual(model_builder.design_name_in_project(self._project(self.PROJECT)), "HFSS_LLS")
+
+    def test_no_design_or_no_file_is_none(self):
+        self.assertIsNone(model_builder.design_name_in_project(self._project("$begin 'X'\n")))
+        self.assertIsNone(model_builder.design_name_in_project(os.path.join(tempfile.mkdtemp(), "gone.aedt")))
+
+
 class TestTheSplitItself(unittest.TestCase):
     def test_build_model_cannot_touch_the_queue(self):
         """Structural, and the whole point: if a queue argument ever
