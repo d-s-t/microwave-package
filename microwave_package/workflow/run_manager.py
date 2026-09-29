@@ -126,6 +126,25 @@ def combo_state(states: Dict[str, str]) -> str:
     return "pending"
 
 
+# The one failure Resume does not retry: the worker's own -- a failed task
+# stays failed on the queue. Everything before it is redone for any
+# combination not yet done (see stages.run_local_stages), and everything
+# after it -- copying the files back, reading them -- is retried from the
+# queue or the local copy (see postprocess.postprocess_run). Any failure
+# used to count as a combination's end, so a run whose last copy back the
+# laptop's standby cut off (it drops the network) lost its Resume button.
+FINAL_FAILURES = ("analysis",)
+
+
+def _finished(states: Dict[str, str]) -> bool:
+    """Whether a combination is at its end: done, skipped, or failed in a
+    way Resume does not retry."""
+    state = combo_state(states)
+    if state == "failed":
+        return any(states[key] == "failed" for key in FINAL_FAILURES)
+    return state in ("done", "skipped")
+
+
 def progress_of(state: dict, analysis_settings: Optional[dict] = None) -> Dict[str, object]:
     """How far a run has got, counted from its combinations.
 
@@ -523,10 +542,11 @@ class Run:
     @property
     def is_complete(self) -> bool:
         """Nothing left that this pipeline could still do for any
-        combination -- every one of them finished, failed or skipped."""
+        combination -- every one of them finished, failed for good or
+        skipped. See FINAL_FAILURES for the only failure that is for
+        good."""
         combos = self.state["combos"]
         use_altium = self.analysis_settings.get("use_altium", True)
         return bool(combos) and all(
-            combo_state(phase_states(combo, use_altium)) in ("done", "failed", "skipped")
-            for combo in combos.values()
+            _finished(phase_states(combo, use_altium)) for combo in combos.values()
         )
