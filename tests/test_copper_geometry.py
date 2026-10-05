@@ -1292,6 +1292,60 @@ class TestExportedLayoutIsSane(unittest.TestCase):
         self.assertTrue(fence, "no fence vias found")
         self.assertTrue(all(abs(v.x) > die_half for v in fence))
 
+    def test_the_vias_are_mirror_symmetric(self):
+        """The board is, and so is every field in it that the line
+        excites -- so a via pattern that is not is a structure the line
+        can couple into modes it would otherwise never reach, and two
+        ports of one board that see two different ones.
+
+        The fill used to be stepped across the board from its corner,
+        which left the first row 1.2 mm from the fence on one side of the
+        line and 0.6 mm on the other, and most vias with no partner at
+        all. Now it is laid out from the route and the centre outward.
+        """
+        have = {(round(v.x, 3), round(v.y, 3)) for v in self.pkg.vias}
+        self.assertTrue(have, "no vias found")
+        for name, mirror in (
+            ("across the line", lambda x, y: (x, -y)),
+            ("end for end", lambda x, y: (-x, y)),
+        ):
+            alone = []
+            for via in self.pkg.vias:
+                x, y = mirror(via.x, via.y)
+                if (round(x, 3), round(y, 3)) not in have:
+                    alone.append((via.x, via.y))
+            self.assertEqual(alone, [], f"{len(alone)} vias have no partner {name}, "
+                                        f"first at {alone[:3]}")
+
+    def test_the_vias_are_laid_out_from_the_fence(self):
+        """Every row of vias is a whole number of steps out from the
+        fence's own, on both sides of the line. That is what puts the
+        fill's first row one step beyond the fence everywhere, rather
+        than wherever a grid started at the board's corner happened to
+        land."""
+        fence_y = self.gap_edge + self.v["via_gnd_clearance"] + self.v["via_diameter"] / 2
+        step = self.v["via_max_spacing"]
+        for via in self.pkg.vias:
+            rows = (abs(via.y) - fence_y) / step
+            self.assertAlmostEqual(
+                rows, round(rows), delta=0.01,
+                msg=f"via at ({via.x}, {via.y}) is {rows:.3f} steps from the fence",
+            )
+            self.assertGreaterEqual(round(rows), 0, f"via at ({via.x}, {via.y}) is inside the fence")
+
+    def test_no_via_comes_closer_to_the_board_edge_than_via_min_spacing(self):
+        """Not touching it, and not at the least gap it keeps from
+        everything else. Laid out from the route, the last row falls
+        wherever it falls, which can be right at the edge."""
+        radius = self.v["via_diameter"] / 2
+        margin = self.v["via_min_spacing"]
+        half_l, half_s = self.half_l, self.v["pcb_side"] / 2
+        for via in self.pkg.vias:
+            self.assertGreaterEqual(half_l - abs(via.x) - radius, margin - 1e-3,
+                                    f"via at ({via.x}, {via.y}) is too near the end of the board")
+            self.assertGreaterEqual(half_s - abs(via.y) - radius, margin - 1e-3,
+                                    f"via at ({via.x}, {via.y}) is too near the side of the board")
+
     def test_ground_is_filled_behind_each_launch(self):
         """Otherwise the CPW corridor runs bare to the board edge,
         leaving a slot in the ground behind the connector."""

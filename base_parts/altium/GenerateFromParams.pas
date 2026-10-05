@@ -41,8 +41,8 @@
     not a design ExportCopper's reader ever routes or fabricates, so no
     pad, track, via or region is ever assigned one -- see Announce and
     everything it is called after. That is also why the stitching and
-    shielding vias are placed directly (AddStitchingToNet,
-    AddShieldingToNet) rather than by calling Altium's own Tools -> Via
+    shielding vias are placed directly (AddViaLattice) rather than by
+    calling Altium's own Tools -> Via
     Stitching/Shielding commands: those act on a selected NET, and a
     board with none has nothing for them to select. They are also
     dialog-driven, with no scriptable parameter path found for them
@@ -669,12 +669,20 @@ Begin
     Board.SpatialIterator_Destroy(It);
 End;
 
-{ Places a via at (X, Y) unless it would land outside the board, in
-  the die's opening, in the CPW's own gap, in a connector's anti-pad
-  void, or too close to something already there -- this is the one
-  place that decides whether a candidate site is safe, so
-  AddStitchingToNet and AddShieldingToNet both route every via through
-  it rather than trusting their own loops to stay clear.
+{ Places a via at (X, Y) unless it would land closer than MinGap to the
+  board's edge, in the die's opening, in the CPW's own gap, in a
+  connector's anti-pad void, or too close to something already there --
+  this is the one place that decides whether a candidate site is safe,
+  so AddViaLattice routes every via through it rather than trusting its
+  own loops to stay clear.
+
+  Every one of those distances is allowed to fall GapTolerance short,
+  for the reason GapTolerance gives. A lattice anchored at the board's
+  centre lands on round numbers, and a site whose via sits exactly
+  MinGap from the die's opening is as likely as not to come out a hair
+  inside it in floating point. Refused at random, that would leave
+  holes in the pattern that were never meant to be there -- and
+  holes that are not the same on both sides of the board.
 
   The first three keepouts (board edge, die opening, CPW gap) are
   places no copper of ANY kind ever exists on this board, by
@@ -717,14 +725,16 @@ Var
     Reach : Double;
 Begin
     Result := False;
-    If (Abs(X) + Dia / 2.0 > HalfL) Or (Abs(Y) + Dia / 2.0 > HalfS) Then Exit;
+    If (Abs(X) + Dia / 2.0 + MinGap - GapTolerance > HalfL) Or
+       (Abs(Y) + Dia / 2.0 + MinGap - GapTolerance > HalfS) Then Exit;
     If ((CavHalfL > 0.0) Or (CavHalfS > 0.0))
-       And (Abs(X) < CavHalfL + Dia / 2.0 + MinGap)
-       And (Abs(Y) < CavHalfS + Dia / 2.0 + MinGap) Then Exit;
-    If (Abs(X) < CorridorHalfL) And (Abs(Y) < Corridor + Dia / 2.0) Then Exit;
+       And (Abs(X) < CavHalfL + Dia / 2.0 + MinGap - GapTolerance)
+       And (Abs(Y) < CavHalfS + Dia / 2.0 + MinGap - GapTolerance) Then Exit;
+    If (Abs(X) < CorridorHalfL)
+       And (Abs(Y) < Corridor + Dia / 2.0 - GapTolerance) Then Exit;
     If LaunchX > 0.0 Then
     Begin
-        Reach := VoidR + Dia / 2.0 + MinGap;
+        Reach := VoidR + Dia / 2.0 + MinGap - GapTolerance;
         If ((X - LaunchX) * (X - LaunchX) + Y * Y < Reach * Reach) Or
            ((X + LaunchX) * (X + LaunchX) + Y * Y < Reach * Reach) Then Exit;
     End;
@@ -734,9 +744,8 @@ Begin
 End;
 
 { Counts one TryVia outcome into whichever total it belongs to. Only
-  exists to keep AddStitchingToNet and AddShieldingToNet from repeating
-  the same four-line If/Else at every candidate site -- each has
-  several. }
+  exists to keep AddViaLattice from repeating the same four-line
+  If/Else at every candidate site -- it has two. }
 Procedure Tally(Ok : Boolean; Var Placed, Skipped : Integer);
 Begin
     If Ok Then
@@ -1103,132 +1112,127 @@ Begin
     Board.BoardOutline.Rebuild;
 End;
 
-{ A grid of stitching vias filling the ground planes, tying the
-  package's top and bottom ground copper together wherever there is
-  room for it -- the point being to break up the parallel-plate cavity
-  the two planes otherwise form, which resonates at whatever low
-  frequency its size corresponds to. A ground plane with nothing tying
-  its two faces together at close, regular intervals is exactly that
-  cavity; stitching it is the standard fix.
+{ Every via on the board -- the fence down both sides of the CPW and the
+  fill across the ground planes -- laid out as ONE lattice, from the
+  route outward.
 
-  This is the scripted equivalent of Altium's own Tools -> Via
-  Stitching/Shielding -> Add Stitching to Net, not a call to it: that
-  command stitches copper carried on a NAMED NET, and nothing this
-  generator draws carries one -- see the file header's note on nets.
-  Same intent -- vias tying the two ground layers together wherever
-  their copper overlaps -- reached by stepping a grid across the whole
-  board and placing a via through TryVia at every point it accepts,
-  rather than trusting a hand-derived shape to already be exactly where
-  the ground copper is and nowhere else.
+  The lattice is a set of rows running along the feedline. Row 0 is the
+  fence, FenceY either side of the centre line: right beside the CPW's
+  gap, where a via matters most. Row K is K steps further out on each
+  side. So the pattern is anchored to the route and runs out to the
+  board's edge, which is where whatever does not fit is least
+  consequential.
 
-  It only has to be told the board's own extent and the die's opening:
-  everything else that is not ground copper on this board -- the CPW's
-  own gap, a connector's anti-pad void, a bond finger, a connector pad,
-  a via already placed -- TryVia already knows how to keep out of. That
-  is what makes a plain rectangular sweep enough here, where the old
-  ring shape had to be hand-fitted around the die: the sweep does not
-  need to know the shape of the copper it is filling, only where it is
-  certainly NOT copper.
+  It is anchored at the board's centre along each row too, and
+  alternate rows start half a step over -- the "Stagger alternate rows"
+  option Altium's own Add Stitching to Net dialog offers. That makes it
+  mirror-symmetric left to right and top to bottom, the way the board
+  is: each site is worked out for one quadrant and tried in all four.
 
-  MaxSpacing is the grid step, and so the practical ceiling on how far
-  any two neighbouring vias end up apart in open copper -- the
-  guideline for suppressing a given frequency is a spacing no more than
-  a fraction of its wavelength, which is what this is for. MinGap is
-  the floor TryVia enforces between any two vias, which matters at
-  exactly the spots MaxSpacing alone would land two accepted vias too
-  close together: next to an obstacle that made the nominal grid point
-  unusable, forcing the next accepted via to be found off-grid nearby.
+  The first version stepped a grid across the board from its corner
+  instead, with the fence on a grid of its own. Nothing tied the two
+  together, and nothing tied either to the route: the first fill row
+  came out 1.2 mm from the fence on one side of the line and 0.6 mm on
+  the other, and the rows stood a different distance from one end of the
+  board than from the other.
+
+  That is more than a matter of looks. A pattern that is not symmetric
+  about the line can couple the line's own mode into the modes between
+  the planes that a symmetric one cannot reach, and two ports of one
+  structure should not see two different boards.
+
+  MaxSpacing is the step along a row and between rows, so the practical
+  ceiling on how far apart any two neighbouring vias end up in open
+  copper -- the guideline for suppressing a given frequency is a spacing
+  no more than a fraction of its wavelength, which is what this is for.
+  MinGap is the floor TryVia enforces between any two vias and around
+  everything else. A site TryVia refuses is simply left out, so the
+  lattice has a hole there and nowhere else: next to a bond finger, the
+  connector or the die's opening, the pattern is the same one with the
+  pieces that do not fit taken out, not a different one shifted to
+  dodge them.
+
+  What counts as the fence is row 0 between the two connectors' signal
+  lands, the span TraceHalfL bounds; the rest is the fill. They are
+  counted apart because the report has always counted them apart, and
+  because a fence that comes out short is a different problem from a
+  fill that does.
 
   Skipped is a count, not a flag: most of the board is open copper, so
-  most candidates are placed; a run where skips dominate placements is
-  worth a human noticing in the report, which is what it is there for. }
-Function AddStitchingToNet(Board : IPCB_Board;
-                           HalfL, HalfS, ViaDia, MaxSpacing, MinGap,
-                           CavHalfL, CavHalfS, Corridor, CorridorHalfL,
-                           LaunchX, VoidR : Double;
-                           Var Skipped : Integer) : Integer;
+  most sites are placed; a run where skips dominate placements is worth
+  a human noticing in the report, which is what it is there for. }
+Procedure AddViaLattice(Board : IPCB_Board;
+                        FenceY, TraceHalfL, ViaDia, MaxSpacing, MinGap,
+                        HalfL, HalfS, CavHalfL, CavHalfS,
+                        Corridor, LaunchX, VoidR : Double;
+                        Var Shielding, ShieldingSkipped,
+                            Stitching, StitchingSkipped : Integer);
 Var
-    X, Y      : Double;
-    RowStart  : Double;
-    Stagger   : Boolean;
-    Placed    : Integer;
+    K, SX, SY : Integer;
+    RowY, RowShift, ColX, X, Y : Double;
+    Stagger, OnFence : Boolean;
 Begin
-    Placed := 0;
-    Skipped := 0;
+    Shielding := 0;
+    ShieldingSkipped := 0;
+    Stitching := 0;
+    StitchingSkipped := 0;
 
-    { Alternate rows start half a step over, the same "Stagger alternate
-      rows" option Altium's own Add Stitching to Net dialog offers.
-      A plain grid leaves every via with the same four neighbours at
-      the same four headings; staggering packs the same MaxSpacing
-      more densely (each via gets two more, closer, diagonal
-      neighbours) and, being a grid rather than a picket line in
-      either axis, better placed to break up a resonance that a
-      straight row of vias every MaxSpacing would have let pass
-      between them. }
+    { A step of nothing would never leave its row. }
+    If MaxSpacing <= 0.0 Then Exit;
+
     Stagger := False;
-    Y := -HalfS;
-    While Y <= HalfS Do
+    K := 0;
+    RowY := FenceY;
+
+    { Both loops stop where TryVia would start refusing for the board's
+      edge, so what is counted as skipped is a site that something was
+      in the way of, never one that was off the board. }
+    While RowY + ViaDia / 2.0 + MinGap - GapTolerance <= HalfS Do
     Begin
         If Stagger Then
-            RowStart := -HalfL + MaxSpacing / 2.0
+            RowShift := MaxSpacing / 2.0
         Else
-            RowStart := -HalfL;
-        X := RowStart;
-        While X <= HalfL Do
+            RowShift := 0.0;
+
+        ColX := RowShift;
+        While ColX + ViaDia / 2.0 + MinGap - GapTolerance <= HalfL Do
         Begin
-            Tally(TryVia(Board, X, Y, ViaDia, MinGap, HalfL, HalfS, CavHalfL, CavHalfS,
-                        Corridor, CorridorHalfL, LaunchX, VoidR), Placed, Skipped);
-            X := X + MaxSpacing;
+            OnFence := (K = 0) And (ColX <= TraceHalfL);
+
+            { SX and SY pick the quadrant. A site on the centre line has
+              no mirror image to place, or it would be placed twice. }
+            For SX := 0 To 1 Do
+            Begin
+                For SY := 0 To 1 Do
+                Begin
+                    If (SX = 0) Or (ColX > 0.0) Then
+                    Begin
+                        X := ColX;
+                        If SX = 1 Then X := -ColX;
+                        Y := RowY;
+                        If SY = 1 Then Y := -RowY;
+
+                        If OnFence Then
+                            Tally(TryVia(Board, X, Y, ViaDia, MinGap, HalfL, HalfS,
+                                         CavHalfL, CavHalfS, Corridor, TraceHalfL,
+                                         LaunchX, VoidR),
+                                  Shielding, ShieldingSkipped)
+                        Else
+                            Tally(TryVia(Board, X, Y, ViaDia, MinGap, HalfL, HalfS,
+                                         CavHalfL, CavHalfS, Corridor, TraceHalfL,
+                                         LaunchX, VoidR),
+                                  Stitching, StitchingSkipped);
+                    End;
+                End;
+            End;
+
+            ColX := ColX + MaxSpacing;
         End;
-        Y := Y + MaxSpacing;
+
+        K := K + 1;
+        RowY := FenceY + K * MaxSpacing;
         Stagger := Not Stagger;
     End;
-
-    Result := Placed;
-End;
-
-{ A fence of shielding vias down both sides of the CPW trace, along its
-  whole run from one connector's signal land to the other's.
-
-  The scripted equivalent of Add Shielding to Net, for the same reason
-  AddStitchingToNet is one rather than a call to it -- see that
-  function's header.
-
-  TraceHalfL bounds the sweep to where the signal actually runs -- it
-  is the same value BuildBoard draws the centre conductor out to, not a
-  separately hand-tuned "clear of the connector" offset the way
-  FenceHalfL used to be. That used to matter: FenceHalfL and a matching
-  FenceInnerL had to be worked out to land exactly between the
-  connector's land and the die's bond fingers, and a report of zero
-  shielding vias with nothing to explain why was what it looked like
-  when that pair of numbers stopped leaving any room between them.
-  TryVia now finds the real edges itself -- the connector's own pads
-  and the die's own bond fingers are real pads on the board by the time
-  this runs, so a candidate too close to either is skipped there,
-  whatever TraceHalfL says. }
-Function AddShieldingToNet(Board : IPCB_Board;
-                           FenceY, TraceHalfL, ViaDia, MaxSpacing, MinGap,
-                           HalfL, HalfS, CavHalfL, CavHalfS,
-                           Corridor, LaunchX, VoidR : Double;
-                           Var Skipped : Integer) : Integer;
-Var
-    X      : Double;
-    Placed : Integer;
-Begin
-    Placed := 0;
-    Skipped := 0;
-
-    X := -TraceHalfL;
-    While X <= TraceHalfL Do
-    Begin
-        Tally(TryVia(Board, X,  FenceY, ViaDia, MinGap, HalfL, HalfS, CavHalfL, CavHalfS,
-                    Corridor, TraceHalfL, LaunchX, VoidR), Placed, Skipped);
-        Tally(TryVia(Board, X, -FenceY, ViaDia, MinGap, HalfL, HalfS, CavHalfL, CavHalfS,
-                    Corridor, TraceHalfL, LaunchX, VoidR), Placed, Skipped);
-        X := X + MaxSpacing;
-    End;
-
-    Result := Placed;
 End;
 
 { Outline, centre conductor, coplanar grounds either side of the gap, a
@@ -1462,8 +1466,8 @@ Begin
 
     { The signal's own extent -- from one connector's land to the
       other's -- computed once here because BuildBoard draws the centre
-      conductor out to exactly this, and AddShieldingToNet later bounds
-      its sweep to the same span rather than a separately hand-tuned
+      conductor out to exactly this, and AddViaLattice later bounds
+      the fence to the same span rather than a separately hand-tuned
       offset. Two callers reading two different derivations of what is
       supposed to be the same edge is exactly how it drifted before. }
     TraceHalfL := SmpOrigin - ParamOf(P, 'smp_sig_v', 2.9);
@@ -1473,10 +1477,9 @@ Begin
         { The ground fill stops where the launch begins -- its innermost
           land. The board's own copper runs to the real board edge
           (CopperHalfL/S = HalfL/S), unlike the die's. Vias are not
-          placed here at all any more -- see AddStitchingToNet and
-          AddShieldingToNet, called once everything they need to check
-          themselves against (the launch, the bond fingers) is actually
-          on the board. }
+          placed here at all any more -- see AddViaLattice, called
+          once everything it needs to check itself against (the
+          launch, the bond fingers) is actually on the board. }
         BuildBoard(Board, HalfL, HalfS, HalfL, HalfS, Trace, Gap,
                    TraceHalfL,
                    { ground fill starts at the OUTER edge of the
@@ -1555,26 +1558,18 @@ Begin
     End;
     PCBServer.PostProcess;
 
-    { Stitching and shielding both run LAST, now that the launch and
-      the bond fingers are really on the board: TryVia checks every
-      candidate against the board as it stands, so placing vias any
-      earlier would have it checking against a board that was not
-      finished yet -- which is how the fence used to land on pads
-      neither it nor the shield ring it used to run alongside knew
-      existed. There is no ring any more: it stitched a boundary around
-      the die specifically, where what is wanted is the ground planes
-      generally stitched, which is AddStitchingToNet's job now.
+    { The vias run LAST, now that the launch and the bond fingers are
+      really on the board: TryVia checks every candidate against the
+      board as it stands, so placing vias any earlier would have it
+      checking against a board that was not finished yet -- which is
+      how the fence used to land on pads neither it nor the shield ring
+      it used to run alongside knew existed.
 
-      The fence runs FIRST, before the general fill, and for the same
-      reason the fill runs after everything else: whichever one runs
-      second finds the other's vias already on the board and works
-      around them. The fence's own row sits close enough to a
-      MaxSpacing-stepped fill grid that many fill candidates land
-      within MinGap of it -- run the fill first and it claims most of
-      that row for itself, leaving the fence, run second, skipping
-      nearly everything it tries. The fence's placement is deliberate
-      (FenceY, right beside the trace); the fill's is not (any
-      unclaimed grid point), so the deliberate one goes first. }
+      The fence and the fill are one lattice now, so there is no longer
+      a question of which goes first: the two used to be separate grids
+      that had to be run in a particular order to keep one from
+      claiming the other's sites, and the lattice has no sites that
+      belong to two. See AddViaLattice. }
     Corridor := Trace / 2.0 + Gap + ViaClear;
     FenceY   := Corridor + ViaDia / 2.0;
 
@@ -1582,31 +1577,19 @@ Begin
     Try
         nShield := 0;
         nShieldSkip := 0;
-        If FenceY + ViaDia / 2.0 < HalfS Then
-        Begin
-            nShield := AddShieldingToNet(Board, FenceY, TraceHalfL,
-                       ViaDia, ViaMaxSpacing, ViaMinSpacing,
-                       HalfL, HalfS, CavHalfL, CavHalfS,
-                       Corridor, SmpOrigin, VoidR,
-                       nShieldSkip);
-        End;
+        nStitch := 0;
+        nStitchSkip := 0;
+        AddViaLattice(Board, FenceY, TraceHalfL,
+                      ViaDia, ViaMaxSpacing, ViaMinSpacing,
+                      HalfL, HalfS, CavHalfL, CavHalfS,
+                      Corridor, SmpOrigin, VoidR,
+                      nShield, nShieldSkip, nStitch, nStitchSkip);
         Say('package_shielding_vias=' + IntToStr(nShield));
         Say('package_shielding_skipped=' + IntToStr(nShieldSkip));
-    Except
-        Say('package_shielding_vias=FAIL');
-    End;
-    PCBServer.PostProcess;
-
-    PCBServer.PreProcess;
-    Try
-        nStitch := AddStitchingToNet(Board,
-                                     HalfL, HalfS, ViaDia, ViaMaxSpacing, ViaMinSpacing,
-                                     CavHalfL, CavHalfS, Corridor, TraceHalfL,
-                                     SmpOrigin, VoidR,
-                                     nStitchSkip);
         Say('package_stitching_vias=' + IntToStr(nStitch));
         Say('package_stitching_skipped=' + IntToStr(nStitchSkip));
     Except
+        Say('package_shielding_vias=FAIL');
         Say('package_stitching_vias=FAIL');
     End;
     PCBServer.PostProcess;

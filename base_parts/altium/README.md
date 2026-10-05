@@ -310,23 +310,46 @@ Via Stitching/Shielding menu.** Those commands act on a selected *net*, and
 nothing this generator draws carries one (see `Announce`) — there is no net for
 them to select. They are also dialog-only, with no scriptable path found that
 skips showing it, and a dialog is exactly what a script with no headless mode
-cannot risk opening. `AddStitchingToNet` (a grid filling the ground planes
-generally, to break up the parallel-plate cavity an unstitched pair of planes
-forms) and `AddShieldingToNet` (a fence along the CPW, from one connector's
-signal land to the other's) place vias one at a time through `TryVia`, which
-checks each candidate against the board itself — every pad, track and via
-already placed, via `IPCB_Primitive.BoundingRectangle`, restricted to
-eTopLayer/eBottomLayer/eMultiLayer so a footprint's silkscreen and courtyard
-outlines don't count as copper — rather than trusting a hand-derived shape or
-clearance to still be right. Both run **last**, after the connector launch and
-the bond pads are on the board, precisely so that check has something real to
-check against; running them earlier is the mistake that once let the fence
-land on pads neither it nor a via already placed knew existed.
-`via_min_spacing` is the floor `TryVia` enforces between any two vias, and
-`via_max_spacing` is the grid step both loops step by and so the practical
-ceiling on spacing in open copper — together they are what stops two accepted
-vias landing on top of each other at a pattern's own seam, and what a
-suppression target's wavelength sets a maximum spacing for.
+cannot risk opening. `AddViaLattice` places every via, one at a time through
+`TryVia`, which checks each candidate against the board itself — every pad,
+track and via already placed, via `IPCB_Primitive.BoundingRectangle`,
+restricted to eTopLayer/eBottomLayer/eMultiLayer so a footprint's silkscreen
+and courtyard outlines don't count as copper — rather than trusting a
+hand-derived shape or clearance to still be right. It runs **last**, after the
+connector launch and the bond pads are on the board, precisely so that check has
+something real to check against; running earlier is the mistake that once let
+the fence land on pads neither it nor a via already placed knew existed.
+
+**The vias are one lattice, laid out from the route outward and mirror-symmetric.**
+Row 0 is the fence, `via_gnd_clearance` outside each edge of the CPW gap; row *K*
+is *K* steps (`via_max_spacing`) further out on each side, and alternate rows
+start half a step over. Along a row the sites are anchored at the board's centre,
+and each is worked out for one quadrant and tried in all four, so the pattern is
+the same on both sides of the line and at both ends of the board. What counts as
+"the fence" is only row 0 between the two signal lands (`package_shielding_vias`
+in the report); the rest is `package_stitching_vias`. A site `TryVia` refuses is
+left out, so around the die's opening, the bond fingers and the connector the
+pattern is the same lattice with the pieces that do not fit taken away, not a
+shifted one.
+
+It used to be two grids — a fence stepped from one connector's land, and a fill
+stepped from the board's *corner* — which put the first fill row 1.2 mm from the
+fence on one side of the line and 0.6 mm on the other, and left 1602 of 1670 vias
+on the 50 × 25 mm board with no mirror image. The total is unchanged (1670 there;
+2936 against 2959 on 70 × 30), because the lattice keeps the old one's density.
+
+`via_min_spacing` is the floor `TryVia` enforces between any two vias and between
+a via and everything else, **the board edge included**: the last row falls
+wherever the steps leave it, which can be right at the edge, and a drilled hole
+breaking the outline cannot be made. `via_max_spacing` is the lattice step, and so
+the practical ceiling on spacing in open copper — together they are what stops two
+accepted vias landing on top of each other, and what a suppression target's
+wavelength sets a maximum spacing for. A via that sits *exactly* `via_min_spacing`
+from something is accepted (`GapTolerance`): the lattice lands on round numbers,
+where that case is common rather than rare. Whether the fence fits the board at
+all, edge margin included, is `constraints.check_layout`'s question, asked before
+Altium runs — because a fence that does not fit leaves no first row, and so no
+vias, not a short fence.
 
 ## What the spikes settled
 

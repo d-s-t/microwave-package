@@ -345,13 +345,18 @@ def check_layout(values: Dict[str, float]) -> Optional[str]:
         return f"no 50 ohm geometry for this trace width: {exc}"
 
     # The fence sits outside the gap, and needs its own diameter of room
-    # before the board edge.
-    fence_edge = trace / 2.0 + gap + get("via_gnd_clearance") + via_dia
-    if fence_edge >= half_side:
+    # before the board edge -- plus via_min_spacing, because the generator
+    # keeps a via that far from the edge as it does from everything else
+    # (TryVia in GenerateFromParams.pas). The fence is the first row of the
+    # lattice every other via is laid out from, so a board it does not fit
+    # on gets no vias at all, not a short fence.
+    fence_edge = trace / 2.0 + gap + get("via_gnd_clearance") + via_dia + get("via_min_spacing")
+    if fence_edge - VIA_GAP_TOLERANCE > half_side:
         return (
             f"the via fence needs {_fmt(fence_edge)} mm either side of the centre line "
-            f"but only {_fmt(half_side)} mm is available -- reduce via_diameter, "
-            f"via_gnd_clearance or cpw_trace_width, or widen pcb_side"
+            f"(including via_min_spacing to the board edge) but only {_fmt(half_side)} mm "
+            f"is available -- reduce via_diameter, via_gnd_clearance, via_min_spacing or "
+            f"cpw_trace_width, or widen pcb_side"
         )
 
     # The die's opening, which everything below has to keep out of. It
