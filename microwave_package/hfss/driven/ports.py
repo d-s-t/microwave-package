@@ -455,8 +455,10 @@ def _chip_ports(hfss, layout, impedance: float, log) -> List[str]:
     """Lumped ports on the die's CPW, just inboard of where the bonds land.
 
     The sheet spans the die's own thickness, from its underside to its
-    trace. What is under the die is the box floor or the pedestal, which
-    is metal, so the sheet's lower edge lands on it.
+    trace. At pedestal_depth = 0 the die's underside rests on the box
+    floor, which is metal, so the sheet's lower edge lands on it. That is
+    NOT checked for a deeper pedestal -- if the die is then over a gap,
+    the sheet's lower edge is in the air.
     """
     _, chip_x = _signal_bond_ends(layout)
     pad = layout.values.get("bond_pad_length", 0.3)

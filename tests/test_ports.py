@@ -393,7 +393,7 @@ class TestPortsNextToTheBonds(unittest.TestCase):
 
     def test_both_make_port_1_the_minus_x_end(self):
         for plane in (ports.REFERENCE_PLANE_BONDS, ports.REFERENCE_PLANE_CHIP):
-            hfss, _, xs = self._xs(plane)
+            hfss, _, _ = self._xs(plane)
             self.assertLess(hfss.modeler.rectangles[0]["origin"][0], hfss.modeler.rectangles[1]["origin"][0])
 
 
