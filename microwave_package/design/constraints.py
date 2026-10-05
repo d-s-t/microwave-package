@@ -258,6 +258,11 @@ def check_via_grid(values: Dict[str, float]) -> Optional[str]:
     step = values.get("via_max_spacing", 0.0)
     min_gap = values.get("via_min_spacing", 0.0)
     needed = dia + min_gap
+    if step <= 0:
+        # Not a sparse grid but no grid: the generator lays its rows out
+        # a step apart, and a step of nothing leaves no via on the board.
+        # The sum below does not catch it when the via has no size either.
+        return f"via_max_spacing is {_fmt(step)} mm -- it is the step the vias are laid out by, and must be positive"
     if step - dia < min_gap - VIA_GAP_TOLERANCE:
         return (
             f"a {_fmt(dia)} mm via (via_diameter) plus the {_fmt(min_gap)} mm between vias "

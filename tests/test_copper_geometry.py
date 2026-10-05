@@ -1303,16 +1303,28 @@ class TestExportedLayoutIsSane(unittest.TestCase):
         line and 0.6 mm on the other, and most vias with no partner at
         all. Now it is laid out from the route and the centre outward.
         """
-        have = {(round(v.x, 3), round(v.y, 3)) for v in self.pkg.vias}
-        self.assertTrue(have, "no vias found")
+        # Matched to within a micron rather than by rounding, which would
+        # pair or split two coordinates a few nanometres apart depending
+        # on which side of a rounding boundary they fall.
+        tolerance = 1e-3
+        cells = {}
+        for v in self.pkg.vias:
+            cells.setdefault((round(v.x / 0.01), round(v.y / 0.01)), []).append((v.x, v.y))
+
+        def has_via_at(x, y):
+            u, w = round(x / 0.01), round(y / 0.01)
+            return any(abs(px - x) <= tolerance and abs(py - y) <= tolerance
+                       for du in (-1, 0, 1) for dw in (-1, 0, 1)
+                       for px, py in cells.get((u + du, w + dw), ()))
+
+        self.assertTrue(cells, "no vias found")
         for name, mirror in (
             ("across the line", lambda x, y: (x, -y)),
             ("end for end", lambda x, y: (-x, y)),
         ):
             alone = []
             for via in self.pkg.vias:
-                x, y = mirror(via.x, via.y)
-                if (round(x, 3), round(y, 3)) not in have:
+                if not has_via_at(*mirror(via.x, via.y)):
                     alone.append((via.x, via.y))
             self.assertEqual(alone, [], f"{len(alone)} vias have no partner {name}, "
                                         f"first at {alone[:3]}")
@@ -1326,12 +1338,44 @@ class TestExportedLayoutIsSane(unittest.TestCase):
         fence_y = self.gap_edge + self.v["via_gnd_clearance"] + self.v["via_diameter"] / 2
         step = self.v["via_max_spacing"]
         for via in self.pkg.vias:
+            if abs(via.y) < 1e-6:
+                continue  # the centre line behind a launch -- see the next test
             rows = (abs(via.y) - fence_y) / step
             self.assertAlmostEqual(
                 rows, round(rows), delta=0.01,
                 msg=f"via at ({via.x}, {via.y}) is {rows:.3f} steps from the fence",
             )
             self.assertGreaterEqual(round(rows), 0, f"via at ({via.x}, {via.y}) is inside the fence")
+
+    def test_the_centre_line_is_stitched_behind_the_launches(self):
+        """The one row that is not one of the lattice's. Between the
+        signal lands the CPW's gap keeps vias off the centre line, but
+        behind each launch the ground runs solid across it -- and with
+        the rows starting a fence's width either side, the vias nearest
+        it there stood 2 * fence apart, further than via_max_spacing, in
+        the one stretch of ground with nothing across its middle."""
+        origin = self.smp.launch_origin(self.half_l, self.v["port_space"])
+        step = self.v["via_max_spacing"]
+        reach = self.gap_edge + self.v["via_gnd_clearance"] + self.v["via_diameter"]
+
+        on_line = [v for v in self.pkg.vias if abs(v.y) < 1e-6]
+        self.assertTrue(on_line, "no vias on the centre line behind the launches")
+        for via in on_line:
+            self.assertGreater(abs(via.x), origin, f"via at ({via.x}, {via.y}) is not behind a launch")
+
+        import math
+
+        for end in (1, -1):
+            behind = [v for v in self.pkg.vias if end * v.x > origin]
+            near_line = [v for v in behind if abs(v.y) <= reach]
+            self.assertTrue(near_line, "no vias near the centre line behind a launch")
+            for via in near_line:
+                nearest = min(math.dist((via.x, via.y), (w.x, w.y)) for w in behind if w is not via)
+                self.assertLessEqual(
+                    nearest, step + 1e-3,
+                    f"via at ({via.x}, {via.y}) has nothing within {step} mm of it: "
+                    f"the ground behind the launch is bridged across the line",
+                )
 
     def test_no_via_comes_closer_to_the_board_edge_than_via_min_spacing(self):
         """Not touching it, and not at the least gap it keeps from

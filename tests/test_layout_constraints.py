@@ -56,6 +56,15 @@ class TestCheckLayout(unittest.TestCase):
         self.assertIn("via_min_spacing", reason)
         self.assertIn("via_max_spacing", reason)
 
+    def test_a_via_step_of_nothing_is_caught(self):
+        """It would leave no vias at all, and the generator reports that
+        as a board like any other. Not caught by the spacing sum when the
+        via has no size either."""
+        values = dict(defaults(), via_max_spacing=0.0, via_diameter=0.0, via_min_spacing=0.0)
+        reason = constraints.check_layout(values)
+        self.assertIsNotNone(reason)
+        self.assertIn("via_max_spacing", reason)
+
     def test_unreachable_impedance_is_reported_as_such(self):
         """A trace too wide for the substrate is microstrip-dominated and
         has no 50 ohm gap. Caught here rather than raising mid-sweep."""

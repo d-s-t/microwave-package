@@ -333,10 +333,12 @@ pattern is the same lattice with the pieces that do not fit taken away, not a
 shifted one.
 
 It used to be two grids — a fence stepped from one connector's land, and a fill
-stepped from the board's *corner* — which put the first fill row 1.2 mm from the
-fence on one side of the line and 0.6 mm on the other, and left 1602 of 1670 vias
-on the 50 × 25 mm board with no mirror image. The total is unchanged (1670 there;
-2936 against 2959 on 70 × 30), because the lattice keeps the old one's density.
+stepped from the board's *corner* — which put the first fill row at different
+distances from the fence on the two sides of the line, and left most vias with no
+mirror image. The lattice keeps the old pattern's density, so a board gets about
+as many vias as before. One row sits outside the lattice: the centre line behind
+each launch, where the ground runs solid across it and the rows either side would
+otherwise leave the vias nearest it more than `via_max_spacing` apart.
 
 `via_min_spacing` is the floor `TryVia` enforces between any two vias and between
 a via and everything else, **the board edge included**: the last row falls

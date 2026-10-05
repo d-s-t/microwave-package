@@ -669,6 +669,18 @@ Begin
     Board.SpatialIterator_Destroy(It);
 End;
 
+{ Whether a via of diameter Dia centred at Pos along one axis keeps
+  MinGap from the board's edge on that axis, Half being the board's
+  half-extent along it. TryVia refuses a site that fails this, and
+  AddViaLattice ends its rows and columns at the first that does, so the
+  two cannot disagree about where the board stops --
+  constraints.check_layout asks the same question of the fence, in
+  Python. }
+Function ClearOfEdge(Pos, Dia, MinGap, Half : Double) : Boolean;
+Begin
+    Result := Abs(Pos) + Dia / 2.0 + MinGap - GapTolerance <= Half;
+End;
+
 { Places a via at (X, Y) unless it would land closer than MinGap to the
   board's edge, in the die's opening, in the CPW's own gap, in a
   connector's anti-pad void, or too close to something already there --
@@ -725,8 +737,8 @@ Var
     Reach : Double;
 Begin
     Result := False;
-    If (Abs(X) + Dia / 2.0 + MinGap - GapTolerance > HalfL) Or
-       (Abs(Y) + Dia / 2.0 + MinGap - GapTolerance > HalfS) Then Exit;
+    If (Not ClearOfEdge(X, Dia, MinGap, HalfL)) Or
+       (Not ClearOfEdge(Y, Dia, MinGap, HalfS)) Then Exit;
     If ((CavHalfL > 0.0) Or (CavHalfS > 0.0))
        And (Abs(X) < CavHalfL + Dia / 2.0 + MinGap - GapTolerance)
        And (Abs(Y) < CavHalfS + Dia / 2.0 + MinGap - GapTolerance) Then Exit;
@@ -1136,10 +1148,10 @@ End;
   the other, and the rows stood a different distance from one end of the
   board than from the other.
 
-  That is more than a matter of looks. A pattern that is not symmetric
-  about the line can couple the line's own mode into the modes between
-  the planes that a symmetric one cannot reach, and two ports of one
-  structure should not see two different boards.
+  That is more than a matter of looks: the board is symmetric, and a
+  structure that is can only pass the line's symmetric mode on to
+  symmetric modes between the planes, which a lopsided one does not
+  promise. (A reason to expect a cleaner S21, not a measured one.)
 
   MaxSpacing is the step along a row and between rows, so the practical
   ceiling on how far apart any two neighbouring vias end up in open
@@ -1158,6 +1170,15 @@ End;
   because a fence that comes out short is a different problem from a
   fill that does.
 
+  One row is not a row of the lattice: the centre line itself, behind
+  each launch. Between the signal lands the CPW's gap keeps vias off it,
+  but behind them the ground runs solid across it, and with the rows
+  starting FenceY either side the vias nearest the centre line there
+  would stand 2 * FenceY apart -- further than MaxSpacing, in the one
+  stretch of ground with nothing across its middle. So it gets a row of
+  its own, staggered against the fence's, placed last: a lattice site is
+  never the one refused to make room for it.
+
   Skipped is a count, not a flag: most of the board is open copper, so
   most sites are placed; a run where skips dominate placements is worth
   a human noticing in the report, which is what it is there for. }
@@ -1170,7 +1191,7 @@ Procedure AddViaLattice(Board : IPCB_Board;
 Var
     K, SX, SY : Integer;
     RowY, RowShift, ColX, X, Y : Double;
-    Stagger, OnFence : Boolean;
+    Stagger, OnFence, Ok : Boolean;
 Begin
     Shielding := 0;
     ShieldingSkipped := 0;
@@ -1187,7 +1208,7 @@ Begin
     { Both loops stop where TryVia would start refusing for the board's
       edge, so what is counted as skipped is a site that something was
       in the way of, never one that was off the board. }
-    While RowY + ViaDia / 2.0 + MinGap - GapTolerance <= HalfS Do
+    While ClearOfEdge(RowY, ViaDia, MinGap, HalfS) Do
     Begin
         If Stagger Then
             RowShift := MaxSpacing / 2.0
@@ -1195,7 +1216,7 @@ Begin
             RowShift := 0.0;
 
         ColX := RowShift;
-        While ColX + ViaDia / 2.0 + MinGap - GapTolerance <= HalfL Do
+        While ClearOfEdge(ColX, ViaDia, MinGap, HalfL) Do
         Begin
             OnFence := (K = 0) And (ColX <= TraceHalfL);
 
@@ -1212,16 +1233,13 @@ Begin
                         Y := RowY;
                         If SY = 1 Then Y := -RowY;
 
+                        Ok := TryVia(Board, X, Y, ViaDia, MinGap, HalfL, HalfS,
+                                     CavHalfL, CavHalfS, Corridor, TraceHalfL,
+                                     LaunchX, VoidR);
                         If OnFence Then
-                            Tally(TryVia(Board, X, Y, ViaDia, MinGap, HalfL, HalfS,
-                                         CavHalfL, CavHalfS, Corridor, TraceHalfL,
-                                         LaunchX, VoidR),
-                                  Shielding, ShieldingSkipped)
+                            Tally(Ok, Shielding, ShieldingSkipped)
                         Else
-                            Tally(TryVia(Board, X, Y, ViaDia, MinGap, HalfL, HalfS,
-                                         CavHalfL, CavHalfS, Corridor, TraceHalfL,
-                                         LaunchX, VoidR),
-                                  Stitching, StitchingSkipped);
+                            Tally(Ok, Stitching, StitchingSkipped);
                     End;
                 End;
             End;
@@ -1232,6 +1250,28 @@ Begin
         K := K + 1;
         RowY := FenceY + K * MaxSpacing;
         Stagger := Not Stagger;
+    End;
+
+    { The centre line, behind the launches only -- past the connector's
+      anti-pad void. TryVia would refuse every site before that anyway,
+      but as a skipped one, and each of those would be counted. Half a
+      step over from the fence's own row. }
+    ColX := MaxSpacing / 2.0;
+    While ClearOfEdge(ColX, ViaDia, MinGap, HalfL) Do
+    Begin
+        If ColX >= LaunchX + VoidR Then
+        Begin
+            For SX := 0 To 1 Do
+            Begin
+                X := ColX;
+                If SX = 1 Then X := -ColX;
+                Ok := TryVia(Board, X, 0.0, ViaDia, MinGap, HalfL, HalfS,
+                             CavHalfL, CavHalfS, Corridor, TraceHalfL,
+                             LaunchX, VoidR);
+                Tally(Ok, Stitching, StitchingSkipped);
+            End;
+        End;
+        ColX := ColX + MaxSpacing;
     End;
 End;
 
