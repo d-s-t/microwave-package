@@ -43,8 +43,11 @@ few characters would be the wrong trade.
 from __future__ import annotations
 
 import contextlib
+import hashlib
+import json
 import logging
 import os
+import re
 import subprocess
 import threading
 import time
@@ -776,6 +779,91 @@ def generate_for_combo(
         # the next combination.
         log(f"Copper for this combination written to {destination}")
         return True, ""
+
+
+# --- telling one board from another -----------------------------------
+#
+# A sweep over something the boards do not depend on -- the pedestal is
+# box's, not the board's -- would otherwise have Altium draw the same two
+# boards once per combination, a minute or more each. So a board is
+# identified by everything that decides it, and a combination whose board
+# is one already drawn copies that one's copper instead.
+
+_PARAM_READ = re.compile(r"ParamOf\(\s*\w+\s*,\s*'(\w+)'")
+
+
+def _names_the_generator_reads(script: str) -> set:
+    """Every parameter GenerateFromParams.pas asks for by name.
+
+    Read from the script itself rather than listed here, so a parameter
+    the script starts using is part of the board's identity from then on
+    without anyone having to remember to add it.
+    """
+    try:
+        with open(script, encoding="utf-8", errors="replace") as handle:
+            return set(_PARAM_READ.findall(handle.read()))
+    except OSError:
+        return set()
+
+
+def _file_digest(path) -> str:
+    try:
+        with open(path, "rb") as handle:
+            return hashlib.sha256(handle.read()).hexdigest()
+    except OSError:
+        return ""
+
+
+def board_fingerprint(values: Dict[str, float],
+                      materials: Optional[Dict[str, str]] = None) -> Optional[str]:
+    """What decides this combination's boards, as one string; None if unknown.
+
+    The parameters the generator reads, after the same derivation
+    `generate_for_combo` gives it (the solved CPW gaps, the die's opening);
+    the bond layout, which is computed here rather than in Altium and also
+    goes into bonds.txt; the connector footprint the script places; and
+    the two scripts' own contents. Two combinations with the same
+    fingerprint get the same copper.txt and bonds.txt.
+    """
+    from .. import paths
+    from . import bonds as bond_layout, smp
+
+    read = _names_the_generator_reads(str(paths.ALTIUM_GENERATOR))
+    if not read:
+        return None
+    materials = materials or {}
+    try:
+        params = build_params(
+            values,
+            mat_pcb=materials.get("mat_pcb", "Rogers TMM 10i (tm)"),
+            mat_chip=materials.get("mat_chip", "silicon"),
+        )
+        bond_list = bond_layout.layout(values, params["pcb_cpw_gap"])
+    except Exception:
+        return None
+    identity = {
+        "params": {name: params[name] for name in sorted(read) if name in params},
+        "bonds": [[b.kind, b.pcb_x, b.pcb_y, b.chip_x, b.chip_y] for b in bond_list],
+        "footprint": [str(paths.ALTIUM_SMP_LIBRARY), smp.FOOTPRINT],
+        "scripts": [_file_digest(paths.ALTIUM_GENERATOR), _file_digest(paths.ALTIUM_COPPER_EXPORTER)],
+    }
+    return hashlib.sha256(json.dumps(identity, sort_keys=True).encode("utf-8")).hexdigest()
+
+
+def copy_layout(source_dir: str, combo_dir: str) -> bool:
+    """Give `combo_dir` the copper.txt and bonds.txt already drawn in
+    `source_dir`. Returns False if the source has no copper to give."""
+    if not os.path.isfile(os.path.join(source_dir, "copper.txt")):
+        return False
+    os.makedirs(combo_dir, exist_ok=True)
+    for name in ("copper.txt", "bonds.txt"):
+        source = os.path.join(source_dir, name)
+        if os.path.isfile(source):
+            with open(source, "r", encoding="utf-8") as src:
+                content = src.read()
+            with open(os.path.join(combo_dir, name), "w", encoding="utf-8") as dst:
+                dst.write(content)
+    return True
 
 
 def _missing_features(report: Dict[str, str]) -> str:

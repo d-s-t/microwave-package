@@ -40,7 +40,7 @@ import queue as queue_module
 import threading
 from typing import Callable, Dict, List, Optional
 
-from ..design import altium_generation, equations as eq, step_generation
+from ..design import altium_generation, constraints, equations as eq, step_generation
 from ..hfss import model_builder
 from . import resilient_io
 
@@ -217,22 +217,39 @@ class _AltiumStage:
         self._defaults = parameter_defaults or {}
         self._materials = materials
         self._log = log
+        # Board fingerprint -> the combination whose folder already holds
+        # those boards (see altium_generation.board_fingerprint).
+        self._drawn: Dict[str, str] = {}
 
     def build(self, combo_id: str) -> bool:
         run = self._run
         combo = run.state["combos"][combo_id]
+        values = eq.get_numeric_parameters(
+            eq.with_values(self._original, self._defaults, combo["params"])
+        )
+        fingerprint = altium_generation.board_fingerprint(values, self._materials)
         # A resumed run does not redraw a layout it already has. The file
         # is checked as well as the record, because the copper is what
         # the model is actually built from.
         if combo.get("altium_status") == "done" and os.path.isfile(
             os.path.join(run.combo_path(combo_id), "copper.txt")
         ):
+            if fingerprint:
+                self._drawn.setdefault(fingerprint, combo_id)
+            return True
+
+        # The same boards as a combination already drawn: copy them. The
+        # constraints are still asked, because they are about the values.
+        drawn = self._drawn.get(fingerprint) if fingerprint else None
+        if drawn and not constraints.check_layout(values) and altium_generation.copy_layout(
+            run.combo_dir(drawn), run.combo_dir(combo_id)
+        ):
+            run.update_combo(combo_id, altium_status="done", altium_error=None,
+                             altium_reused_from=drawn)
+            self._log(f"{combo_id}: same boards as {drawn} -- reusing its copper, not redrawing.")
             return True
 
         run.update_combo(combo_id, altium_status="running")
-        values = eq.get_numeric_parameters(
-            eq.with_values(self._original, self._defaults, combo["params"])
-        )
         ok, reason = altium_generation.generate_for_combo(
             run.combo_dir(combo_id), values, materials=self._materials, log=self._log
         )
@@ -241,6 +258,8 @@ class _AltiumStage:
             altium_status="done" if ok else "failed",
             altium_error=None if ok else reason,
         )
+        if ok and fingerprint:
+            self._drawn.setdefault(fingerprint, combo_id)
         if not ok:
             # One unbuildable layout is recorded and skipped, the same way
             # a failed STEP is. It must not take the rest of the sweep

@@ -437,7 +437,7 @@ def _via_post(modeler, via: Via, frame: Frame, bottom_face: float,
     The board is not drilled for it either: the post overlaps the
     substrate, and the model's material override lets the metal win
     there (see `model_builder.build_model`). Nor is it carved out of the
-    vacuum, which it never reaches -- see `model_builder.carve_vacuum`.
+    vacuum: no metal is -- see `model_builder.carve_vacuum`.
 
     And it has VIA_SIDES flat sides rather than a round one -- see there.
     """

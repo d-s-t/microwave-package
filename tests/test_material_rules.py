@@ -21,6 +21,12 @@ class FakeObject:
     def __init__(self, name):
         self.name = name
         self.material_name = None
+        # HFSS solves inside a dielectric and not inside a conductor;
+        # material assignment sets this, and carve_vacuum reads it.
+        self.solve_inside = not any(
+            metal in name for metal in ("box", "lid", "copper", "via", "wirebond",
+                                        "_outer", "_center", "_cap")
+        )
 
 
 class FakeMaterial:
@@ -928,95 +934,60 @@ class TestPlaceLidInside(unittest.TestCase):
 
 
 class TestCarveVacuum(unittest.TestCase):
-    """Which bodies get subtracted from vacuum.
+    """Which bodies get subtracted from vacuum: the dielectrics, and only
+    those. The metal overlaps it and wins by material override."""
 
-    This exists because the FIRST version silently missed bodies:
-    several material rules legitimately match more than one solid --
-    pcb_copper matches both the top and bottom layer, connector matches
-    two conductor bodies per port -- and objects_dict (used elsewhere to
-    look something up by a single semantic key like "vacuum" or "chip")
-    keeps only the first body per rule key. Building the vacuum-carving
-    tool list from objects_dict therefore carved only ONE of two connectors
-    and left the second one overlapping vacuum, invisibly. carve_vacuum
-    now scans the modeler's raw solid list instead, which has no such
-    collapsing.
-    """
+    ALL = ["vacuum", "box", "lid_inside", "pcb_substrate", "chip_substrate",
+           "pcb_copper_top", "pcb_copper_bottom", "pcb_vias", "pcb_vias_2", "wirebond",
+           "connector_1_outer", "connector_1_center", "connector_1_dielectric",
+           "connector_2_outer", "connector_2_center", "connector_2_dielectric"]
 
-    def test_every_connector_is_carved_even_though_they_share_a_rule_key(self):
-        hfss = FakeHfss([
-            "vacuum", "box",
-            "connector_1_outer", "connector_1_center", "connector_1_dielectric",
-            "connector_2_outer", "connector_2_center", "connector_2_dielectric",
-        ])
-        # Simulate what assign_materials_and_boundaries actually leaves
-        # behind: only the FIRST body per rule key survives objects_dict's
-        # setdefault, exactly like the bug that shipped.
-        objects_dict = {
-            "vacuum": hfss.solid_objects[0],
-            "box": hfss.solid_objects[1],
-            "connector": hfss.solid_objects[2],
-            "connector_dielectric": hfss.solid_objects[4],
-        }
-        model_builder.carve_vacuum(hfss, objects_dict, log=lambda _m: None)
-        _target, tools, _keep = hfss.subtractions[0]
-        for body in ("connector_1_outer", "connector_1_center", "connector_1_dielectric",
-                     "connector_2_outer", "connector_2_center", "connector_2_dielectric"):
-            self.assertIn(body, tools, f"{body} must not be skipped")
-
-    def test_both_copper_layers_are_carved_even_though_they_share_a_rule_key(self):
-        hfss = FakeHfss(["vacuum", "box", "pcb_copper_top", "pcb_copper_bottom"])
-        objects_dict = {
-            "vacuum": hfss.solid_objects[0],
-            "box": hfss.solid_objects[1],
-            "pcb_copper": hfss.solid_objects[2],
-        }
-        model_builder.carve_vacuum(hfss, objects_dict, log=lambda _m: None)
-        _target, tools, _keep = hfss.subtractions[0]
-        self.assertIn("pcb_copper_top", tools)
-        self.assertIn("pcb_copper_bottom", tools)
-
-    def test_substrates_are_carved(self):
-        """The substrates were never carved at all in the first version
-        -- carve_vacuum only ever looked for 'copper'/'via'/'wirebond'
-        in the key, which a plain substrate never matches."""
-        hfss = FakeHfss(["vacuum", "box", "pcb_substrate", "chip_substrate"])
-        objects_dict = {
-            "vacuum": hfss.solid_objects[0],
-            "box": hfss.solid_objects[1],
-            "pcb": hfss.solid_objects[2],
-            "chip": hfss.solid_objects[3],
-        }
-        model_builder.carve_vacuum(hfss, objects_dict, log=lambda _m: None)
-        _target, tools, _keep = hfss.subtractions[0]
-        self.assertIn("pcb_substrate", tools)
-        self.assertIn("chip_substrate", tools)
-
-    def test_only_vacuum_itself_is_never_a_carving_tool(self):
-        """vacuum is now a plain block built from box's own measured
-        envelope (build_vacuum), with no body pre-excluded from it -- so
-        box and lid_inside are legitimate carving tools too, unlike the
-        old SolidWorks-hand-fitted vacuum this replaces."""
-        hfss = FakeHfss(["vacuum", "box", "lid_inside", "pcb_substrate"])
-        objects_dict = {"vacuum": hfss.solid_objects[0]}
-        model_builder.carve_vacuum(hfss, objects_dict, log=lambda _m: None)
-        _target, tools, _keep = hfss.subtractions[0]
-        self.assertNotIn("vacuum", tools)
-        self.assertIn("box", tools)
-        self.assertIn("lid_inside", tools)
-        self.assertIn("pcb_substrate", tools)
-
-    def test_via_posts_are_not_carved_but_everything_else_is(self):
-        """The posts stand wholly inside the board, which is carved
-        already. Carving them too has AEDT cut every via out of the vacuum
-        and fill it straight back in -- minutes of one call on a dense
-        board, with the web app frozen for all of it."""
-        hfss = FakeHfss(["vacuum", "box", "pcb_substrate", "pcb_copper_top",
-                         "pcb_vias", "pcb_vias_2", "chip_substrate", "chip_vias"])
-        model_builder.carve_vacuum(hfss, {"vacuum": hfss.solid_objects[0]},
+    def _tools(self, names, objects_dict=None):
+        hfss = FakeHfss(names)
+        model_builder.carve_vacuum(hfss, objects_dict or {"vacuum": hfss.solid_objects[0]},
                                    log=lambda _m: None)
         _target, tools, _keep = hfss.subtractions[0]
-        self.assertEqual(sorted(tools),
-                         ["box", "chip_substrate", "pcb_copper_top", "pcb_substrate"])
+        return tools
+
+    def test_the_dielectrics_are_carved(self):
+        self.assertEqual(
+            sorted(self._tools(self.ALL)),
+            ["chip_substrate", "connector_1_dielectric", "connector_2_dielectric", "pcb_substrate"],
+        )
+
+    def test_no_metal_is_carved(self):
+        """Box, lid, copper, vias, bonds and the connectors' metal all
+        take their own shape out of the vacuum by material override. Box
+        in particular must not be a tool: with a pedestal, the die's sides
+        are flush with box's pocket walls, and subtracting both broke the
+        vacuum every time AEDT reopened the project."""
+        tools = self._tools(self.ALL)
+        for body in ("box", "lid_inside", "pcb_copper_top", "pcb_copper_bottom", "pcb_vias",
+                     "pcb_vias_2", "wirebond", "connector_1_outer", "connector_1_center",
+                     "connector_2_outer", "connector_2_center"):
+            self.assertNotIn(body, tools)
+
+    def test_every_bead_is_carved_even_though_they_share_a_rule_key(self):
+        """objects_dict keeps one body per rule key; the tool list must
+        not be built from it, or the second connector's bead overlaps the
+        vacuum -- two dielectrics in one place."""
+        hfss = FakeHfss(self.ALL)
+        objects_dict = {"vacuum": hfss.solid_objects[0],
+                        "connector_dielectric": hfss.solid_objects[12]}
+        model_builder.carve_vacuum(hfss, objects_dict, log=lambda _m: None)
+        _target, tools, _keep = hfss.subtractions[0]
+        self.assertIn("connector_1_dielectric", tools)
+        self.assertIn("connector_2_dielectric", tools)
+
+    def test_air_of_its_own_is_carved(self):
+        """A body of vacuum material that is not THE vacuum -- the
+        connector bore a wave port sits on -- is a dielectric like any
+        other, and two of them cannot share a region."""
+        self.assertIn("port_1_bore", self._tools(["vacuum", "box", "port_1_bore", "port_1_cap"]))
+        self.assertNotIn("port_1_cap", self._tools(["vacuum", "box", "port_1_bore", "port_1_cap"]))
+
+    def test_vacuum_itself_is_never_a_carving_tool(self):
+        self.assertNotIn("vacuum", self._tools(self.ALL))
 
     def test_the_carved_bodies_survive(self):
         """keep_originals: these are the things being simulated, not
@@ -1032,9 +1003,8 @@ class TestCarveVacuum(unittest.TestCase):
         model_builder.carve_vacuum(hfss, {}, log=lambda _m: None)
         self.assertEqual(hfss.subtractions, [])
 
-    def test_nothing_to_carve_is_a_no_op(self):
-        """The only case with nothing to carve is vacuum on its own."""
-        hfss = FakeHfss(["vacuum"])
+    def test_nothing_but_metal_is_a_no_op(self):
+        hfss = FakeHfss(["vacuum", "box", "lid_inside"])
         model_builder.carve_vacuum(hfss, {"vacuum": hfss.solid_objects[0]},
                                    log=lambda _m: None)
         self.assertEqual(hfss.subtractions, [])
@@ -1049,6 +1019,15 @@ class TestCarveVacuum(unittest.TestCase):
         model_builder.carve_vacuum(hfss, {"vacuum": hfss.solid_objects[0]}, log=messages.append)
         self.assertTrue(any("WARNING" in m for m in messages))
         self.assertTrue(any("overlapping" in m for m in messages))
+
+    def test_a_vacuum_left_empty_is_loud(self):
+        """Parasolid can fail a boolean and still report success, leaving
+        the target with no faces at all."""
+        hfss = FakeHfss(["vacuum", "pcb_substrate"])
+        hfss.solid_objects[0].faces = []
+        messages = []
+        model_builder.carve_vacuum(hfss, {"vacuum": hfss.solid_objects[0]}, log=messages.append)
+        self.assertTrue(any("WARNING" in m and "empty" in m for m in messages))
 
 
 class TestPinMesher(unittest.TestCase):

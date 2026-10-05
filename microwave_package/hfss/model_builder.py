@@ -514,9 +514,10 @@ def build_vacuum(hfss, frame, stack, pcb_half_length: float, pcb_half_side: floa
 
     It is deliberately a plain block, the full height of box's own
     bounding box -- not trimmed to the cavity floor, the pedestal, or
-    lid_inside's pocket. `carve_vacuum` then subtracts every other solid
-    in the model from it unconditionally, box included, so nothing here
-    has to know the shape of what it is sized around.
+    lid_inside's pocket. `carve_vacuum` then subtracts every dielectric
+    from it, and every metal body -- box included -- takes its own shape
+    out by material override, so nothing here has to know the shape of
+    what it is sized around.
     """
     try:
         box_box = hfss.modeler["box"].bounding_box
@@ -1003,48 +1004,47 @@ def assign_materials_and_boundaries(hfss, mat_settings: dict, log=logger.info,
     return objects_dict
 
 
-# Bodies the vacuum never reaches. The via posts stand wholly inside the
-# board (see copper_geometry._via_post), which is carved out already, so
-# carving them as well only has AEDT cut thousands of holes into the
-# vacuum and fill every one straight back in -- on the densest boards,
-# minutes of a single call.
-INSIDE_THE_BOARD = ("pcb_via", "chip_via")
-
-
 def carve_vacuum(hfss, objects_dict, log=logger.info) -> None:
-    """Cut everything else in the model out of the vacuum body.
+    """Cut the dielectrics out of the vacuum body; leave the metal to HFSS.
 
     `build_vacuum` makes vacuum a plain block spanning box's own measured
     envelope -- it does not know box's floor, pedestal or any other
-    feature's shape, and does not try to. So unlike the old SolidWorks-
-    hand-fitted vacuum this replaces, nothing is assumed pre-excluded:
-    box, lid_inside, the substrates, copper, bonds and connectors are all
-    subtracted from it here. Two solids claiming one region is not a
-    small inaccuracy: HFSS either errors or silently resolves it by
-    material priority, which is worse because the model still solves.
-    The one exception is INSIDE_THE_BOARD: bodies that sit wholly inside
-    another body that is carved, so that there is no vacuum left where
-    they are.
+    feature's shape, and does not try to. Two DIELECTRICS claiming one
+    region is an error HFSS refuses to solve, so every body whose inside
+    is solved -- the substrates, the connector beads, any air of its own
+    -- is subtracted here.
+
+    The metal is not. The model runs with material override on (see
+    `build_model`), so wherever a conductor overlaps the vacuum the
+    conductor wins: box, lid_inside, copper, bonds and the connectors'
+    metal take their own shape out of the vacuum without a boolean. That
+    is how the via posts in the board already work. Subtracting them as
+    well used to be done, and it bought nothing but a fragile boolean:
+    with a pedestal, the die stands on box's pocket rim with its sides
+    flush to the pocket walls, and Parasolid failed to cut both out --
+    not while the model was built, but every time AEDT reopened the
+    project and replayed its history, which left the vacuum an empty
+    body on the worker.
+
+    Conductor or not is read off each body's own `solve_inside`, which
+    material assignment has already set: HFSS solves inside a dielectric
+    and not inside a conductor, so this is exactly the line it draws.
 
     The tool list is read straight from `hfss.modeler.solid_objects`,
     not from `objects_dict`. Several material rules legitimately match
-    MORE than one body -- pcb_copper matches both the top and bottom
-    layer, connector matches two conductor bodies per port -- and
-    objects_dict keeps only the first body per rule key, so building the
-    tool list from it silently carved just one of them and left the rest
-    overlapping vacuum. That is exactly how a second connector went
-    uncarved.
+    MORE than one body -- connector_dielectric matches one bead per port
+    -- and objects_dict keeps only the first body per rule key, so
+    building the tool list from it silently carved just one of them.
     """
     vacuum = objects_dict.get("vacuum")
     if vacuum is None:
         return
 
-    tools = [
-        obj.name
-        for obj in hfss.modeler.solid_objects
-        if obj.name.lower() != "vacuum"
-        and not any(inside in obj.name.lower() for inside in INSIDE_THE_BOARD)
-    ]
+    tools, metal = [], []
+    for obj in hfss.modeler.solid_objects:
+        if obj.name.lower() == "vacuum":
+            continue
+        (tools if getattr(obj, "solve_inside", True) else metal).append(obj.name)
     if not tools:
         return
 
@@ -1052,12 +1052,21 @@ def carve_vacuum(hfss, objects_dict, log=logger.info) -> None:
         # keep_originals: every one of these bodies must survive being
         # cut out of the vacuum -- they are the things being simulated.
         hfss.modeler.subtract(vacuum.name, tools, keep_originals=True)
-        log(f"Carved {len(tools)} bodies out of the vacuum: {', '.join(sorted(tools))}.")
     except Exception as exc:
         log(
             f"WARNING: could not subtract {len(tools)} bodies from the vacuum ({exc}). "
             "The model has overlapping solids and its results should not be trusted."
         )
+        return
+    # A boolean Parasolid cannot do does not always raise: it can leave
+    # the target an empty body and report success.
+    faces = getattr(vacuum, "faces", None)
+    if faces is not None and not faces:
+        log("WARNING: the vacuum is empty after carving the dielectrics out of it. "
+            "The model has no air to solve in and its results cannot be trusted.")
+        return
+    log(f"Carved {len(tools)} dielectric bodies out of the vacuum: {', '.join(sorted(tools))}. "
+        f"{len(metal)} metal bodies overlap it and take their place by material override.")
 
 
 def project_file_for(run, combo_id: str) -> str:
@@ -1090,7 +1099,8 @@ def project_file_for(run, combo_id: str) -> str:
     return os.path.join(combo_dir, f"{run.run_id}__{combo_id}.aedt")
 
 
-def close_project_safely(hfss, log: Callable[[str], None] = logger.info) -> bool:
+def close_project_safely(hfss, log: Callable[[str], None] = logger.info,
+                         save: bool = True) -> bool:
     """Close whatever project `hfss` has open, without ever raising.
 
     PyAEDT's own `close_project()` asks the session for the project
@@ -1100,6 +1110,9 @@ def close_project_safely(hfss, log: Callable[[str], None] = logger.info) -> bool
     attribute 'GetPath'` rather than reporting a close that failed. By
     the time we close, the model is built and saved to disk; a close
     going wrong must not take the whole run down with it.
+
+    `save=False` closes it as it is on disk, for a caller that only
+    looked (see `validate_saved_model`).
 
     Returns True when the project is no longer open in AEDT.
     """
@@ -1115,7 +1128,7 @@ def close_project_safely(hfss, log: Callable[[str], None] = logger.info) -> bool
         return True
 
     try:
-        if hfss.close_project(name=name) is False:
+        if hfss.close_project(name=name, save=save) is False:
             log(f"AEDT does not have a project named {name} open -- nothing to close.")
         return True
     except Exception as exc:
@@ -1246,7 +1259,8 @@ def build_model(
             hfss.change_material_override(True)
         except Exception as exc:
             log(f"WARNING: could not turn material override on ({exc}). The via posts "
-                "overlap the board, and HFSS may refuse the model.")
+                "overlap the board and the metal overlaps the vacuum (see carve_vacuum), "
+                "and HFSS may refuse the model.")
         _pin_mesher(hfss, log)
 
         if hfss.modeler.object_names:
@@ -1313,6 +1327,14 @@ def build_model(
         if not closed:
             log(f"{combo_id}'s project unlocked despite that close error -- queueing it anyway.")
 
+        problem = validate_saved_model(
+            project_path, solver.value, aedt_version, student_version, graphical,
+            vacuum=object_names.get("vacuum"), log=log,
+        )
+        if problem:
+            log(f"{combo_id}: not queueing it -- {problem}")
+            return
+
         object_names = _remember_built_model(
             run, combo_id, project_path, object_names, port_names, log
         )
@@ -1321,6 +1343,115 @@ def build_model(
     finally:
         close_project_safely(hfss, log=log)
         _resume_autosave(odesktop, autosave_was_on)
+
+
+def validate_saved_model(project_path: str, solution_type: str,
+                         aedt_version: Optional[str], student_version: bool, graphical: bool,
+                         vacuum: Optional[str] = None,
+                         log: Callable[[str], None] = logger.info) -> Optional[str]:
+    """Reopen a saved model the way the worker will, and validate it here.
+
+    Returns why it is not fit to queue, or None when it is.
+
+    Reopened rather than checked in the session that built it, because
+    AEDT replays the whole modelling history when it opens a project, and
+    that replay is not guaranteed to reproduce what was built: a pedestal
+    model carved its vacuum without complaint and then lost the vacuum --
+    every face of it -- each time the project was opened again. On the
+    worker that is a failed solve after the trip over the network; here
+    it is a minute on the student licence.
+
+    Three checks: that the vacuum still has a body at all -- the replay
+    failure leaves it empty; that no two dielectrics share any volume
+    (`dielectric_overlaps`), which HFSS's validation stops reporting once
+    material override is on; and HFSS's own validation of the rest --
+    ports, boundaries, setup.
+
+    The project is closed without saving: this only looks.
+    """
+    from ansys.aedt.core import Hfss
+
+    kwargs = dict(
+        project=project_path, version=aedt_version_for(aedt_version),
+        solution_type=solution_type, new_desktop=False, student_version=student_version,
+        non_graphical=not graphical, remove_lock=True,
+    )
+    design = design_name_in_project(project_path)
+    if design:
+        kwargs["design"] = design
+    hfss = None
+    try:
+        hfss = Hfss(**kwargs)
+        if vacuum and vacuum in hfss.modeler.object_names and not hfss.modeler[vacuum].faces:
+            return (f"reopened, {os.path.basename(project_path)} has an empty '{vacuum}' -- "
+                    "a boolean in its history failed on replay. There is no air to solve in.")
+        overlaps = dielectric_overlaps(hfss)
+        if overlaps:
+            return ("dielectric bodies overlap, which HFSS resolves silently with material "
+                    "override on: " + ", ".join(
+                        f"{a} / {b} ({volume:.4g} mm^3)" for a, b, volume in overlaps))
+        if not hfss.validate_simple():
+            errors = [
+                str(message).strip() for message in
+                hfss.odesktop.GetMessages(hfss.project_name, hfss.design_name, 2)
+                if "error" in str(message).lower()
+            ]
+            return ("HFSS validation failed on the reopened project"
+                    + (": " + " | ".join(errors[-3:]) if errors else "."))
+        log(f"{os.path.basename(project_path)}: reopened and validated on this machine.")
+        return None
+    except Exception as exc:
+        return f"could not reopen {os.path.basename(project_path)} to validate it ({exc})."
+    finally:
+        if hfss is not None:
+            close_project_safely(hfss, log=log, save=False)
+            wait_until_unlocked(project_path)
+
+
+# Below this, two bodies touching is not two bodies overlapping: a shared
+# face intersects to nothing, and floating point leaves crumbs.
+OVERLAP_TOLERANCE_MM3 = 1e-6
+
+
+def _boxes_overlap(a, b) -> bool:
+    return all(a[i] < b[i + 3] and b[i] < a[i + 3] for i in range(3))
+
+
+def dielectric_overlaps(hfss) -> List[tuple]:
+    """Every pair of dielectric bodies that share volume, with how much.
+
+    With material override on -- which the via posts and the uncarved
+    metal rely on -- HFSS no longer refuses two dielectrics in one place:
+    it picks one by priority and solves, so validation passes a model
+    where, say, the vacuum still fills part of the board. Metal over a
+    dielectric is the override doing its job and is not reported here.
+
+    Each candidate pair -- dielectrics whose bounding boxes meet -- is
+    intersected on copies, which are then deleted.
+    """
+    modeler = hfss.modeler
+    bodies = [obj for obj in modeler.solid_objects if getattr(obj, "solve_inside", True)]
+    found = []
+    for i, first in enumerate(bodies):
+        for second in bodies[i + 1:]:
+            if not _boxes_overlap(first.bounding_box, second.bounding_box):
+                continue
+            copies = []
+            try:
+                for body in (first, second):
+                    made = modeler.clone(body.name)
+                    copies.extend(made[1] if isinstance(made, tuple) else made)
+                result = modeler.intersect(copies, keep_originals=False)
+                volume = 0.0
+                if result and result in modeler.object_names and modeler[result].faces:
+                    volume = float(modeler[result].volume)
+                if volume > OVERLAP_TOLERANCE_MM3:
+                    found.append((first.name, second.name, volume))
+            finally:
+                leftovers = [name for name in copies if name in modeler.object_names]
+                if leftovers:
+                    modeler.delete(leftovers)
+    return found
 
 
 def _pin_mesher(hfss, log: Callable[[str], None]) -> None:
