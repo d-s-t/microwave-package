@@ -308,6 +308,14 @@ def postprocess_run(
 
         task["project_file"] = project_file
         task["output_dir"] = local_dir
+        # Named for the same reason the worker's task names it (see
+        # model_builder.queue_model): unnamed, PyAEDT misses a driven
+        # design, inserts an empty one, and finds no setup to read. A task
+        # rebuilt by task_from_run, or queued before the name was sent,
+        # has none, so it is read off the project itself.
+        if not task.get("design_name"):
+            from ..hfss import model_builder
+            task["design_name"] = model_builder.design_name_in_project(project_file)
 
         log(f"{combo_id}: post-processing {os.path.basename(project_file)}...")
         run.update_combo(combo_id, post_status="running")
