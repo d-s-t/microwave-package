@@ -5,7 +5,9 @@ An eigenmode run has no ports at all -- it is source-free. A driven run
 has to be told where the signal enters and leaves, and that choice is not
 a detail: it fixes the reference plane, and an S11 referenced at the
 connector is a different number from an S11 referenced at the CPW. So the
-run picks one of two, and this module builds it.
+run picks where, and this module builds it: the two below, plus `bonds` and
+`chip` -- the `launch` kind of lumped port moved in to just outboard of the
+wire bonds (on the PCB) or onto the die's own CPW, inboard of the bonds.
 
 **`connector`** -- a wave port across the SMP's air bore, just above the
 bead. `github.com/d-s-t/wr-smp-connector` reconstructs the bead as a
@@ -48,7 +50,7 @@ import logging
 import math
 from typing import Any, Dict, List
 
-from ...design import smp
+from ...design import bonds, smp
 from ..registry import PortPlacementError
 
 
@@ -60,6 +62,8 @@ logger = logging.getLogger("microwave_package")
 # this module builds, and the two should not be able to drift apart.
 REFERENCE_PLANE_CONNECTOR = "connector"
 REFERENCE_PLANE_LAUNCH = "launch"
+REFERENCE_PLANE_BONDS = "bonds"
+REFERENCE_PLANE_CHIP = "chip"
 
 REFERENCE_PLANES = [
     {
@@ -76,6 +80,21 @@ REFERENCE_PLANES = [
         "help": "Board only: excludes the connector and its land pattern. "
                 "The port sits under the CPW trace, through the substrate to "
                 "the backing ground plane, just inboard of the launch.",
+    },
+    {
+        "value": REFERENCE_PLANE_BONDS,
+        "label": "Bond fingers -- lumped port on the PCB, just before the wire bonds",
+        "help": "Board and connectors, up to the wire bonds: the port sits under "
+                "the CPW trace a little outboard of the bond fingers, so the "
+                "bonds and the die are not in the measurement.",
+    },
+    {
+        "value": REFERENCE_PLANE_CHIP,
+        "label": "Chip -- lumped port on the die's CPW",
+        "help": "Everything up to the die: connectors, board and wire bonds "
+                "are all in the measurement. The port sits on the die's own "
+                "CPW, a little inboard of where the bonds land, through the "
+                "silicon to whatever is under the die.",
     },
 ]
 
@@ -130,6 +149,10 @@ def place_ports(hfss, layout, analysis_settings: Dict[str, Any], log=logger.info
         names = _connector_wave_ports(hfss, impedance, log=log)
     elif plane == REFERENCE_PLANE_LAUNCH:
         names = _launch_lumped_ports(hfss, layout, impedance, log=log)
+    elif plane == REFERENCE_PLANE_BONDS:
+        names = _bond_finger_ports(hfss, layout, impedance, log=log)
+    elif plane == REFERENCE_PLANE_CHIP:
+        names = _chip_ports(hfss, layout, impedance, log=log)
     else:
         raise PortPlacementError(
             f"Unknown reference plane {plane!r}. Known: "
@@ -388,42 +411,95 @@ def _radial_integration_line(face, inner: float, outer: float) -> tuple:
 def _launch_lumped_ports(hfss, layout, impedance: float, log) -> List[str]:
     """A lumped port under the trace at each end of the CPW.
 
-    The sheet stands in the transverse plane, spanning the substrate from
-    the backing ground plane's top face up to the trace's underside, and
-    the trace's width across. Both of its horizontal edges therefore land
-    on copper, which is what a lumped port needs; the vertical edges are
-    free in the dielectric, as they are for the ordinary microstrip port
-    this is shaped like.
+    Placed just inboard of the launch, through the substrate. See
+    `_lumped_ports` for what the sheet is.
+    """
+    half_length = layout.values.get("pcb_length", 26.0) / 2.0
+    port_space = layout.values.get("port_space", 1.5)
+    # Where the land pattern stops reaching back onto the board. Nothing
+    # of the launch comes past this, so a port here is clear of it.
+    inner_edge = smp.launch_inner_edge(half_length, port_space)
+    return _lumped_ports(
+        hfss, layout, impedance, inner_edge,
+        layout.stack.pcb_bottom, layout.stack.pcb_top, log=log,
+    )
+
+
+# How far a port stands clear of the bond pad it is placed next to, so
+# the pad's copper is not part of the port's own cross-section.
+PAD_SETBACK = 0.2
+
+
+def _signal_bond_ends(layout) -> tuple:
+    """The signal bonds' landing x on the board and on the die, magnitudes.
+
+    Taken from the same `bonds.layout` the pads and the wires are drawn
+    from, so a port placed against them follows the bonds when a
+    parameter moves them. The gap does not enter the signal bonds.
+    """
+    signal = [b for b in bonds.layout(layout.values, gap=0.0) if b.kind == bonds.SIGNAL]
+    return abs(signal[0].pcb_x), abs(signal[0].chip_x)
+
+
+def _bond_finger_ports(hfss, layout, impedance: float, log) -> List[str]:
+    """Lumped ports on the PCB's CPW, just outboard of the bond fingers."""
+    pcb_x, _ = _signal_bond_ends(layout)
+    pad = layout.values.get("bond_pad_length", 0.3)
+    return _lumped_ports(
+        hfss, layout, impedance, pcb_x + pad / 2.0 + PAD_SETBACK,
+        layout.stack.pcb_bottom, layout.stack.pcb_top, log=log,
+    )
+
+
+def _chip_ports(hfss, layout, impedance: float, log) -> List[str]:
+    """Lumped ports on the die's CPW, just inboard of where the bonds land.
+
+    The sheet spans the die's own thickness, from its underside to its
+    trace. What is under the die is the box floor or the pedestal, which
+    is metal, so the sheet's lower edge lands on it.
+    """
+    _, chip_x = _signal_bond_ends(layout)
+    pad = layout.values.get("bond_pad_length", 0.3)
+    return _lumped_ports(
+        hfss, layout, impedance, chip_x - pad / 2.0 - PAD_SETBACK,
+        layout.stack.chip_bottom, layout.stack.chip_top, log=log,
+    )
+
+
+def _lumped_ports(hfss, layout, impedance: float, inner_edge: float,
+                  bottom: float, top: float, log) -> List[str]:
+    """A lumped port under the trace at each end of the CPW.
+
+    The sheet stands in the transverse plane at +-`inner_edge` along the
+    line, spanning from `bottom` (the backing ground) up to `top` (the
+    trace's underside), and the trace's width across. Both of its
+    horizontal edges therefore land on metal, which is what a lumped port
+    needs; the vertical edges are free in the dielectric, as they are for
+    the ordinary microstrip port this is shaped like.
 
     The CPW here is conductor-backed -- there is a ground plane on the
     underside of the board, not just the coplanar grounds -- so the mode
     this excites is the one the line actually carries.
     """
 
-    frame, stack = layout.frame, layout.stack
+    frame = layout.frame
     trace_width = layout.values.get("cpw_trace_width", 0.2)
-    half_length = layout.values.get("pcb_length", 26.0) / 2.0
-    port_space = layout.values.get("port_space", 1.5)
     count = int(layout.values.get("port_count", 2))
-
-    # Where the land pattern stops reaching back onto the board. Nothing
-    # of the launch comes past this, so a port here is clear of it.
-    inner_edge = smp.launch_inner_edge(half_length, port_space)
-    substrate_thickness = stack.pcb_top - stack.pcb_bottom
+    height = top - bottom
 
     names: List[str] = []
     for index in range(count):
         sign = -1.0 if index == 0 else 1.0
         # frame.point maps Altium (u, v, w) to assembly (x, y, z); the
         # corner the rectangle grows from is the low one in both spanned
-        # axes, hence -trace/2 across and the substrate's bottom face up.
-        origin = frame.point(sign * inner_edge, trace_width / 2.0, stack.pcb_bottom)
+        # axes, hence -trace/2 across and the bottom face up.
+        origin = frame.point(sign * inner_edge, trace_width / 2.0, bottom)
         port_name = f"port_{index + 1}"
         sheet = hfss.modeler.create_rectangle(
-            orientation="X",
+            orientation="YZ",
             origin=origin,
-            # WhichAxis="X" puts width along Y and height along Z.
-            sizes=[substrate_thickness, trace_width],
+            # The YZ plane's two sizes run along Y (up, here) then Z (across).
+            sizes=[height, trace_width],
             name=f"{port_name}_sheet",
         )
         if not sheet:
@@ -431,8 +507,8 @@ def _launch_lumped_ports(hfss, layout, impedance: float, log) -> List[str]:
 
         # Ground plane up to the trace: the reference conductor first, so
         # every port's positive terminal is the signal line.
-        start = frame.point(sign * inner_edge, 0.0, stack.pcb_bottom)
-        stop = frame.point(sign * inner_edge, 0.0, stack.pcb_top)
+        start = frame.point(sign * inner_edge, 0.0, bottom)
+        stop = frame.point(sign * inner_edge, 0.0, top)
         try:
             port = hfss.lumped_port(
                 assignment=sheet.name,
@@ -449,8 +525,8 @@ def _launch_lumped_ports(hfss, layout, impedance: float, log) -> List[str]:
             raise PortPlacementError(f"HFSS refused a lumped port on {sheet.name}.")
         log(
             f"Lumped port {port_name} at u={sign * inner_edge:.3f} mm: "
-            f"{trace_width:.3f} mm across the trace, {substrate_thickness:.3f} mm "
-            f"through the substrate, renormalised to {impedance} ohm."
+            f"{trace_width:.3f} mm across the trace, {height:.3f} mm "
+            f"from the ground below it, renormalised to {impedance} ohm."
         )
         names.append(port_name)
     return names

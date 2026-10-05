@@ -314,8 +314,8 @@ class TestLaunchLumpedPorts(unittest.TestCase):
         ports.place_ports(hfss, layout, self.SETTINGS)
         sheet = hfss.modeler.rectangles[0]
         substrate = layout.stack.pcb_top - layout.stack.pcb_bottom
-        # WhichAxis="X" puts width along Y and height along Z.
-        self.assertEqual(sheet["orientation"], "X")
+        # The YZ plane's sizes run along Y (up) then Z (across).
+        self.assertEqual(sheet["orientation"], "YZ")
         self.assertAlmostEqual(sheet["sizes"][0], substrate)
         self.assertAlmostEqual(sheet["sizes"][1], layout.values["cpw_trace_width"])
         self.assertAlmostEqual(sheet["origin"][1], layout.stack.pcb_bottom)
@@ -355,6 +355,46 @@ class TestLaunchLumpedPorts(unittest.TestCase):
         with self.assertRaises(ports.PortPlacementError) as caught:
             ports.place_ports(hfss, FakeLayout(port_count=1), self.SETTINGS)
         self.assertIn("S21", str(caught.exception))
+
+
+# --- the bond-finger and chip reference planes --------------------------
+
+class TestPortsNextToTheBonds(unittest.TestCase):
+    def _xs(self, plane):
+        hfss = bead_model()
+        layout = FakeLayout(chip_length=6.3, chip_side=6.3, bonding_clearence=0.6)
+        ports.place_ports(hfss, layout, {**DRIVEN, "reference_plane": plane})
+        return hfss, layout, sorted(r["origin"][0] - layout.frame.x_offset
+                                    for r in hfss.modeler.rectangles)
+
+    def test_the_bond_finger_ports_sit_outboard_of_the_fingers(self):
+        _, _, xs = self._xs(ports.REFERENCE_PLANE_BONDS)
+        # fingers at 3.5 mm, 0.3 mm long
+        self.assertAlmostEqual(xs[0], -(3.5 + 0.15 + ports.PAD_SETBACK))
+        self.assertAlmostEqual(xs[1], 3.5 + 0.15 + ports.PAD_SETBACK)
+
+    def test_the_chip_ports_sit_inboard_of_the_die_pads(self):
+        _, _, xs = self._xs(ports.REFERENCE_PLANE_CHIP)
+        # die pads centred on 2.85 mm, 0.3 mm long
+        self.assertAlmostEqual(xs[0], -(2.85 - 0.15 - ports.PAD_SETBACK))
+        self.assertAlmostEqual(xs[1], 2.85 - 0.15 - ports.PAD_SETBACK)
+
+    def test_the_chip_port_spans_the_die_not_the_board(self):
+        hfss = bead_model()
+        layout = FakeLayout()
+        layout.stack = cg.Stack(
+            pcb_bottom=1.0, pcb_top=1.381, chip_bottom=1.2, chip_top=1.381,
+            copper_thickness=0.035, chip_metal_thickness=0.0002,
+        )
+        ports.place_ports(hfss, layout, {**DRIVEN, "reference_plane": ports.REFERENCE_PLANE_CHIP})
+        start, stop = hfss.lumped_ports[0]["integration_line"]
+        self.assertAlmostEqual(start[ports.UP], 1.2)
+        self.assertAlmostEqual(stop[ports.UP], 1.381)
+
+    def test_both_make_port_1_the_minus_x_end(self):
+        for plane in (ports.REFERENCE_PLANE_BONDS, ports.REFERENCE_PLANE_CHIP):
+            hfss, _, xs = self._xs(plane)
+            self.assertLess(hfss.modeler.rectangles[0]["origin"][0], hfss.modeler.rectangles[1]["origin"][0])
 
 
 # --- things that apply either way -------------------------------------
