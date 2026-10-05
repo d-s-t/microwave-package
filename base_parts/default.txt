@@ -50,11 +50,11 @@
 
 "via_diameter"= 0.3	' finished diameter of the stitching and shielding vias
 
-"via_max_spacing"= 0.8	' grid step for the ground-plane fill, and the target spacing along the shield fence
+"via_max_spacing"= 0.8	' step of the via lattice, along a row and between rows; the shield fence is its first row
 
 "via_gnd_clearance"= 0.15	' setback of the via fence from the edge of the CPW gap
 
-"via_min_spacing"= 0.2	' minimum clearance a placed via must keep from any pad, track or other via
+"via_min_spacing"= 0.2	' minimum clearance a placed via must keep from any pad, track, other via or the board edge
 
 "bond_pad_length"= 0.3	' bonding pad size along the feedline
 

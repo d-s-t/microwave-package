@@ -32,11 +32,37 @@ class TestCheckLayout(unittest.TestCase):
         self.assertIn("via fence", reason)
         self.assertIn("pcb_side", reason)
 
+    def test_via_fence_with_no_room_for_the_edge_margin_is_caught(self):
+        """The generator keeps every via via_min_spacing from the board
+        edge, and the fence is the first row of the lattice the rest are
+        laid out from -- so a board the fence fits on by less than that
+        gets no vias at all. Say so up front rather than build it."""
+        from microwave_package.design import altium_generation as ag
+
+        v = defaults()
+        fence_edge = (v["cpw_trace_width"] / 2 + ag.build_params(v)["pcb_cpw_gap"]
+                      + v["via_gnd_clearance"] + v["via_diameter"])
+        # Wide enough for the fence itself, and half the margin short of it.
+        values = dict(v, pcb_side=2 * (fence_edge + v["via_min_spacing"] / 2))
+        reason = constraints.check_layout(values)
+        self.assertIsNotNone(reason)
+        self.assertIn("via fence", reason)
+        self.assertIn("via_min_spacing", reason)
+
     def test_via_min_spacing_wider_than_the_grid_step_is_caught(self):
         values = dict(defaults(), via_min_spacing=1.0)
         reason = constraints.check_layout(values)
         self.assertIsNotNone(reason)
         self.assertIn("via_min_spacing", reason)
+        self.assertIn("via_max_spacing", reason)
+
+    def test_a_via_step_of_nothing_is_caught(self):
+        """It would leave no vias at all, and the generator reports that
+        as a board like any other. Not caught by the spacing sum when the
+        via has no size either."""
+        values = dict(defaults(), via_max_spacing=0.0, via_diameter=0.0, via_min_spacing=0.0)
+        reason = constraints.check_layout(values)
+        self.assertIsNotNone(reason)
         self.assertIn("via_max_spacing", reason)
 
     def test_unreachable_impedance_is_reported_as_such(self):
