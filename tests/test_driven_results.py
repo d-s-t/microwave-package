@@ -65,6 +65,36 @@ class TestPickingTheSweepSolution(unittest.TestCase):
         self.assertIn("sweep", str(caught.exception).lower())
 
 
+class TestNamingTheSParameters(unittest.TestCase):
+    """AEDT names an S-parameter after its ports, so a project whose ports
+    are called port_1/port_2 has S(port_2,port_1), not S(2,1). Asking
+    only for the numbered names found nothing, and the read failed with
+    every S-parameter sitting right there in the "available" list."""
+
+    WANTED = {"s11", "s21", "s22", "s12"}
+
+    def test_ports_named_by_word_and_number(self):
+        available = {"S(port_1,port_1)", "S(port_1,port_2)",
+                     "S(port_2,port_1)", "S(port_2,port_2)"}
+        wanted = dict((key, expr) for expr, key in driven_results._wanted_expressions(available))
+        self.assertEqual(set(wanted), self.WANTED)
+        self.assertEqual(wanted["s21"], "S(port_2,port_1)", "row is the receiving port")
+        self.assertEqual(wanted["s12"], "S(port_1,port_2)")
+
+    def test_ports_named_by_number_alone(self):
+        available = {"S(1,1)", "S(1,2)", "S(2,1)", "S(2,2)"}
+        wanted = dict((key, expr) for expr, key in driven_results._wanted_expressions(available))
+        self.assertEqual(wanted["s21"], "S(2,1)")
+
+    def test_nothing_to_check_against_asks_for_the_numbered_names(self):
+        self.assertEqual(driven_results._wanted_expressions(set()),
+                         list(driven_results.S_PARAMETERS))
+
+    def test_a_one_port_project_gets_only_its_reflection(self):
+        wanted = driven_results._wanted_expressions({"S(port_1,port_1)"})
+        self.assertEqual(wanted, [("S(port_1,port_1)", "s11")])
+
+
 class TestTheFrequencyAxis(unittest.TestCase):
     def test_ghz_passes_through(self):
         data = FakeSolutionData([1.0, 2.0, 3.0], "GHz")

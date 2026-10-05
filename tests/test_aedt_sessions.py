@@ -118,6 +118,25 @@ class TestRetryingAfterTheFetch(unittest.TestCase):
             self.assertEqual(seen["solution_type"], "Eigenmode")
             self.assertTrue(seen["post_processing"], "the solver's own post-processing ops")
 
+    def test_the_design_is_named_from_the_project(self):
+        """Unnamed, PyAEDT misses a driven design, inserts an empty one,
+        and the read fails with "no setup to post-process" -- which is
+        what run_20260929_102232 did on its retry."""
+        with tempfile.TemporaryDirectory() as root:
+            os.makedirs(os.path.join(root, "c"))
+            with open(os.path.join(root, "c", "r__c.aedt"), "w") as f:
+                f.write("$begin 'AnsoftProject'\n\t$begin 'HFSSModel'\n\t\tName='HFSS_0CZ'\n")
+            run = FakeRun(root, {"c": {
+                "task_id": "t1", "queue_status": "done", "fetch_status": "done",
+                "post_status": "failed",
+            }})
+            seen = {}
+            with mock.patch.object(postprocess, "postprocess_task",
+                                   lambda task, *a, **k: seen.update(task) or {"rows": [], "row_count": 0}):
+                postprocess.postprocess_run(run, queue=None, log=lambda _m: None,
+                                            analysis_settings={"solution_type": "DrivenModal"})
+            self.assertEqual(seen["design_name"], "HFSS_0CZ")
+
     def test_from_wherever_the_run_recorded_them(self):
         with tempfile.TemporaryDirectory() as root:
             elsewhere = os.path.join(root, "c", "analysis")
