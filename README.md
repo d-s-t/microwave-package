@@ -171,7 +171,10 @@ python -m microwave_package.pipeline --solution-type DrivenModal --f-start-ghz 1
 `--reference-plane connector` (the default) puts a wave port across the SMP's
 air bore just above its bead (the barrel above is capped off), so the
 connector transition is inside the measurement; `--reference-plane launch` puts a lumped port under the CPW
-trace instead and measures the board alone.
+trace instead and measures the board alone. `--reference-plane bonds` and
+`--reference-plane chip` move the same kind of lumped port in to just before the wire
+bonds (on the PCB) or onto the die's own CPW, so S21 can be compared as the
+excitation moves in from the connectors.
 
 Run `python -m microwave_package.pipeline --help` for every analysis
 setting -- they are grouped by which solution type they apply to.

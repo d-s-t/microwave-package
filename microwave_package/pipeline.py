@@ -441,7 +441,8 @@ def parse_args() -> argparse.Namespace:
         help="Where the driven run's ports go: 'connector' puts a wave port on the "
              "SMP's air bore just above its bead (connector transition included); 'launch' "
              "puts a lumped port under the CPW trace just inboard of the land pattern "
-             "(board only).",
+             "(board only); 'bonds' puts one on the PCB just outboard of the wire bonds; "
+             "'chip' puts one on the die's CPW just inboard of where the bonds land.",
     )
     # Shared.
     parser.add_argument("--max-passes", type=int, default=99)
