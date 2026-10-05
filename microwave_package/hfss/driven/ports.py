@@ -6,8 +6,9 @@ has to be told where the signal enters and leaves, and that choice is not
 a detail: it fixes the reference plane, and an S11 referenced at the
 connector is a different number from an S11 referenced at the CPW. So the
 run picks where, and this module builds it: the two below, plus `bonds` and
-`chip` -- the `launch` kind of lumped port moved in to just outboard of the
-wire bonds (on the PCB) or onto the die's own CPW, inboard of the bonds.
+`chip`. `bonds` is the `launch` kind of lumped port moved in to just outboard
+of the wire bonds, on the PCB. `chip` is a pair of gap ports across the die's
+CPW, trace to coplanar ground, inboard of the bonds.
 
 **`connector`** -- a wave port across the SMP's air bore, just above the
 bead. `github.com/d-s-t/wr-smp-connector` reconstructs the bead as a
@@ -90,11 +91,12 @@ REFERENCE_PLANES = [
     },
     {
         "value": REFERENCE_PLANE_CHIP,
-        "label": "Chip -- lumped port on the die's CPW",
+        "label": "Chip -- gap ports from the die's trace to its ground",
         "help": "Everything up to the die: connectors, board and wire bonds "
-                "are all in the measurement. The port sits on the die's own "
-                "CPW, a little inboard of where the bonds land, through the "
-                "silicon to whatever is under the die.",
+                "are all in the measurement. The die has no backing ground, "
+                "so the port goes from the trace to the coplanar ground "
+                "around it, across both gaps, a little inboard of where the "
+                "bonds land.",
     },
 ]
 
@@ -452,20 +454,109 @@ def _bond_finger_ports(hfss, layout, impedance: float, log) -> List[str]:
 
 
 def _chip_ports(hfss, layout, impedance: float, log) -> List[str]:
-    """Lumped ports on the die's CPW, just inboard of where the bonds land.
+    """Gap ports across the die's CPW, just inboard of where the bonds land.
 
-    The sheet spans the die's own thickness, from its underside to its
-    trace. At pedestal_depth = 0 the die's underside rests on the box
-    floor, which is metal, so the sheet's lower edge lands on it. That is
-    NOT checked for a deeper pedestal -- if the die is then over a gap,
-    the sheet's lower edge is in the air.
+    The die has no backing ground -- its underside is not a conductor --
+    so the line's ground is the coplanar copper either side of the trace,
+    and the excitation goes from the trace to that. A CPW has two gaps,
+    each carrying half of the mode, so each end gets one port across each
+    gap: both integration lines point ground to trace, both ports are
+    driven alike, and the pair is one port as far as the results go
+    (see `results.combined_s_parameters`).
+
+    Each gap port is built to twice the run's port impedance: two of them
+    in parallel are one port of the run's impedance, which is what the
+    combined S-parameters are referenced to.
     """
+    reach = layout.chip_ground_offset
+    if reach is None:
+        raise PortPlacementError(
+            "The die has no copper in this layout, so there is no CPW to put a port "
+            "across. Use another reference plane."
+        )
     _, chip_x = _signal_bond_ends(layout)
     pad = layout.values.get("bond_pad_length", 0.3)
-    return _lumped_ports(
-        hfss, layout, impedance, chip_x - pad / 2.0 - PAD_SETBACK,
-        layout.stack.chip_bottom, layout.stack.chip_top, log=log,
+    return _gap_ports(
+        hfss, layout, impedance, chip_x - pad / 2.0 - PAD_SETBACK, reach, log=log,
     )
+
+
+# Names of the two gap ports at one end, in the order they are built.
+GAP_SIDES = ("a", "b")
+
+
+def _gap_ports(hfss, layout, impedance: float, inner_edge: float,
+               ground_offset: float, log) -> List[str]:
+    """Two gap ports per end across a CPW's gaps; returns the two ends' names.
+
+    A sheet lies flat in the die's top plane, from the trace's edge to the
+    ground's edge across one gap, `ground_offset - trace/2` wide and as
+    long along the line as that is wide. Its integration line runs from the
+    ground to the trace, so the two gaps' ports push the same way: the
+    even mode a CPW carries, not the slotline mode.
+
+    The ends are named for the pair -- port_1 at -x, port_2 at +x -- with
+    the two gap ports `port_N_a` and `port_N_b`.
+    """
+    frame, stack = layout.frame, layout.stack
+    trace_width = layout.values.get("cpw_trace_width", 0.2)
+    count = int(layout.values.get("port_count", 2))
+    gap = ground_offset - trace_width / 2.0
+    if gap <= 0:
+        raise PortPlacementError(
+            f"The die's ground starts {ground_offset:.3f} mm from the trace's axis, which "
+            f"is inside the {trace_width:.3f} mm trace: there is no gap to put a port across."
+        )
+    # Half a film's thickness up, so the sheet's edges meet the metal's
+    # sides when it is drawn as a solid, and its face when it is a sheet.
+    height = stack.chip_top + stack.chip_metal_thickness / 2.0
+
+    names: List[str] = []
+    for index in range(count):
+        sign = -1.0 if index == 0 else 1.0
+        end = f"port_{index + 1}"
+        for side, across in zip(GAP_SIDES, (1.0, -1.0)):
+            # Altium's v across the line; the sheet runs from the trace's
+            # edge to the ground's edge on this side.
+            trace_edge = across * trace_width / 2.0
+            ground_edge = across * ground_offset
+            low_v, high_v = sorted((trace_edge, ground_edge))
+            # frame.point flips v into z, so the sheet's low corner is
+            # at the high v.
+            origin = frame.point(sign * inner_edge - gap / 2.0, high_v, height)
+            name = f"{end}_{side}"
+            sheet = hfss.modeler.create_rectangle(
+                orientation="XZ",
+                origin=origin,
+                # The XZ plane's two sizes run along X (the line) then Z (across).
+                sizes=[gap, gap],
+                name=f"{name}_sheet",
+            )
+            if not sheet:
+                raise PortPlacementError(f"Could not create the gap port sheet for {name}.")
+            start = frame.point(sign * inner_edge, ground_edge, height)
+            stop = frame.point(sign * inner_edge, trace_edge, height)
+            try:
+                port = hfss.lumped_port(
+                    assignment=sheet.name,
+                    integration_line=[start, stop],
+                    impedance=2.0 * impedance,
+                    name=name,
+                    renormalize=True,
+                )
+            except Exception as exc:
+                raise PortPlacementError(
+                    f"Could not create a gap port on {sheet.name} at u={sign * inner_edge:.3f} mm: {exc}"
+                ) from exc
+            if not port:
+                raise PortPlacementError(f"HFSS refused a gap port on {sheet.name}.")
+        log(
+            f"Gap ports {end}_a / {end}_b at u={sign * inner_edge:.3f} mm: {gap:.3f} mm "
+            f"across each gap of the die's CPW, trace to ground, each {2.0 * impedance:g} ohm "
+            f"so that the pair is {impedance:g} ohm."
+        )
+        names.append(end)
+    return names
 
 
 def _lumped_ports(hfss, layout, impedance: float, inner_edge: float,

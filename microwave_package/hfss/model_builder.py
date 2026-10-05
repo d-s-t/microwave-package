@@ -603,6 +603,10 @@ class LayoutContext:
     # The metal drawn as sheets (see SHEET_BELOW_MM), which carries its
     # metal as a boundary instead of a material.
     sheets: List[str] = field(default_factory=list)
+    # How far from the die's trace axis the die's coplanar ground starts
+    # (half the trace plus the gap), None when the die has no copper. A
+    # port across the CPW gap has to reach exactly that far.
+    chip_ground_offset: Optional[float] = None
 
 
 # Metal thinner than this is drawn as a sheet on the face it lies on, with
@@ -792,7 +796,13 @@ def build_layout(hfss, combo_dir: str, dimensions_txt_content: str,
     else:
         log("No bonds.txt for this combination -- the die is not bonded.")
 
-    return LayoutContext(frame=frame, stack=stack, values=v, sheets=sheets)
+    ground_offset = None
+    if chip is not None:
+        edges = [abs(across) for region in chip.regions if region.layer == "top"
+                 for _, across in region.points]
+        ground_offset = min(edges) if edges else None
+    return LayoutContext(frame=frame, stack=stack, values=v, sheets=sheets,
+                         chip_ground_offset=ground_offset)
 
 
 # Tried in turn when the preferred material will not stick. The last
