@@ -58,7 +58,8 @@ which this project depends on for the shared task-queue schema.
 ## Install
 
 ```
-pip install -r requirements.txt
+python -m venv .venv
+.venv\Scripts\python.exe -m pip install -r requirements.txt
 ```
 
 This installs `ansys-analyze-common` (the shared queue schema) straight
@@ -84,8 +85,20 @@ machine) need this pointed at the same shared location.
 ### Web UI
 
 ```
-python -m microwave_package.webapp
+webapp.cmd
 ```
+
+This starts the web UI with the first Python it finds: `MICROWAVE_PYTHON`
+if set, the activated venv, `.venv` at the repo root, or `python` on
+PATH -- and says which one it picked. `.claude/launch.json` runs it too.
+To use an interpreter that lives elsewhere:
+
+```
+setx MICROWAVE_PYTHON "D:\envs\lab\Scripts\python.exe"
+```
+
+(`python -m microwave_package.webapp` with any interpreter works just
+as well.)
 
 Open <http://127.0.0.1:5000/> (or set `PORT` to serve somewhere else).
 Pick which parameter(s) from `base_parts/default.txt` to sweep and over
