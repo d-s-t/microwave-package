@@ -454,6 +454,50 @@ class TestChipGapPorts(unittest.TestCase):
             ports.place_ports(hfss, layout, {**DRIVEN, "reference_plane": ports.REFERENCE_PLANE_CHIP})
 
 
+class TestConnectorTerminations(unittest.TestCase):
+    """Every plane but the connector's leaves the connectors matched:
+    left alone, the bead top is a perfect-conductor outer boundary that
+    shorts each pin to its shell."""
+
+    def _ports(self, plane):
+        hfss = bead_model()
+        layout = FakeLayout(chip_length=6.3, chip_side=6.3, bonding_clearence=0.6)
+        names = ports.place_ports(hfss, layout, {**DRIVEN, "reference_plane": plane})
+        return hfss, names
+
+    def test_lumped_and_gap_planes_terminate_both_connectors(self):
+        for plane in (ports.REFERENCE_PLANE_LAUNCH, ports.REFERENCE_PLANE_BONDS,
+                      ports.REFERENCE_PLANE_CHIP):
+            hfss, names = self._ports(plane)
+            self.assertEqual([p["name"] for p in hfss.wave_ports],
+                             ["connector_load_a", "connector_load_b"], plane)
+            self.assertEqual(names, ["port_1", "port_2"], plane)
+
+    def test_terminations_are_matched_to_the_run_impedance(self):
+        hfss, _ = self._ports(ports.REFERENCE_PLANE_CHIP)
+        self.assertTrue(all(p["impedance"] == 50.0 for p in hfss.wave_ports))
+
+    def test_the_connector_plane_has_no_terminations(self):
+        hfss, names = self._ports(ports.REFERENCE_PLANE_CONNECTOR)
+        self.assertEqual([p["name"] for p in hfss.wave_ports], ["port_1", "port_2"])
+
+    def test_termination_names_carry_no_number(self):
+        """The results reader groups ports by their trailing number; a
+        termination must never be mistaken for one of the run's ports."""
+        for index in ("1", "2"):
+            self.assertFalse(ports._termination_name(index)[-1].isdigit())
+
+    def test_a_connector_that_cannot_be_terminated_is_a_warning_not_a_failure(self):
+        hfss = bead_model()
+        for name in [n for n in hfss.modeler.object_names if n.endswith("_dielectric")]:
+            hfss.modeler.object_names.remove(name)
+        messages = []
+        names = ports.place_ports(hfss, FakeLayout(), {**DRIVEN, "reference_plane": ports.REFERENCE_PLANE_LAUNCH},
+                                  log=messages.append)
+        self.assertEqual(names, ["port_1", "port_2"])
+        self.assertTrue(any("WARNING" in m and "terminated" in m for m in messages))
+
+
 # --- things that apply either way -------------------------------------
 
 class TestWhenThereIsNothingToPortOnto(unittest.TestCase):

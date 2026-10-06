@@ -76,7 +76,7 @@ def get_sparameter_results(hfss, setup, log, out_dir: Optional[str] = None) -> L
     solution = _sweep_solution_name(hfss, setup)
     available = set(hfss.post.available_report_quantities(solution=solution) or [])
     groups = _port_groups(available)
-    if any(len(members) > 1 for members in groups.values()):
+    if _needs_combining(available, groups):
         return _combined_sparameter_rows(hfss, solution, groups, setup, out_dir, log)
     wanted = _wanted_expressions(available)
     if not wanted:
@@ -122,6 +122,11 @@ def get_sparameter_results(hfss, setup, log, out_dir: Optional[str] = None) -> L
 
 # --- ports made of several ports ---------------------------------------
 #
+# Only the numbered ports are the run's. Anything else in the project --
+# a connector termination -- is left out of every sum below, which is the
+# same as leaving it matched: an S-matrix is defined with every port not
+# being driven terminated in its own impedance.
+#
 # A CPW on a die with no backing ground is excited across its two gaps,
 # one port each (see ports._gap_ports), so the project has four ports and
 # the run is about two. The pair at each end is one port: both are driven
@@ -157,6 +162,26 @@ def _port_groups(available) -> Dict[str, List[str]]:
                 if port not in members:
                     members.append(port)
     return {number: sorted(members) for number, members in sorted(groups.items())}
+
+
+def _needs_combining(available, groups: Dict[str, List[str]]) -> bool:
+    """Whether the S-matrix is more than the run's two ports.
+
+    True when an end is several ports (the die's gap ports), and when the
+    project has ports that are not the run's at all -- the connector
+    terminations of a lumped-port plane, which are named without a
+    number. Either way the run's 2-port matrix, and its .s2p, is a
+    reduction of what HFSS solved rather than the whole of it.
+    """
+    if any(len(members) > 1 for members in groups.values()):
+        return True
+    every_port = set()
+    for quantity in available:
+        match = _S_QUANTITY.match(quantity)
+        if match:
+            every_port.update(port.strip() for port in match.groups())
+    grouped = {port for members in groups.values() for port in members}
+    return bool(every_port - grouped) and bool(grouped)
 
 
 def combined_s_parameters(entries: Dict[tuple, Any], groups: Dict[str, List[str]]) -> Dict[tuple, Any]:
