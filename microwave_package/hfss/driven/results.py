@@ -11,7 +11,9 @@ S-parameters are read from, and what unit its frequency axis is in.
 """
 from __future__ import annotations
 
+import cmath
 import logging
+import math
 import os
 import re
 from typing import Any, Dict, List, Optional
@@ -58,7 +60,7 @@ S_PARAMETERS = (
 )
 
 
-def get_sparameter_results(hfss, setup, log) -> List[Dict[str, Any]]:
+def get_sparameter_results(hfss, setup, log, out_dir: Optional[str] = None) -> List[Dict[str, Any]]:
     """The S-matrix of a solved driven setup, one row per frequency point.
 
     Magnitude in dB and phase in degrees for each parameter -- dB because
@@ -73,6 +75,9 @@ def get_sparameter_results(hfss, setup, log) -> List[Dict[str, Any]]:
 
     solution = _sweep_solution_name(hfss, setup)
     available = set(hfss.post.available_report_quantities(solution=solution) or [])
+    groups = _port_groups(available)
+    if _needs_combining(available, groups):
+        return _combined_sparameter_rows(hfss, solution, groups, setup, out_dir, log)
     wanted = _wanted_expressions(available)
     if not wanted:
         raise RuntimeError(
@@ -112,6 +117,159 @@ def get_sparameter_results(hfss, setup, log) -> List[Dict[str, Any]]:
     log(f"{setup.name}: {len(rows)} frequency point(s) from {solution}, "
         f"{', '.join(sorted(columns))}.")
     return rows
+
+
+
+# --- ports made of several ports ---------------------------------------
+#
+# Only the numbered ports are the run's. Anything else in the project --
+# a connector termination -- is left out of every sum below, which is the
+# same as leaving it matched: an S-matrix is defined with every port not
+# being driven terminated in its own impedance.
+#
+# A CPW on a die with no backing ground is excited across its two gaps,
+# one port each (see ports._gap_ports), so the project has four ports and
+# the run is about two. The pair at each end is one port: both are driven
+# alike, with the same voltage across them, so their currents add. Built
+# to twice the run's impedance, two of them in parallel are one port of
+# the run's impedance, and the power waves of the pair are
+#
+#     a_end = (a_1 + a_2) / sqrt(2),     b_end = (b_1 + b_2) / sqrt(2)
+#
+# which makes the combined S-parameter the sum of the member entries
+# divided by sqrt(members_i * members_j) -- half their sum for two and two.
+
+_PORT_NAME = re.compile(r"^(.*?)(\d+)(?:_[A-Za-z]+)?$")
+
+
+def _port_groups(available) -> Dict[str, List[str]]:
+    """The solved project's ports, grouped by which end they belong to.
+
+    `port_1`, `port_2` are a group each of one; `port_1_a`, `port_1_b`
+    are one group of two, numbered 1. Names that do not end in a number
+    (optionally followed by a letter suffix) are left out.
+    """
+    groups: Dict[str, List[str]] = {}
+    for quantity in available:
+        match = _S_QUANTITY.match(quantity)
+        if not match:
+            continue
+        for port in match.groups():
+            port = port.strip()
+            named = _PORT_NAME.match(port)
+            if named:
+                members = groups.setdefault(str(int(named.group(2))), [])
+                if port not in members:
+                    members.append(port)
+    return {number: sorted(members) for number, members in sorted(groups.items())}
+
+
+def _needs_combining(available, groups: Dict[str, List[str]]) -> bool:
+    """Whether the S-matrix is more than the run's two ports.
+
+    True when an end is several ports (the die's gap ports), and when the
+    project has ports that are not the run's at all -- the connector
+    terminations of a lumped-port plane, which are named without a
+    number. Either way the run's 2-port matrix, and its .s2p, is a
+    reduction of what HFSS solved rather than the whole of it.
+    """
+    if any(len(members) > 1 for members in groups.values()):
+        return True
+    every_port = set()
+    for quantity in available:
+        match = _S_QUANTITY.match(quantity)
+        if match:
+            every_port.update(port.strip() for port in match.groups())
+    grouped = {port for members in groups.values() for port in members}
+    return bool(every_port - grouped) and bool(grouped)
+
+
+def combined_s_parameters(entries: Dict[tuple, Any], groups: Dict[str, List[str]]) -> Dict[tuple, Any]:
+    """Combine member S-parameters into one per pair of ends.
+
+    `entries` maps (receiving port, driving port) to a complex value or
+    an array of them; the result maps (receiving end, driving end) --
+    the numbers `groups` is keyed by -- to the combined value.
+    """
+    combined = {}
+    for row, row_members in groups.items():
+        for column, column_members in groups.items():
+            total = sum(entries[(p, q)] for p in row_members for q in column_members)
+            combined[(row, column)] = total / math.sqrt(len(row_members) * len(column_members))
+    return combined
+
+
+def _db_and_degrees(value: complex) -> tuple:
+    return 20.0 * math.log10(max(abs(value), 1e-300)), math.degrees(cmath.phase(value))
+
+
+def _combined_sparameter_rows(hfss, solution: str, groups: Dict[str, List[str]],
+                              setup, out_dir: Optional[str], log) -> List[Dict[str, Any]]:
+    """The same rows `get_sparameter_results` makes, from a multi-port
+    project: each end's ports combined into one."""
+    members = [port for ports in groups.values() for port in ports]
+    expressions = [f"S({p},{q})" for p in members for q in members]
+    data = hfss.post.get_solution_data(
+        expressions=expressions, setup_sweep_name=solution,
+        report_category="Modal Solution Data", domain="Sweep",
+    )
+    if data is None:
+        raise RuntimeError(f"No solution data returned for {solution}.")
+    frequencies = _frequencies_ghz(data)
+
+    raw: Dict[tuple, List[complex]] = {}
+    for p in members:
+        for q in members:
+            expression = f"S({p},{q})"
+            _, real = data.get_expression_data(expression=expression, formula="re")
+            _, imag = data.get_expression_data(expression=expression, formula="im")
+            values = [complex(a, b) for a, b in zip(real, imag)]
+            if len(values) != len(frequencies):
+                raise RuntimeError(
+                    f"{expression} came back with {len(values)} value(s) for "
+                    f"{len(frequencies)} frequencies."
+                )
+            raw[(p, q)] = values
+    # Combined point by point: the sum is over ports, the frequency stays.
+    combined = {}
+    for index in range(len(frequencies)):
+        point = combined_s_parameters({k: v[index] for k, v in raw.items()}, groups)
+        for key, value in point.items():
+            combined.setdefault(key, []).append(value)
+
+    rows: List[Dict[str, Any]] = []
+    for index, freq_ghz in enumerate(frequencies):
+        row = {"freq_ghz": freq_ghz}
+        for (receiving, driving), key in (
+            (("1", "1"), "s11"), (("2", "1"), "s21"), (("2", "2"), "s22"), (("1", "2"), "s12"),
+        ):
+            if (receiving, driving) in combined:
+                db, degrees = _db_and_degrees(combined[(receiving, driving)][index])
+                row[f"{key}_db"], row[f"{key}_deg"] = db, degrees
+        rows.append(row)
+
+    if out_dir and all(key in combined for key in (("1", "1"), ("2", "1"), ("1", "2"), ("2", "2"))):
+        write_touchstone_2port(
+            os.path.join(out_dir, f"{setup.name}_{solution.split(' : ')[1]}.s2p"),
+            frequencies, combined,
+        )
+    log(f"{setup.name}: {len(rows)} frequency point(s) from {solution}, with each end's "
+        f"{', '.join(f'{len(ports)} ports' for ports in groups.values())} combined into one.")
+    return rows
+
+
+def write_touchstone_2port(path: str, frequencies_ghz, combined: Dict[tuple, List[complex]],
+                           impedance: float = 50.0) -> None:
+    """A 2-port Touchstone file (real/imaginary) of the combined matrix."""
+    lines = [f"# GHz S RI R {impedance:g}", "! S-parameters of the ends' ports combined into one each"]
+    for index, freq in enumerate(frequencies_ghz):
+        fields = [f"{freq:.9g}"]
+        for key in (("1", "1"), ("2", "1"), ("1", "2"), ("2", "2")):
+            value = combined[key][index]
+            fields += [f"{value.real:.9g}", f"{value.imag:.9g}"]
+        lines.append(" ".join(fields))
+    with open(path, "w", encoding="utf-8") as handle:
+        handle.write("\n".join(lines) + "\n")
 
 
 _S_QUANTITY = re.compile(r"^S\((.+),(.+)\)$")
@@ -181,7 +339,14 @@ def export_touchstone(hfss, setup, out_dir: str, log) -> Optional[str]:
     fatal if it fails -- the table is the primary record.
     """
     sweep = _sweep_solution_name(hfss, setup).split(" : ")[1]
-    path = os.path.join(out_dir, f"{setup.name}_{sweep}.s2p")
+    try:
+        port_count = len(hfss.excitation_names)
+    except Exception:
+        port_count = 2
+    # A project whose ends are each several ports writes the whole matrix
+    # here; the 2-port file of the combined ends is `get_sparameter_results`'s.
+    stem = f"{setup.name}_{sweep}" if port_count == 2 else f"{setup.name}_{sweep}_all_ports"
+    path = os.path.join(out_dir, f"{stem}.s{port_count}p")
     try:
         # No renormalisation here: the ports were already renormalised to
         # the run's port impedance when they were created, so asking for
@@ -211,9 +376,15 @@ def read_results(hfss, setup_names, task, out_dir: str, log) -> List[Dict[str, A
     for setup_name in setup_names:
         setup = hfss.get_setup(setup_name)
         touchstone = export_touchstone(hfss, setup, out_dir, log)
-        for row in get_sparameter_results(hfss, setup, log):
+        for row in get_sparameter_results(hfss, setup, log, out_dir=out_dir):
             row["setup"] = setup_name
-            if touchstone:
+            # The 2-port file is the one the rows describe, when a
+            # multi-port project wrote one beside its full matrix.
+            sweep = _sweep_solution_name(hfss, setup).split(" : ")[1]
+            combined = os.path.join(out_dir, f"{setup.name}_{sweep}.s2p")
+            if os.path.isfile(combined):
+                row["touchstone"] = os.path.basename(combined)
+            elif touchstone:
                 row["touchstone"] = os.path.basename(touchstone)
             rows.append(row)
     return rows

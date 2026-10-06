@@ -6,8 +6,9 @@ has to be told where the signal enters and leaves, and that choice is not
 a detail: it fixes the reference plane, and an S11 referenced at the
 connector is a different number from an S11 referenced at the CPW. So the
 run picks where, and this module builds it: the two below, plus `bonds` and
-`chip` -- the `launch` kind of lumped port moved in to just outboard of the
-wire bonds (on the PCB) or onto the die's own CPW, inboard of the bonds.
+`chip`. `bonds` is the `launch` kind of lumped port moved in to just outboard
+of the wire bonds, on the PCB. `chip` is a pair of gap ports across the die's
+CPW, trace to coplanar ground, inboard of the bonds.
 
 **`connector`** -- a wave port across the SMP's air bore, just above the
 bead. `github.com/d-s-t/wr-smp-connector` reconstructs the bead as a
@@ -32,13 +33,31 @@ sees.
 **`launch`** -- a lumped port under the CPW trace, spanning the substrate
 from the backing ground plane up to the trace, placed just inboard of
 where the land pattern stops (`smp.launch_inner_edge`). The connector and
-its launch are outboard of it and take no part in the measurement. This
-is the board on its own.
+its launch are outboard of it.
 
-Neither option changes the board. The connectors are placed either way
-and the cavity is the same cavity; beyond the excitation, the only
-difference is the connector plane's bore caps, which sit above the
-port and outside the measurement.
+**Every plane but `connector` terminates the connectors.** Each one still
+gets its bore and a wave port, named `connector_load_a`/`_b`, which is
+not one of the run's two ports: an S-matrix is defined with every other
+port terminated in its own impedance, so the S21 between the run's ports
+is measured with both connectors matched -- as a VNA or a load leaves
+them on the bench. Without it the bead's top face, which stands above the
+model's air, is the model's outer boundary, and HFSS makes an outer
+boundary a perfect conductor: it shorted each pin to its shell, and the
+line to ground. A chip-plane run saw that short as S11 = 0 dB and S21 =
+-30 dB at 0.1 GHz.
+
+**A lumped or gap port is a tap, not an end.** The line is not cut at
+it: it runs on past each port to the terminated connector. At low
+frequency that is four matched branches meeting at one node, so the run's
+S11 and S21 both start at -1/2 and +1/2 -- -6 dB each -- however good
+the line is, and the rest of the band is read against that. (A chip run
+gave -0.503 and +0.497 at 0.1 GHz.) What these planes are for is
+comparing where features come from: a notch the connector plane shows and
+the chip plane does not is made outside the die.
+
+No option changes the board. The connectors are placed either way and
+the cavity is the same cavity; beyond the excitation, the only difference
+is which bore ports are reported and which are terminations.
 
 Port 1 is always the -x end of the board and port 2 the +x end, matching
 `place_connectors`' own index-to-end convention, so S21 always runs the
@@ -77,24 +96,31 @@ REFERENCE_PLANES = [
     {
         "value": REFERENCE_PLANE_LAUNCH,
         "label": "Launch -- lumped port at the CPW",
-        "help": "Board only: excludes the connector and its land pattern. "
-                "The port sits under the CPW trace, through the substrate to "
-                "the backing ground plane, just inboard of the launch.",
+        "help": "The port sits under the CPW trace, through the substrate to "
+                "the backing ground plane, just inboard of the launch. The "
+                "connectors are terminated in the port impedance; the line "
+                "runs on past each port to them, so each port is a tap and "
+                "even a perfect line reads S11 = S21 = -6 dB at low frequency.",
     },
     {
         "value": REFERENCE_PLANE_BONDS,
         "label": "Bond fingers -- lumped port on the PCB, just before the wire bonds",
-        "help": "Board and connectors, up to the wire bonds: the port sits under "
-                "the CPW trace a little outboard of the bond fingers, so the "
-                "bonds and the die are not in the measurement.",
+        "help": "The port sits under the CPW trace a little outboard of the "
+                "bond fingers, through the substrate to the backing ground. "
+                "The connectors are terminated in the port impedance; the line "
+                "runs on past each port to them, so each port is a tap and "
+                "even a perfect line reads S11 = S21 = -6 dB at low frequency.",
     },
     {
         "value": REFERENCE_PLANE_CHIP,
-        "label": "Chip -- lumped port on the die's CPW",
-        "help": "Everything up to the die: connectors, board and wire bonds "
-                "are all in the measurement. The port sits on the die's own "
-                "CPW, a little inboard of where the bonds land, through the "
-                "silicon to whatever is under the die.",
+        "label": "Chip -- gap ports from the die's trace to its ground",
+        "help": "The die has no backing ground, so the port goes from the "
+                "trace to the coplanar ground around it, across both gaps, a "
+                "little inboard of where the bonds land. The connectors are "
+                "terminated in the port impedance; the line runs on past each "
+                "port, through the bonds and the board, to them, so each port "
+                "is a tap and even a perfect line reads S11 = S21 = -6 dB at "
+                "low frequency.",
     },
 ]
 
@@ -145,6 +171,9 @@ def place_ports(hfss, layout, analysis_settings: Dict[str, Any], log=logger.info
     plane = analysis_settings.get("reference_plane", DEFAULT_REFERENCE_PLANE)
     impedance = float(analysis_settings.get("port_impedance_ohm", 50.0))
 
+    if plane != REFERENCE_PLANE_CONNECTOR and plane in {p["value"] for p in REFERENCE_PLANES}:
+        _terminate_connectors(hfss, impedance, log=log)
+
     if plane == REFERENCE_PLANE_CONNECTOR:
         names = _connector_wave_ports(hfss, impedance, log=log)
     elif plane == REFERENCE_PLANE_LAUNCH:
@@ -171,8 +200,36 @@ def place_ports(hfss, layout, analysis_settings: Dict[str, Any], log=logger.info
 
 # --- the connector reference plane ------------------------------------
 
-def _connector_wave_ports(hfss, impedance: float, log) -> List[str]:
-    """A PEC-backed wave port across each SMP connector's air bore."""
+def _measurement_port_name(index: str) -> str:
+    return f"port_{index}"
+
+
+def _termination_name(index: str) -> str:
+    """`connector_load_a` for connector 1 and so on: letters, not numbers,
+    so the results reader never takes a termination for one of the run's
+    numbered ports."""
+    return f"connector_load_{chr(ord('a') + int(index) - 1)}"
+
+
+def _terminate_connectors(hfss, impedance: float, log) -> List[str]:
+    """A matched wave port in each connector's bore, for planes that
+    excite the line somewhere else. See the module docstring."""
+    try:
+        names = _connector_wave_ports(hfss, impedance, log=log, name_for=_termination_name)
+    except PortPlacementError as exc:
+        log(f"WARNING: the connectors could not be terminated ({exc}) -- their bead tops "
+            "are a perfect-conductor boundary, which shorts each pin to its shell.")
+        return []
+    log(f"Connectors terminated in {impedance:g} ohm by {', '.join(names)}, which are not reported.")
+    return names
+
+
+def _connector_wave_ports(hfss, impedance: float, log,
+                          name_for=_measurement_port_name) -> List[str]:
+    """A PEC-backed wave port across each SMP connector's air bore.
+
+    `name_for` names each from its connector's index: the run's own ports
+    by default, or terminations (`_terminate_connectors`)."""
     beads = sorted(
         name for name in hfss.modeler.object_names
         if name.startswith("connector_") and name.endswith("_dielectric")
@@ -196,7 +253,7 @@ def _connector_wave_ports(hfss, impedance: float, log) -> List[str]:
                 f"{bead} has no {centre} beside it, so there is no centre conductor "
                 "to put the port's inner edge on."
             )
-        port_name = f"port_{index}"
+        port_name = name_for(index)
         air = _bore_section(hfss, bead, centre, vacuum, port_name, log=log)
         face = max(
             (f for f in hfss.modeler[air].faces if f.is_planar),
@@ -452,20 +509,109 @@ def _bond_finger_ports(hfss, layout, impedance: float, log) -> List[str]:
 
 
 def _chip_ports(hfss, layout, impedance: float, log) -> List[str]:
-    """Lumped ports on the die's CPW, just inboard of where the bonds land.
+    """Gap ports across the die's CPW, just inboard of where the bonds land.
 
-    The sheet spans the die's own thickness, from its underside to its
-    trace. At pedestal_depth = 0 the die's underside rests on the box
-    floor, which is metal, so the sheet's lower edge lands on it. That is
-    NOT checked for a deeper pedestal -- if the die is then over a gap,
-    the sheet's lower edge is in the air.
+    The die has no backing ground -- its underside is not a conductor --
+    so the line's ground is the coplanar copper either side of the trace,
+    and the excitation goes from the trace to that. A CPW has two gaps,
+    each carrying half of the mode, so each end gets one port across each
+    gap: both integration lines point ground to trace, both ports are
+    driven alike, and the pair is one port as far as the results go
+    (see `results.combined_s_parameters`).
+
+    Each gap port is built to twice the run's port impedance: two of them
+    in parallel are one port of the run's impedance, which is what the
+    combined S-parameters are referenced to.
     """
+    reach = layout.chip_ground_offset
+    if reach is None:
+        raise PortPlacementError(
+            "The die has no copper in this layout, so there is no CPW to put a port "
+            "across. Use another reference plane."
+        )
     _, chip_x = _signal_bond_ends(layout)
     pad = layout.values.get("bond_pad_length", 0.3)
-    return _lumped_ports(
-        hfss, layout, impedance, chip_x - pad / 2.0 - PAD_SETBACK,
-        layout.stack.chip_bottom, layout.stack.chip_top, log=log,
+    return _gap_ports(
+        hfss, layout, impedance, chip_x - pad / 2.0 - PAD_SETBACK, reach, log=log,
     )
+
+
+# Names of the two gap ports at one end, in the order they are built.
+GAP_SIDES = ("a", "b")
+
+
+def _gap_ports(hfss, layout, impedance: float, inner_edge: float,
+               ground_offset: float, log) -> List[str]:
+    """Two gap ports per end across a CPW's gaps; returns the two ends' names.
+
+    A sheet lies flat in the die's top plane, from the trace's edge to the
+    ground's edge across one gap, `ground_offset - trace/2` wide and as
+    long along the line as that is wide. Its integration line runs from the
+    ground to the trace, so the two gaps' ports push the same way: the
+    even mode a CPW carries, not the slotline mode.
+
+    The ends are named for the pair -- port_1 at -x, port_2 at +x -- with
+    the two gap ports `port_N_a` and `port_N_b`.
+    """
+    frame, stack = layout.frame, layout.stack
+    trace_width = layout.values.get("cpw_trace_width", 0.2)
+    count = int(layout.values.get("port_count", 2))
+    gap = ground_offset - trace_width / 2.0
+    if gap <= 0:
+        raise PortPlacementError(
+            f"The die's ground starts {ground_offset:.3f} mm from the trace's axis, which "
+            f"is inside the {trace_width:.3f} mm trace: there is no gap to put a port across."
+        )
+    # Half a film's thickness up, so the sheet's edges meet the metal's
+    # sides when it is drawn as a solid, and its face when it is a sheet.
+    height = stack.chip_top + stack.chip_metal_thickness / 2.0
+
+    names: List[str] = []
+    for index in range(count):
+        sign = -1.0 if index == 0 else 1.0
+        end = f"port_{index + 1}"
+        for side, across in zip(GAP_SIDES, (1.0, -1.0)):
+            # Altium's v across the line; the sheet runs from the trace's
+            # edge to the ground's edge on this side.
+            trace_edge = across * trace_width / 2.0
+            ground_edge = across * ground_offset
+            low_v, high_v = sorted((trace_edge, ground_edge))
+            # frame.point flips v into z, so the sheet's low corner is
+            # at the high v.
+            origin = frame.point(sign * inner_edge - gap / 2.0, high_v, height)
+            name = f"{end}_{side}"
+            sheet = hfss.modeler.create_rectangle(
+                orientation="XZ",
+                origin=origin,
+                # The XZ plane's two sizes run along X (the line) then Z (across).
+                sizes=[gap, gap],
+                name=f"{name}_sheet",
+            )
+            if not sheet:
+                raise PortPlacementError(f"Could not create the gap port sheet for {name}.")
+            start = frame.point(sign * inner_edge, ground_edge, height)
+            stop = frame.point(sign * inner_edge, trace_edge, height)
+            try:
+                port = hfss.lumped_port(
+                    assignment=sheet.name,
+                    integration_line=[start, stop],
+                    impedance=2.0 * impedance,
+                    name=name,
+                    renormalize=True,
+                )
+            except Exception as exc:
+                raise PortPlacementError(
+                    f"Could not create a gap port on {sheet.name} at u={sign * inner_edge:.3f} mm: {exc}"
+                ) from exc
+            if not port:
+                raise PortPlacementError(f"HFSS refused a gap port on {sheet.name}.")
+        log(
+            f"Gap ports {end}_a / {end}_b at u={sign * inner_edge:.3f} mm: {gap:.3f} mm "
+            f"across each gap of the die's CPW, trace to ground, each {2.0 * impedance:g} ohm "
+            f"so that the pair is {impedance:g} ohm."
+        )
+        names.append(end)
+    return names
 
 
 def _lumped_ports(hfss, layout, impedance: float, inner_edge: float,

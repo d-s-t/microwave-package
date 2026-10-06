@@ -95,6 +95,87 @@ class TestNamingTheSParameters(unittest.TestCase):
         self.assertEqual(wanted, [("S(port_1,port_1)", "s11")])
 
 
+class TestPortsMadeOfPorts(unittest.TestCase):
+    """A die's CPW is excited across both its gaps, so a project has four
+    ports and the run is about two."""
+
+    AVAILABLE = {
+        f"S({a},{b})"
+        for a in ("port_1_a", "port_1_b", "port_2_a", "port_2_b")
+        for b in ("port_1_a", "port_1_b", "port_2_a", "port_2_b")
+    }
+
+    def test_ports_are_grouped_by_end(self):
+        self.assertEqual(
+            driven_results._port_groups(self.AVAILABLE),
+            {"1": ["port_1_a", "port_1_b"], "2": ["port_2_a", "port_2_b"]},
+        )
+
+    def test_plain_ports_are_a_group_each(self):
+        available = {"S(port_1,port_1)", "S(port_2,port_1)", "S(port_1,port_2)", "S(port_2,port_2)"}
+        self.assertEqual(
+            driven_results._port_groups(available),
+            {"1": ["port_1"], "2": ["port_2"]},
+        )
+
+    def test_a_through_connection_stays_a_through_connection(self):
+        """Two ports per end, each pair driven alike, across an ideal
+        through: whatever drives one end arrives whole at the other."""
+        groups = {"1": ["a1", "b1"], "2": ["a2", "b2"]}
+        # The S-matrix of two identical ideal through lines, a1-a2 and b1-b2.
+        entries = {(p, q): 0j for p in ("a1", "b1", "a2", "b2") for q in ("a1", "b1", "a2", "b2")}
+        for p, q in (("a1", "a2"), ("a2", "a1"), ("b1", "b2"), ("b2", "b1")):
+            entries[(p, q)] = 1 + 0j
+        combined = driven_results.combined_s_parameters(entries, groups)
+        self.assertAlmostEqual(abs(combined[("2", "1")]), 1.0)
+        self.assertAlmostEqual(abs(combined[("1", "1")]), 0.0)
+
+    def test_an_open_end_reflects_everything(self):
+        groups = {"1": ["a1", "b1"], "2": ["a2", "b2"]}
+        entries = {(p, q): 0j for p in ("a1", "b1", "a2", "b2") for q in ("a1", "b1", "a2", "b2")}
+        for port in ("a1", "b1"):
+            entries[(port, port)] = 1 + 0j
+        combined = driven_results.combined_s_parameters(entries, groups)
+        self.assertAlmostEqual(abs(combined[("1", "1")]), 1.0)
+
+    def test_a_group_of_one_is_unchanged(self):
+        groups = {"1": ["p1"], "2": ["p2"]}
+        entries = {("p1", "p1"): 0.1 + 0j, ("p2", "p1"): 0.9j, ("p1", "p2"): 0.9j, ("p2", "p2"): 0j}
+        combined = driven_results.combined_s_parameters(entries, groups)
+        self.assertEqual(combined[("2", "1")], 0.9j)
+
+    def test_connector_terminations_are_left_out_of_the_groups(self):
+        available = {f"S({a},{b})" for a in ("port_1", "port_2", "connector_load_a", "connector_load_b")
+                     for b in ("port_1", "port_2", "connector_load_a", "connector_load_b")}
+        self.assertEqual(driven_results._port_groups(available),
+                         {"1": ["port_1"], "2": ["port_2"]})
+
+    def test_a_project_with_terminations_is_reduced_to_the_runs_two_ports(self):
+        """Then the run's .s2p has to be written from the solved matrix,
+        because HFSS's own export carries every port."""
+        available = {f"S({a},{b})" for a in ("port_1", "port_2", "connector_load_a")
+                     for b in ("port_1", "port_2", "connector_load_a")}
+        groups = driven_results._port_groups(available)
+        self.assertTrue(driven_results._needs_combining(available, groups))
+
+    def test_a_plain_two_port_project_reads_as_before(self):
+        available = {f"S({a},{b})" for a in ("port_1", "port_2") for b in ("port_1", "port_2")}
+        groups = driven_results._port_groups(available)
+        self.assertFalse(driven_results._needs_combining(available, groups))
+
+    def test_a_2port_touchstone_is_written_for_the_combined_matrix(self):
+        import os
+        import tempfile
+        combined = {key: [0j, 1 + 0j] for key in (("1", "1"), ("2", "1"), ("1", "2"), ("2", "2"))}
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "x.s2p")
+            driven_results.write_touchstone_2port(path, [1.0, 2.0], combined)
+            with open(path, encoding="utf-8") as handle:
+                lines = handle.read().splitlines()
+        self.assertTrue(lines[0].startswith("# GHz S RI R 50"))
+        self.assertEqual(len(lines[2].split()), 9)
+
+
 class TestTheFrequencyAxis(unittest.TestCase):
     def test_ghz_passes_through(self):
         data = FakeSolutionData([1.0, 2.0, 3.0], "GHz")
