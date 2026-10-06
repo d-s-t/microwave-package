@@ -171,10 +171,13 @@ python -m microwave_package.pipeline --solution-type DrivenModal --f-start-ghz 1
 `--reference-plane connector` (the default) puts a wave port across the SMP's
 air bore just above its bead (the barrel above is capped off), so the
 connector transition is inside the measurement; `--reference-plane launch` puts a lumped port under the CPW
-trace instead and measures the board alone. `--reference-plane bonds` and
-`--reference-plane chip` move the same kind of lumped port in to just before the wire
-bonds (on the PCB) or onto the die's own CPW, so S21 can be compared as the
-excitation moves in from the connectors.
+trace instead. `--reference-plane bonds` moves that lumped port in to just before the
+wire bonds, and `--reference-plane chip` puts a pair of gap ports on the die's own
+CPW, trace to coplanar ground. In those three planes the connectors are terminated in
+the port impedance and the line runs on past each port to them, so a port is a tap:
+even a perfect line reads S11 = S21 = -6 dB at low frequency. They are for seeing
+where a feature comes from -- a notch the connector plane shows and the chip plane
+does not is made outside the die.
 
 Run `python -m microwave_package.pipeline --help` for every analysis
 setting -- they are grouped by which solution type they apply to.

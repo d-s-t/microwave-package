@@ -46,6 +46,15 @@ boundary a perfect conductor: it shorted each pin to its shell, and the
 line to ground. A chip-plane run saw that short as S11 = 0 dB and S21 =
 -30 dB at 0.1 GHz.
 
+**A lumped or gap port is a tap, not an end.** The line is not cut at
+it: it runs on past each port to the terminated connector. At low
+frequency that is four matched branches meeting at one node, so the run's
+S11 and S21 both start at -1/2 and +1/2 -- -6 dB each -- however good
+the line is, and the rest of the band is read against that. (A chip run
+gave -0.503 and +0.497 at 0.1 GHz.) What these planes are for is
+comparing where features come from: a notch the connector plane shows and
+the chip plane does not is made outside the die.
+
 No option changes the board. The connectors are placed either way and
 the cavity is the same cavity; beyond the excitation, the only difference
 is which bore ports are reported and which are terminations.
@@ -87,25 +96,31 @@ REFERENCE_PLANES = [
     {
         "value": REFERENCE_PLANE_LAUNCH,
         "label": "Launch -- lumped port at the CPW",
-        "help": "Board only: excludes the connector and its land pattern. "
-                "The port sits under the CPW trace, through the substrate to "
-                "the backing ground plane, just inboard of the launch.",
+        "help": "The port sits under the CPW trace, through the substrate to "
+                "the backing ground plane, just inboard of the launch. The "
+                "connectors are terminated in the port impedance; the line "
+                "runs on past each port to them, so each port is a tap and "
+                "even a perfect line reads S11 = S21 = -6 dB at low frequency.",
     },
     {
         "value": REFERENCE_PLANE_BONDS,
         "label": "Bond fingers -- lumped port on the PCB, just before the wire bonds",
-        "help": "Board and connectors, up to the wire bonds: the port sits under "
-                "the CPW trace a little outboard of the bond fingers, so the "
-                "bonds and the die are not in the measurement.",
+        "help": "The port sits under the CPW trace a little outboard of the "
+                "bond fingers, through the substrate to the backing ground. "
+                "The connectors are terminated in the port impedance; the line "
+                "runs on past each port to them, so each port is a tap and "
+                "even a perfect line reads S11 = S21 = -6 dB at low frequency.",
     },
     {
         "value": REFERENCE_PLANE_CHIP,
         "label": "Chip -- gap ports from the die's trace to its ground",
-        "help": "Everything up to the die: connectors, board and wire bonds "
-                "are all in the measurement. The die has no backing ground, "
-                "so the port goes from the trace to the coplanar ground "
-                "around it, across both gaps, a little inboard of where the "
-                "bonds land.",
+        "help": "The die has no backing ground, so the port goes from the "
+                "trace to the coplanar ground around it, across both gaps, a "
+                "little inboard of where the bonds land. The connectors are "
+                "terminated in the port impedance; the line runs on past each "
+                "port, through the bonds and the board, to them, so each port "
+                "is a tap and even a perfect line reads S11 = S21 = -6 dB at "
+                "low frequency.",
     },
 ]
 
