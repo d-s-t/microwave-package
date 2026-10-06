@@ -144,6 +144,25 @@ class TestPortsMadeOfPorts(unittest.TestCase):
         combined = driven_results.combined_s_parameters(entries, groups)
         self.assertEqual(combined[("2", "1")], 0.9j)
 
+    def test_connector_terminations_are_left_out_of_the_groups(self):
+        available = {f"S({a},{b})" for a in ("port_1", "port_2", "connector_load_a", "connector_load_b")
+                     for b in ("port_1", "port_2", "connector_load_a", "connector_load_b")}
+        self.assertEqual(driven_results._port_groups(available),
+                         {"1": ["port_1"], "2": ["port_2"]})
+
+    def test_a_project_with_terminations_is_reduced_to_the_runs_two_ports(self):
+        """Then the run's .s2p has to be written from the solved matrix,
+        because HFSS's own export carries every port."""
+        available = {f"S({a},{b})" for a in ("port_1", "port_2", "connector_load_a")
+                     for b in ("port_1", "port_2", "connector_load_a")}
+        groups = driven_results._port_groups(available)
+        self.assertTrue(driven_results._needs_combining(available, groups))
+
+    def test_a_plain_two_port_project_reads_as_before(self):
+        available = {f"S({a},{b})" for a in ("port_1", "port_2") for b in ("port_1", "port_2")}
+        groups = driven_results._port_groups(available)
+        self.assertFalse(driven_results._needs_combining(available, groups))
+
     def test_a_2port_touchstone_is_written_for_the_combined_matrix(self):
         import os
         import tempfile
@@ -151,7 +170,8 @@ class TestPortsMadeOfPorts(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             path = os.path.join(tmp, "x.s2p")
             driven_results.write_touchstone_2port(path, [1.0, 2.0], combined)
-            lines = open(path, encoding="utf-8").read().splitlines()
+            with open(path, encoding="utf-8") as handle:
+                lines = handle.read().splitlines()
         self.assertTrue(lines[0].startswith("# GHz S RI R 50"))
         self.assertEqual(len(lines[2].split()), 9)
 

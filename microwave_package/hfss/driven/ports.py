@@ -33,13 +33,22 @@ sees.
 **`launch`** -- a lumped port under the CPW trace, spanning the substrate
 from the backing ground plane up to the trace, placed just inboard of
 where the land pattern stops (`smp.launch_inner_edge`). The connector and
-its launch are outboard of it and take no part in the measurement. This
-is the board on its own.
+its launch are outboard of it.
 
-Neither option changes the board. The connectors are placed either way
-and the cavity is the same cavity; beyond the excitation, the only
-difference is the connector plane's bore caps, which sit above the
-port and outside the measurement.
+**Every plane but `connector` terminates the connectors.** Each one still
+gets its bore and a wave port, named `connector_load_a`/`_b`, which is
+not one of the run's two ports: an S-matrix is defined with every other
+port terminated in its own impedance, so the S21 between the run's ports
+is measured with both connectors matched -- as a VNA or a load leaves
+them on the bench. Without it the bead's top face, which stands above the
+model's air, is the model's outer boundary, and HFSS makes an outer
+boundary a perfect conductor: it shorted each pin to its shell, and the
+line to ground. A chip-plane run saw that short as S11 = 0 dB and S21 =
+-30 dB at 0.1 GHz.
+
+No option changes the board. The connectors are placed either way and
+the cavity is the same cavity; beyond the excitation, the only difference
+is which bore ports are reported and which are terminations.
 
 Port 1 is always the -x end of the board and port 2 the +x end, matching
 `place_connectors`' own index-to-end convention, so S21 always runs the
@@ -147,6 +156,9 @@ def place_ports(hfss, layout, analysis_settings: Dict[str, Any], log=logger.info
     plane = analysis_settings.get("reference_plane", DEFAULT_REFERENCE_PLANE)
     impedance = float(analysis_settings.get("port_impedance_ohm", 50.0))
 
+    if plane != REFERENCE_PLANE_CONNECTOR and plane in {p["value"] for p in REFERENCE_PLANES}:
+        _terminate_connectors(hfss, impedance, log=log)
+
     if plane == REFERENCE_PLANE_CONNECTOR:
         names = _connector_wave_ports(hfss, impedance, log=log)
     elif plane == REFERENCE_PLANE_LAUNCH:
@@ -173,8 +185,36 @@ def place_ports(hfss, layout, analysis_settings: Dict[str, Any], log=logger.info
 
 # --- the connector reference plane ------------------------------------
 
-def _connector_wave_ports(hfss, impedance: float, log) -> List[str]:
-    """A PEC-backed wave port across each SMP connector's air bore."""
+def _measurement_port_name(index: str) -> str:
+    return f"port_{index}"
+
+
+def _termination_name(index: str) -> str:
+    """`connector_load_a` for connector 1 and so on: letters, not numbers,
+    so the results reader never takes a termination for one of the run's
+    numbered ports."""
+    return f"connector_load_{chr(ord('a') + int(index) - 1)}"
+
+
+def _terminate_connectors(hfss, impedance: float, log) -> List[str]:
+    """A matched wave port in each connector's bore, for planes that
+    excite the line somewhere else. See the module docstring."""
+    try:
+        names = _connector_wave_ports(hfss, impedance, log=log, name_for=_termination_name)
+    except PortPlacementError as exc:
+        log(f"WARNING: the connectors could not be terminated ({exc}) -- their bead tops "
+            "are a perfect-conductor boundary, which shorts each pin to its shell.")
+        return []
+    log(f"Connectors terminated in {impedance:g} ohm by {', '.join(names)}, which are not reported.")
+    return names
+
+
+def _connector_wave_ports(hfss, impedance: float, log,
+                          name_for=_measurement_port_name) -> List[str]:
+    """A PEC-backed wave port across each SMP connector's air bore.
+
+    `name_for` names each from its connector's index: the run's own ports
+    by default, or terminations (`_terminate_connectors`)."""
     beads = sorted(
         name for name in hfss.modeler.object_names
         if name.startswith("connector_") and name.endswith("_dielectric")
@@ -198,7 +238,7 @@ def _connector_wave_ports(hfss, impedance: float, log) -> List[str]:
                 f"{bead} has no {centre} beside it, so there is no centre conductor "
                 "to put the port's inner edge on."
             )
-        port_name = f"port_{index}"
+        port_name = name_for(index)
         air = _bore_section(hfss, bead, centre, vacuum, port_name, log=log)
         face = max(
             (f for f in hfss.modeler[air].faces if f.is_planar),
