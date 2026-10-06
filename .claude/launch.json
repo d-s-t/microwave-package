@@ -3,10 +3,10 @@
   "configurations": [
     {
       "name": "eigenmode-webapp",
-      "runtimeExecutable": "C:\\Users\\david\\Documents\\uni\\lab\\.venv\\Scripts\\python.exe",
+      "runtimeExecutable": "cmd",
       "runtimeArgs": [
-        "-m",
-        "microwave_package.webapp"
+        "/c",
+        ".\\webapp.cmd"
       ],
       "port": 5000,
       "autoPort": true
