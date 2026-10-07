@@ -1,6 +1,6 @@
-"pcb_length"= 26.0	' length of the chip in the direction of the feadline
+"pcb_length"= 50.0	' length of the chip in the direction of the feadline
 
-"pcb_side"= 10   	' length of the chip in the other direction
+"pcb_side"= 25   	' length of the chip in the other direction
 
 "pcb_width"= 0.381	' thickness of the PCB (381 um)
 
@@ -14,7 +14,7 @@
 
 "port_count"= 2
 
-"port_space"= 1.5
+"port_space"= 6.0
 
 "port_length"= 5.1
 
@@ -28,7 +28,7 @@
 
 "cavity_clearance"= 0.1	' per-side wiggle room between the die and the PCB opening it drops into
 
-"pedestal_depth"= 0.0	' depth of the pedestal under the chip
+"pedestal_depth"= 0.5	' depth of the pedestal under the chip
 
 "chip_leg"= 0.8 	' size of the legs the chip lay on in case there is pedestal
 

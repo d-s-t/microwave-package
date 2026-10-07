@@ -32,8 +32,8 @@ from typing import Any, Callable, Dict, Iterable, List, Optional
 # type a submitted value is coerced to.
 SHARED: List[Dict[str, Any]] = [
     {"name": "max_passes", "label": "Max adaptive passes", "kind": "int", "default": 99},
-    {"name": "min_passes", "label": "Min adaptive passes", "kind": "int", "default": 5},
-    {"name": "min_converged", "label": "Min converged passes", "kind": "int", "default": 3},
+    {"name": "min_passes", "label": "Min adaptive passes", "kind": "int", "default": 3},
+    {"name": "min_converged", "label": "Min converged passes", "kind": "int", "default": 2},
 ]
 
 

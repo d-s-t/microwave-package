@@ -21,7 +21,7 @@ DRIVEN_MODAL = "DrivenModal"
 
 FIELDS: List[Dict[str, Any]] = [
     {"name": "f_start_ghz", "label": "Sweep start (GHz)", "kind": "float", "default": 1.0},
-    {"name": "f_stop_ghz", "label": "Sweep stop (GHz)", "kind": "float", "default": 15.0},
+    {"name": "f_stop_ghz", "label": "Sweep stop (GHz)", "kind": "float", "default": 20.0},
     {
         "name": "sweep_points", "label": "Sweep points", "kind": "int", "default": 401,
         "help": "Frequencies the interpolating sweep reports. It solves far "
