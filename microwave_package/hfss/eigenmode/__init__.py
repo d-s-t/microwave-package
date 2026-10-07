@@ -21,10 +21,10 @@ EIGENMODE = "Eigenmode"
 
 FIELDS: List[Dict[str, Any]] = [
     {"name": "modes", "label": "Modes", "kind": "int", "default": 20, "max": 20},
-    {"name": "max_delta_f", "label": "Max delta freq per pass (%)", "kind": "float", "default": 1.0},
+    {"name": "max_delta_f", "label": "Max delta freq per pass (%)", "kind": "float", "default": 3.0},
     {
         "name": "min_freq_safety_factor", "label": "Starting-frequency safety factor",
-        "kind": "float", "default": 0.4,
+        "kind": "float", "default": 0.1,
         "help": "The cavity's estimated lowest resonance is multiplied by "
                 "this to pick MinimumFrequency, so the sweep starts below "
                 "the first real mode rather than on top of it.",

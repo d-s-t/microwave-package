@@ -73,7 +73,7 @@ class TestCheckLayout(unittest.TestCase):
         self.assertIn("50 ohm", reason)
 
     def test_bond_fingers_colliding_with_the_port_are_caught(self):
-        values = dict(defaults(), bonding_clearence=9.0)
+        values = dict(defaults(), bonding_clearence=30.0)
         reason = constraints.check_layout(values)
         self.assertIn("bond fingers", reason)
 
@@ -146,7 +146,7 @@ class TestTheDiesOpening(unittest.TestCase):
         """The coplanar planes are each one region with the opening
         stepped out of their inner edge. An opening reaching the copper
         edge would cut a plane in two, which one region cannot be."""
-        values = dict(defaults(), chip_side=9.9, cavity_clearance=0.2)
+        values = dict(defaults(), chip_side=24.9, cavity_clearance=0.2)
         reason = constraints.check_layout(values)
         self.assertIsNotNone(reason)
         self.assertIn("opening", reason)
@@ -159,7 +159,7 @@ class TestTheDiesOpening(unittest.TestCase):
             {"pcb_side": 1.0},
             {"via_min_spacing": 1.0},
             {"bond_pad_length": constraints.CHIP_COPPER_INSET / 2},
-            {"bonding_clearence": 9.0},
+            {"bonding_clearence": 30.0},
         ):
             reason = constraints.check_layout(dict(defaults(), **override))
             self.assertTrue(

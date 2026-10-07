@@ -429,11 +429,11 @@ def parse_args() -> argparse.Namespace:
     )
     # Eigenmode settings.
     parser.add_argument("--modes", type=int, default=20)
-    parser.add_argument("--max-delta-f", type=float, default=1.0, help="Maximum Delta Frequency Per Pass (%%)")
-    parser.add_argument("--min-freq-safety-factor", type=float, default=0.4)
+    parser.add_argument("--max-delta-f", type=float, default=3.0, help="Maximum Delta Frequency Per Pass (%%)")
+    parser.add_argument("--min-freq-safety-factor", type=float, default=0.1)
     # DrivenModal settings.
     parser.add_argument("--f-start-ghz", type=float, default=1.0, help="Frequency sweep start")
-    parser.add_argument("--f-stop-ghz", type=float, default=15.0, help="Frequency sweep stop")
+    parser.add_argument("--f-stop-ghz", type=float, default=20.0, help="Frequency sweep stop")
     parser.add_argument("--sweep-points", type=int, default=401, help="Frequency points reported by the sweep")
     parser.add_argument("--max-delta-s", type=float, default=0.02, help="Maximum Delta S Per Pass")
     parser.add_argument("--port-impedance-ohm", type=float, default=50.0)
@@ -448,8 +448,8 @@ def parse_args() -> argparse.Namespace:
     )
     # Shared.
     parser.add_argument("--max-passes", type=int, default=99)
-    parser.add_argument("--min-passes", type=int, default=5)
-    parser.add_argument("--min-converged", type=int, default=3)
+    parser.add_argument("--min-passes", type=int, default=3)
+    parser.add_argument("--min-converged", type=int, default=2)
     parser.add_argument("--aedt-version", type=str, default=None)
     parser.add_argument("--no-student-version", dest="student_version", action="store_false", default=True)
     parser.add_argument("--graphical", action="store_true", help="Show the AEDT UI while building")
