@@ -153,7 +153,7 @@
 <div class="statusbar">
   <div class="line1">
     <span class="pill {{ stage_display.kind }}" id="stage">{{ stage_display.label }}</span>
-    <span class="pill idle" id="running-indicator">{{ "stopping…" if is_stopping else ("running" if is_running else "idle") }}</span>
+    <span class="pill idle" id="running-indicator">{{ "stopping…" if is_stopping else ("running elsewhere" if driven_elsewhere else ("running" if is_running else "idle")) }}</span>
   </div>
   <div class="bar-wrap">
     {{ progress_bar(progress) }}
@@ -182,6 +182,13 @@
 </div>
 {% endif %}
 
+<div class="note-box" id="elsewhere-note" {% if not driven_elsewhere %}hidden{% endif %}>
+  <strong>Running in another process.</strong>
+  This run is being driven by process <span id="elsewhere-pid">{{ driven_elsewhere or "" }}</span>
+  on this machine -- the command line, or another copy of this app -- so it
+  can only be stopped there (Ctrl-C). This page follows its progress either way.
+</div>
+
 {% if request.args.get("error") %}
 <div class="error-box" role="alert">{{ request.args.get("error") }}</div>
 {% endif %}
@@ -208,7 +215,7 @@
 </form>
 {% endif %}
 <form method="post" action="{{ url_for('stop_run', run_id=run.run_id) }}"
-      id="stop-form" {% if not is_running or is_stopping %}hidden{% endif %}>
+      id="stop-form" {% if not is_running or is_stopping or driven_elsewhere %}hidden{% endif %}>
   <button type="submit" class="stop">Stop this run</button>
   <span class="muted">Each program finishes the combination it is on and then stops.
     Nothing already built is lost -- Resume carries on from there.</span>
@@ -649,7 +656,8 @@ async function poll() {
 
   renderStage(data.stage_display || { label: data.stage, kind: "muted" });
   document.getElementById("running-indicator").textContent =
-    data.is_stopping ? "stopping…" : (data.is_running ? "running" : "idle");
+    data.is_stopping ? "stopping…"
+      : (data.driven_elsewhere ? "running elsewhere" : (data.is_running ? "running" : "idle"));
   renderProgress(data.progress);
   const ago = document.getElementById("updated-ago");
   if (ago) { ago.textContent = "just now"; }
@@ -658,7 +666,13 @@ async function poll() {
   // the buttons follow a run that finishes, stops or is started from
   // somewhere else while this page is open.
   const stopForm = document.getElementById("stop-form");
-  if (stopForm) { stopForm.hidden = !data.is_running || data.is_stopping; }
+  // A run driven by another process can only be stopped there.
+  if (stopForm) { stopForm.hidden = !data.is_running || data.is_stopping || !!data.driven_elsewhere; }
+  const elsewhereNote = document.getElementById("elsewhere-note");
+  if (elsewhereNote) {
+    elsewhereNote.hidden = !data.driven_elsewhere;
+    document.getElementById("elsewhere-pid").textContent = data.driven_elsewhere || "";
+  }
   const resumeForm = document.getElementById("resume-form");
   if (resumeForm) { resumeForm.hidden = data.is_running; }
   const stoppingNote = document.getElementById("stopping-note");

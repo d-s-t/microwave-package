@@ -206,6 +206,19 @@ def _is_running(run_id: str) -> bool:
     return thread is not None and thread.is_alive()
 
 
+def _driven_elsewhere(run_id: str) -> Optional[int]:
+    """The pid of another process on this machine that is driving the run
+    -- the command line, or another copy of this app -- or None.
+
+    _is_running only knows this process's own threads, so without this a
+    run going on elsewhere looked idle here and offered a Resume that
+    would have had two processes driving it at once.
+    """
+    if _is_running(run_id):
+        return None
+    return Run(run_id).driven_elsewhere()
+
+
 def _is_stopping(run_id: str) -> bool:
     """Stop asked for, but the run has not got there yet.
 
@@ -601,6 +614,13 @@ def stop_run(run_id):
 
 @app.route("/runs/<run_id>/resume", methods=["POST"])
 def resume_run(run_id):
+    elsewhere = _driven_elsewhere(run_id)
+    if elsewhere:
+        return redirect(url_for(
+            "run_status", run_id=run_id,
+            error=f"This run is already going in another process ({elsewhere}). "
+                  "Stop it there first, then resume it here.",
+        ))
     if not _is_running(run_id):
         run = Run.load(run_id)
         _start_pipeline_thread(run)
@@ -700,6 +720,7 @@ def run_status(run_id):
     # state.json stops being rewritten once the run settles, so its mtime
     # is a good enough "finished at" for the elapsed time.
     duration = updated - started if (started and updated and stage in ("complete", "error")) else None
+    elsewhere = _driven_elsewhere(run_id)
 
     return render_template(
         "run_status.html",
@@ -707,8 +728,9 @@ def run_status(run_id):
         run_name=_run_name(run),
         rows=_combo_rows(run),
         phases=_phase_meta(),
-        is_running=_is_running(run_id),
+        is_running=_is_running(run_id) or bool(elsewhere),
         is_stopping=_is_stopping(run_id),
+        driven_elsewhere=elsewhere,
         plot_exists=plot_exists,
         progress=progress,
         stage_display=_stage_display(stage, progress["failed"]),
@@ -823,7 +845,7 @@ def delete_run(run_id):
     # in silence is indistinguishable from a button that does nothing,
     # and the only account of what happened was a line in the server log
     # nobody watching the browser would ever see.
-    if _is_running(run_id):
+    if _is_running(run_id) or _driven_elsewhere(run_id):
         logger.warning("Refusing to delete run %s -- it is still running.", run_id)
         return redirect(url_for(
             "run_status", run_id=run_id,
@@ -880,14 +902,16 @@ def run_status_json(run_id):
     """
     run = Run.load(run_id)
     prog = run.progress
+    elsewhere = _driven_elsewhere(run_id)
     return jsonify({
         "run_id": run.run_id,
         "stage": run.state.get("stage"),
         "stage_display": _stage_display(run.state.get("stage"), prog["failed"]),
         "progress": prog,
         "error": run.state.get("error"),
-        "is_running": _is_running(run_id),
+        "is_running": _is_running(run_id) or bool(elsewhere),
         "is_stopping": _is_stopping(run_id),
+        "driven_elsewhere": elsewhere,
         # so the page can reload itself once, when the plot first appears
         "plot_ready": os.path.exists(os.path.join(run.plots_dir, plotting.PLOT_FILENAME)),
         "combos": {

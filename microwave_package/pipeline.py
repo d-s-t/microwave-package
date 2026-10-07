@@ -118,6 +118,7 @@ def run_pipeline(run: Run, queue: "queue_common.QueuePaths", log=logger.info, st
     none of SolidWorks, Altium or AEDT can be interrupted mid-call
     anyway -- records it, and the run ends where it stood, resumable.
     """
+    run.claim_driver()
     try:
         _run_stages(run, queue, log=log, stop_event=stop_event)
     except resilient_io.Stopped as stopped:
@@ -136,6 +137,7 @@ def run_pipeline(run: Run, queue: "queue_common.QueuePaths", log=logger.info, st
             run.set_stage("stopped")
             log(f"Run {run.run_id} stopped. Nothing already built is lost -- "
                 "resume it to carry on from where it stopped.")
+        run.release_driver()
 
 
 def _run_stages(run: Run, queue: "queue_common.QueuePaths", log=logger.info, stop_event=None) -> None:
@@ -503,6 +505,12 @@ def main() -> None:
 
     if args.resume:
         run = Run.load(args.resume)
+        driver = run.driven_elsewhere()
+        if driver:
+            raise SystemExit(
+                f"Run {run.run_id} is already being driven by process {driver} "
+                "(the web app, or another command line). Stop it there first."
+            )
         logger.info("Resuming run %s (stage=%s)", run.run_id, run.state.get("stage"))
     else:
         if not args.sweep:

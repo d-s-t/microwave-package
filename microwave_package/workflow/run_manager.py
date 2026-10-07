@@ -13,9 +13,12 @@ import datetime as _dt
 import json
 import logging
 import os
+import socket
 import threading
 import time
 from typing import Dict, List, Optional
+
+import psutil
 
 from ..design import constraints
 from ..design import equations as eq
@@ -480,6 +483,54 @@ class Run:
         with self._lock:
             self.state["combos"][combo_id].update(fields)
             self.save_state()
+
+    # -- which process is driving it ----------------------------------------
+    # The web app knows which runs its own threads are driving, and nothing
+    # more: a run resumed from the command line looked idle there, and its
+    # Resume button would have had two processes driving one run -- both
+    # waiting on the same tasks and reading the same results back. So the
+    # process driving a run says so in the run's folder.
+    @property
+    def driver_path(self) -> str:
+        return os.path.join(self.run_dir, "driver.json")
+
+    def claim_driver(self) -> None:
+        """Record this process as the one driving the run."""
+        me = psutil.Process()
+        self._write_json(self.driver_path, {
+            "pid": me.pid, "started": me.create_time(), "host": socket.gethostname(),
+        })
+
+    def release_driver(self) -> None:
+        """Take back claim_driver -- unless another process has claimed it since."""
+        try:
+            with open(self.driver_path) as f:
+                ours = json.load(f).get("pid") == os.getpid()
+            if ours:
+                os.remove(self.driver_path)
+        except (OSError, ValueError, AttributeError):
+            pass
+
+    def driven_elsewhere(self) -> Optional[int]:
+        """The pid of another live process on this machine that is driving
+        this run, or None.
+
+        A process killed outright leaves its claim behind, so a claim only
+        counts while its process is still alive -- the same process, not a
+        later one that was handed its pid: the start time has to match too.
+        A claim from another machine cannot be checked from here, so it is
+        not counted (runs are kept per machine; see paths.RUNS_ROOT).
+        """
+        try:
+            with open(self.driver_path) as f:
+                driver = json.load(f)
+            if driver["host"] != socket.gethostname() or driver["pid"] == os.getpid():
+                return None
+            if abs(psutil.Process(driver["pid"]).create_time() - driver["started"]) > 1.0:
+                return None
+        except (OSError, ValueError, KeyError, TypeError, psutil.Error):
+            return None
+        return driver["pid"]
 
     def combo_path(self, combo_id: str) -> str:
         """Where a combination's files live, without creating anything.

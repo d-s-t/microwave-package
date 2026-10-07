@@ -80,6 +80,11 @@ setx ANSYS_ANALYZE_QUEUE_PATH "\\some\shared\path\ansys_queue"
 Both this project and the worker (usually running on a different
 machine) need this pointed at the same shared location.
 
+`setx` only reaches programs started after it. `webapp.cmd` fills in any
+variable its own environment is missing from what Windows has saved, so it
+picks the setting up even when launched from an IDE or app that was already
+open; anything else (a terminal, `python -m ...`) needs restarting first.
+
 ## Run
 
 ### Web UI
