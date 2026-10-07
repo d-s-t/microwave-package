@@ -87,6 +87,13 @@ class TestScriptsRunFromAnyCheckout(unittest.TestCase):
                 if script != paths.ALTIUM_PING:
                     self.assertIn(str(paths.ALTIUM_DIR).encode("mbcs"), text)
 
+    def test_a_quote_in_the_folder_stays_inside_the_string(self):
+        folder = paths.Path(tempfile.mkdtemp()) / "O'Brien"
+        with mock.patch.object(paths, "ALTIUM_DIR", folder):
+            with open(ag.resolve_script(str(paths.ALTIUM_GENERATOR)), "rb") as f:
+                text = f.read()
+        self.assertIn(b"O''Brien\\params.txt'", text)
+
     def test_the_source_itself_is_left_alone(self):
         before = paths.ALTIUM_GENERATOR.read_bytes()
         ag.resolve_script(str(paths.ALTIUM_GENERATOR))

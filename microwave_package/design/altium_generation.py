@@ -256,14 +256,18 @@ def resolve_script(script_path: str) -> str:
     every other checkout the first write is a modal "Cannot create file"
     dialog. The sources say "<ALTIUM_DIR>" instead, and this fills it in.
 
+    The placeholder always sits inside a quoted Pascal string, so a quote
+    in the folder name is doubled, the way Pascal escapes one -- left
+    alone, it would end the string and the script would not even parse.
+
     The copy is rewritten only when it would change: Altium may still be
     reading an earlier one, and the next launch waits for that anyway.
     """
     from .. import paths
 
     source = Path(script_path)
-    text = source.read_bytes().replace(
-        b"<ALTIUM_DIR>", str(paths.ALTIUM_DIR).encode("mbcs"))
+    folder = str(paths.ALTIUM_DIR).replace("'", "''")
+    text = source.read_bytes().replace(b"<ALTIUM_DIR>", folder.encode("mbcs"))
     target = paths.ALTIUM_RESOLVED_DIR / source.name
     if not target.is_file() or target.read_bytes() != text:
         target.parent.mkdir(parents=True, exist_ok=True)
