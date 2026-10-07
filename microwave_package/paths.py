@@ -39,6 +39,10 @@ ALTIUM_OUT_DIR = ALTIUM_DIR / "generated"
 # A script that does nothing, launched ahead of each real one to find out
 # whether Altium will take a script at all, or is sitting on a dialog.
 ALTIUM_PING = ALTIUM_DIR / "Ping.pas"
+# What Altium actually runs: each script above with "<ALTIUM_DIR>" written
+# out as this checkout's ALTIUM_DIR. DelphiScript cannot find its own
+# folder, so the sources leave it blank rather than name one machine's.
+ALTIUM_RESOLVED_DIR = ALTIUM_DIR / "resolved"
 
 # The vendor's own PCB library for the SMP launch, so the generator can
 # place the real footprint -- lands, silkscreen, courtyard and 3D body --

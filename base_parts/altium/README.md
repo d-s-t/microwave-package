@@ -18,6 +18,7 @@ run to establish.
 | `Ping.pas` | Does nothing. Launched ahead of each script to see whether Altium will take one (item 6). |
 | `params.txt` | Written by `eigen_mode_analyze.altium_generation`. Not source — regenerated each run. |
 | `generated/` | Output boards. Not tracked; recreated from `default.txt` every run. |
+| `resolved/` | What Altium actually runs: each script with `<ALTIUM_DIR>` filled in. Not tracked. |
 | `spikes/` | The feasibility probes, kept for their findings. |
 
 ## Running it
@@ -29,6 +30,12 @@ run to establish.
 From Python, use `eigen_mode_analyze.altium_generation.run_script`, which handles
 the timeout and sentinel polling described below, and waits for Altium to be
 free before it launches anything (item 6).
+
+The scripts say `<ALTIUM_DIR>` wherever they name a file of their own, because
+DelphiScript cannot ask where it was loaded from and a committed absolute path
+only works in one checkout. `run_script` launches a copy from `resolved/` with
+this folder written in (`altium_generation.resolve_script`). To run one by hand,
+point `FileName` at that copy, not at the source.
 
 ## The six things that will bite you
 

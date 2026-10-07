@@ -51,6 +51,7 @@ import re
 import subprocess
 import threading
 import time
+from pathlib import Path
 from typing import Callable, Dict, Optional, Tuple
 
 import psutil
@@ -242,6 +243,32 @@ def _clear_sentinel(path: str, timeout: float = 30.0) -> bool:
             if time.monotonic() >= deadline:
                 return False
             time.sleep(0.25)
+
+
+def resolve_script(script_path: str) -> str:
+    """The copy of `script_path` that Altium should run: the same script
+    with every "<ALTIUM_DIR>" written out as this checkout's ALTIUM_DIR.
+    Returns its path.
+
+    The scripts name the files they read and write by absolute path,
+    because DelphiScript has no way to ask where it was loaded from --
+    and an absolute path committed to the repo is one machine's, so on
+    every other checkout the first write is a modal "Cannot create file"
+    dialog. The sources say "<ALTIUM_DIR>" instead, and this fills it in.
+
+    The copy is rewritten only when it would change: Altium may still be
+    reading an earlier one, and the next launch waits for that anyway.
+    """
+    from .. import paths
+
+    source = Path(script_path)
+    text = source.read_bytes().replace(
+        b"<ALTIUM_DIR>", str(paths.ALTIUM_DIR).encode("mbcs"))
+    target = paths.ALTIUM_RESOLVED_DIR / source.name
+    if not target.is_file() or target.read_bytes() != text:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(text)
+    return str(target)
 
 
 def _launch(exe: str, script_path: str, procedure: str) -> subprocess.Popen:
@@ -498,7 +525,7 @@ def run_script(
             timeout = WARM_TIMEOUT if warm else COLD_START_TIMEOUT
 
         log(f"Launching Altium: {procedure} (timeout {timeout:.0f}s)")
-        launcher = _launch(exe, script_path, procedure)
+        launcher = _launch(exe, resolve_script(script_path), procedure)
 
         # The report is only opened once it has stopped changing, and this
         # is the reason why. The script rewrites it from scratch on every
