@@ -304,6 +304,13 @@ def build_substrates(
     pcb = modeler.create_box(origin=origin, sizes=sizes)
     pcb.name = "pcb_substrate"
 
+    # The bare board (`no_chip`) has no opening and no die: the substrate
+    # is the whole of it, unbroken under the trace.
+    if cavity.is_empty:
+        log(f"Built pcb_substrate alone (no die, no opening), "
+            f"{2 * pcb_half_length:g} x {2 * pcb_half_side:g} mm.")
+        return ["pcb_substrate"]
+
     # A through cutout takes the whole thickness; a blind pocket is
     # milled from the top face down by its own depth, leaving a floor.
     if cavity.through:
@@ -1130,7 +1137,7 @@ def clear_cavity_area(
     -- which is what the margin that used to be here was for, back when
     this cut was made at the die's own edge.
     """
-    if not targets:
+    if not targets or cavity.is_empty:
         return
 
     margin = max(stack.copper_thickness, stack.chip_metal_thickness) * 2.0

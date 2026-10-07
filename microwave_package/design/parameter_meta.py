@@ -59,6 +59,7 @@ LABELS: Dict[str, str] = {
     "copper_thickness": "PCB copper thickness",
     "chip_metal_thickness": "Chip metal thickness",
     "no_distortion": "Distortion",
+    "no_chip": "Bare board (no chip)",
     # distortion geometry
     "distortion_radius": "Distortion radius",
     "distortion_x": "Distortion offset along feedline",
@@ -82,7 +83,21 @@ INTEGER_PARAMETERS = {"port_count"}
 # one: 1 builds the clean geometry, 0 adds distortions to the box and
 # holes to the PCB.
 DISTORTION_PARAM = "no_distortion"
-BOOLEAN_PARAMETERS = {DISTORTION_PARAM}
+
+# The bare-board flag: 1 builds only the PCB and its connectors -- a CPW
+# straight from one SMP to the other, with no die, opening, pedestal,
+# bond pads or wire bonds. It is a plain on/off pinned for the whole
+# run, never swept, so it has no mode table like the distortion does.
+NO_CHIP_PARAM = "no_chip"
+BOOLEAN_PARAMETERS = {DISTORTION_PARAM, NO_CHIP_PARAM}
+
+
+def is_bare_board(values) -> bool:
+    """Whether this combination's values ask for the board without a chip."""
+    try:
+        return float(values.get(NO_CHIP_PARAM, 0)) > 0.5
+    except (TypeError, ValueError):
+        return False
 
 # The distortion's own geometry. These only mean anything when the
 # distortion is actually built (no_distortion = 0), so they are swept

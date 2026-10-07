@@ -46,6 +46,7 @@
 Const
     Dir     = '<ALTIUM_DIR>\generated\';
     OutPath = '<ALTIUM_DIR>\generated\copper_report.txt';
+    ParamPath = '<ALTIUM_DIR>\params.txt';
 
 Var
     Rpt : TStringList;
@@ -188,6 +189,22 @@ Begin
     Result := n;
 End;
 
+{ Whether the board being exported is the bare-board variant, which has
+  no chip.PcbDoc -- anything of that name in generated/ is left over
+  from an earlier run and must not be exported as this one's die. }
+Function BareBoard : Boolean;
+Var
+    P : TStringList;
+Begin
+    Result := False;
+    P := TStringList.Create;
+    Try
+        P.LoadFromFile(ParamPath);
+        Result := (P.Values['no_chip'] <> '') And (StrToFloat(P.Values['no_chip']) > 0.5);
+    Except
+    End;
+End;
+
 Procedure ExportCopper;
 Var
     Data : TStringList;
@@ -205,9 +222,14 @@ Begin
         nPkg := DumpBoard('package.PcbDoc', Data);
         Say('package_records=' + IntToStr(nPkg));
 
-        Data.Add('board=chip');
-        nChip := DumpBoard('chip.PcbDoc', Data);
-        Say('chip_records=' + IntToStr(nChip));
+        If BareBoard Then
+            Say('chip_records=skipped')
+        Else
+        Begin
+            Data.Add('board=chip');
+            nChip := DumpBoard('chip.PcbDoc', Data);
+            Say('chip_records=' + IntToStr(nChip));
+        End;
 
         Data.SaveToFile(Dir + 'copper.txt');
         Say('written=' + Dir + 'copper.txt');

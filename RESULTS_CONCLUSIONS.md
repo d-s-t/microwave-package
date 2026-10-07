@@ -154,6 +154,14 @@ It says nothing about the board's transmission.
 
 ## What to do next
 
+0. Run the bare board (`no_chip`, the "Bare board" tick on the form). It
+   builds the PCB and connectors only: a straight 50 ohm CPW from one SMP to
+   the other, with no die, opening, pedestal, bond pads or wire bonds. That
+   separates the board and connector from the chip. First thing to check
+   with it: the unexplained -3 dB at about 2.1 GHz on every 50 x 25 driven
+   run. If it is still there with no chip, it comes from the board, the box
+   or the connectors, not from the die or its bonds. Use the `connector`
+   reference plane; the `bonds` and `chip` planes need a die.
 1. Simulate a smaller board, for example 26 x 10 mm. Every run here used
    50 x 25 mm or larger, and size is the strongest lever found.
 2. Repeat the via-spacing sweep on the symmetric lattice, 0.1-20 GHz, and

@@ -140,6 +140,22 @@ plot, each run keeping its own colour and marker. One filter scopes the
 table and the plot together; clicking a point opens that combination
 on its own run's page.
 
+**Bare board.** The "Bare board" tick (`no_chip = 1` in the equations
+file) simulates only the PCB and its connectors: a straight 50 ohm CPW
+from one SMP to the other, with no die, opening, pedestal, bond pads or
+wire bonds. It exists to separate board and connector behaviour from
+chip behaviour. It is pinned for the whole run, never swept, and off by
+default. Altium draws the trace unbroken and skips the chip board; HFSS
+builds the substrate unpocketed and no bonds; the layout check no longer
+reserves room for the die and its bonds (the connector launch still has
+to fit). Driven runs use the `connector` (or `launch`) reference plane;
+`bonds` and `chip` are refused because they sit at the wire bonds. Not
+automated: the SolidWorks parts. `box.SLDPRT` and `lid_inside.SLDPRT` are
+binaries driven by the chip parameters, so a bare-board STEP still
+carries whatever the pedestal and chip lid features make from
+`pedestal_depth`, `chip_length`, `chip_side` and `bonding_clearence`.
+See the notes in the pull request on what to set or suppress there.
+
 **Stop this run** stops a run without losing anything. It is cooperative
 rather than a kill -- none of the three programs can be interrupted
 mid-call -- so each finishes the combination it is in the middle of,

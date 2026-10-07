@@ -96,6 +96,18 @@ def _fmt(value: float) -> str:
     return f"{value:g}"
 
 
+def without_chip_room(values: Dict[str, float]) -> Dict[str, float]:
+    """The values with the room the chip and its bonds take set to zero,
+    when this is the bare board (`no_chip`); otherwise `values` itself.
+
+    The feedline inequality reserves chip_length/2 + bonding_clearence
+    for the die and its wires. A board with no die reserves none of it.
+    """
+    if not parameter_meta.is_bare_board(values):
+        return values
+    return {**values, "chip_length": 0.0, "bonding_clearence": 0.0}
+
+
 def _headroom(constraint: Constraint, values: Dict[str, float], free: str,
               overrides: Optional[Dict[str, float]] = None) -> float:
     """How large `free` can grow before this inequality is violated, with
@@ -116,6 +128,7 @@ def max_values(values: Dict[str, float]) -> Dict[str, float]:
     is no room at all and is reported as 0.
     """
     maxima: Dict[str, float] = {}
+    values = without_chip_room(values)
 
     zeroed = {constraint.offset_param: 0.0 for constraint in CONSTRAINTS}
     maxima[RADIUS_PARAM] = min(
@@ -169,6 +182,7 @@ def check_combination(values: Dict[str, float]) -> Optional[str]:
     """
     if float(values.get(parameter_meta.DISTORTION_PARAM, 1)) != 0:
         return None  # no distortion in this one, so nothing to place
+    values = without_chip_room(values)
 
     # 1. the radius alone, with both offsets taken as 0. A radius that
     #    does not fit even centred is what has to change.
@@ -363,6 +377,19 @@ def check_layout(values: Dict[str, float]) -> Optional[str]:
             f"is available -- reduce via_diameter, via_gnd_clearance, via_min_spacing or "
             f"cpw_trace_width, or widen pcb_side"
         )
+
+    # A bare board has no die: no opening, no bond fingers and nothing
+    # to keep clear of them, so the room a die would need is not asked
+    # for. The connector launch still has to fit on the board.
+    if parameter_meta.is_bare_board(values):
+        from . import smp
+
+        if smp.launch_inner_edge(half_length, get("port_space")) <= 0.0:
+            return (
+                "the SMP launch reaches past the middle of the board -- lengthen "
+                "pcb_length, or move the connectors out with port_space"
+            )
+        return None
 
     # The die's opening, which everything below has to keep out of. It
     # is cut larger than the die by cavity_clearance, so "clears the

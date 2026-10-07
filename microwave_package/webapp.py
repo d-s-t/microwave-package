@@ -481,6 +481,7 @@ def index():
         loaded_from=loaded_from,
         loaded_combo=request.args.get("combo"),
         has_distortion_param=parameter_meta.DISTORTION_PARAM in parameters,
+        has_no_chip_param=parameter_meta.NO_CHIP_PARAM in parameters,
         distortion_mode=distortion_mode,
         distortion_group=_distortion_group(parameters),
         distortion_limits=_distortion_limits(parameters, values),
@@ -542,6 +543,12 @@ def new_run():
             requested.append(SweepParameter(
                 name=parameter_meta.DISTORTION_PARAM, values=list(distortion_values)
             ))
+
+    # The "Bare board" tick pins no_chip for the whole run. Left unticked
+    # it adds nothing, so the equation file's own 0 applies and an
+    # ordinary run records exactly what it did before the option existed.
+    if parameter_meta.NO_CHIP_PARAM in available and "no_chip" in request.form:
+        requested.append(SweepParameter(name=parameter_meta.NO_CHIP_PARAM, values=[1.0]))
 
     sweep_params, parameter_defaults = split_swept_and_fixed(requested)
     if not sweep_params and not parameter_defaults:

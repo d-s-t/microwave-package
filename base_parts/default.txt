@@ -40,6 +40,8 @@
 
 "no_distortion" = 1 ' (boolean) when set to 1, no distortions are present. when set to 0, distortions are added to the box and holes to the PCB.
 
+"no_chip" = 0 ' (boolean) when set to 1, the bare board: no chip, opening, pedestal or wire bonds, just the CPW from one connector to the other. 0 builds the full package.
+
 "distortion_radius" = 0.6
 
 "distortion_x" = 0.0
