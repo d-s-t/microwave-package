@@ -549,6 +549,14 @@ def new_run():
     # ordinary run records exactly what it did before the option existed.
     if parameter_meta.NO_CHIP_PARAM in available and "no_chip" in request.form:
         requested.append(SweepParameter(name=parameter_meta.NO_CHIP_PARAM, values=[1.0]))
+        # The box's pedestal stands under the chip, where an ordinary
+        # board's bottom ground plane has its opening. A bare board's
+        # plane is whole, so a pedestal would run into it (AEDT: "box and
+        # pcb_copper_bottom intersect"). Zero is the value the box has
+        # always rebuilt cleanly with; a typed value still wins.
+        if "pedestal_depth" in available and not any(
+                p.name == "pedestal_depth" for p in requested):
+            requested.append(SweepParameter(name="pedestal_depth", values=[0.0]))
 
     sweep_params, parameter_defaults = split_swept_and_fixed(requested)
     if not sweep_params and not parameter_defaults:
