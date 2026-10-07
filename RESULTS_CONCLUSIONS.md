@@ -154,8 +154,8 @@ It says nothing about the board's transmission.
 
 ## What to do next
 
-1. Simulate a board near the current default (26 x 10 mm). None of these
-   runs used it, and size is the strongest lever found.
+1. Simulate a smaller board, for example 26 x 10 mm. Every run here used
+   50 x 25 mm or larger, and size is the strongest lever found.
 2. Repeat the via-spacing sweep on the symmetric lattice, 0.1-20 GHz, and
    include 0.5-1.2 mm.
 3. Sweep distortion on the current design. The old result says the effect is
