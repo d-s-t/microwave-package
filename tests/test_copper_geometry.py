@@ -1230,8 +1230,13 @@ class TestExportedLayoutIsSane(unittest.TestCase):
         for via in self.pkg.vias:
             radius = via.diameter / 2
             for pad in self.pkg.pads:
-                dx = max(abs(via.x - pad.x) - pad.xsize / 2, 0.0)
-                dy = max(abs(via.y - pad.y) - pad.ysize / 2, 0.0)
+                # xsize/ysize are in the pad's own frame; the connector's
+                # lands are turned a quarter, so take the board extents
+                # from the corners.
+                xs = [c[0] for c in pad.corners()]
+                ys = [c[1] for c in pad.corners()]
+                dx = max(min(xs) - via.x, via.x - max(xs), 0.0)
+                dy = max(min(ys) - via.y, via.y - max(ys), 0.0)
                 clearance = (dx * dx + dy * dy) ** 0.5 - radius
                 if worst is None or clearance < worst[0]:
                     worst = (clearance, via, pad)

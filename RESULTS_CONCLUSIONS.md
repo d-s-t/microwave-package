@@ -170,7 +170,7 @@ It says nothing about the board's transmission.
 | `pedestal_depth` (`base_parts/default.txt`) | 0.0 mm | 0.5 mm | Best 15-20 GHz result in the sweep, tied with 0.25 mm. Least certain of the lot. |
 | Driven sweep stop (`f_stop_ghz`, web form and `--f-stop-ghz`) | 15 GHz | 20 GHz | Target is above 20 GHz. Every 15 GHz run ends inside a dip and cannot see the band. |
 | `pcb_length` x `pcb_side` | 26 x 10 mm | 50 x 25 mm | Your choice. Every driven run here used this board. Note that the data says a smaller board raises the box modes. |
-| `port_space` | 1.5 mm | 6.0 mm | Your choice of "bigger". See the warning below. |
+| `port_space` | 1.5 mm | 6.0 mm | Your choice of "bigger". See the note below. |
 | Max delta freq per pass | 1 % | 3 % | Your choice. |
 | Starting-frequency safety factor | 0.4 | 0.1 | Your choice. |
 | Min adaptive passes | 5 | 3 | Your choice. |
@@ -178,19 +178,13 @@ It says nothing about the board's transmission.
 
 Modes stays 20.
 
-**Warning about `port_space`.** On the 50 x 25 board a via can land on the
-connector's signal pad, and whether it does depends on `port_space`. Worst
-via-to-pad clearance from the Altium output:
-
-| `port_space` (mm) | 1.5 | 3 | 4 | 5 | 6 | 8 |
-|---|---|---|---|---|---|---|
-| Clearance (mm) | 0.01 | 0.11 | -0.09 | -0.15 | 0.20 | -0.09 |
-
-A negative number means the via overlaps the pad, which puts a ground via on
-a signal pad. 6 mm is clean, which is why it is the default. Sweeping
-`port_space` will hit the bad values, so the generator needs fixing before
-that sweep is trusted. The test `test_no_via_lands_on_a_bond_pad` catches it
-on the default board.
+**`port_space` and the vias.** The generator keeps every via exactly 0.2 mm
+(`via_min_spacing`) from the connector's signal pad at `port_space` 1.5, 4,
+5, 6 and 8 mm, so no value in that range puts a via on a pad. The copper
+test `test_no_via_lands_on_a_bond_pad` used to report overlaps at 4, 5 and 8
+mm. It compared vias against the pad's width and height in the pad's own
+frame and ignored the quarter-turn the connector's lands have. It now takes
+the extents from the rotated corners.
 
 Left as they are, with the reason:
 
