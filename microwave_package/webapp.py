@@ -48,7 +48,7 @@ from .hfss.driven import ports
 # solver has a view like it.
 from .hfss.eigenmode import fields as eigenmode_fields
 from .pipeline import run_pipeline
-from .workflow import compare, plotting, resilient_io, run_manager
+from .workflow import compare, companion, plotting, resilient_io, run_manager
 from .workflow.run_manager import Run
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s: %(message)s", stream=sys.stdout)
@@ -198,6 +198,12 @@ def _start_pipeline_thread(run: Run) -> None:
 
     thread = threading.Thread(target=_target, daemon=True, name=f"pipeline-{run.run_id}")
     _active_threads[run.run_id] = thread
+    # A Driven run finishes its paired Eigenmode run first, on this same
+    # thread -- so that one is being driven here too, and must say so.
+    prerequisite = run.config.get(companion.EIGEN_LINK)
+    if prerequisite:
+        _active_threads[prerequisite] = thread
+        _stop_events[prerequisite] = stop_event
     thread.start()
 
 
@@ -372,7 +378,11 @@ def _solve_settings_from_form(form) -> dict:
         solution_type = registry.default_solution_type()
 
     settings = {"solution_type": solution_type, **registry.all_defaults()}
-    for field in registry.get(solution_type).all_fields:
+    # A pair solves both types, so both types' controls count.
+    both = "run_both" in form
+    settings["run_both"] = both
+    fields = [f for t in registry.solution_types() for f in registry.get(t["value"]).all_fields]         if both else registry.get(solution_type).all_fields
+    for field in fields:
         raw = form.get(field["name"])
         if raw is None or raw == "":
             continue
@@ -402,6 +412,14 @@ def _material_choice(form, key: str) -> str:
     return (raw or "").strip() or model_builder.MATERIAL_FALLBACKS[key]
 
 
+def _positive_float(raw, default: float) -> float:
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return default
+    return value if value > 0 else default
+
+
 def _materials_from_form(form) -> dict:
     """Every material/boundary setting the form carries, by key.
 
@@ -418,6 +436,8 @@ def _materials_from_form(form) -> dict:
         "mat_chip": _material_choice(form, "mat_chip"),
         "mat_vacuum": _material_choice(form, "mat_vacuum"),
         "perfect_e_box": "perfect_e_box" in form,
+        "box_conductivity": _positive_float(
+            form.get("box_conductivity"), model_builder.DEFAULT_BOX_CONDUCTIVITY),
         "mat_conductor_pcb": _material_choice(form, "mat_conductor_pcb"),
         "mat_conductor_chip": _material_choice(form, "mat_conductor_chip"),
         "perfect_e_conductors": "perfect_e_conductors" in form,
@@ -498,6 +518,7 @@ def index():
         material_options=model_builder.MATERIAL_OPTIONS,
         wirebond_materials=model_builder.WIREBOND_MATERIALS,
         custom_material=model_builder.CUSTOM_MATERIAL,
+        default_box_conductivity=model_builder.DEFAULT_BOX_CONDUCTIVITY,
     )
 
 
@@ -564,16 +585,6 @@ def new_run():
             logger.info("Ignoring distortion-geometry sweep (%s) -- this run has no distorted combination.", names)
 
     solve_settings = _solve_settings_from_form(request.form)
-    # A driven run needs two real ports to have an S21 at all, and
-    # port_count is geometry rather than an analysis setting -- so it is
-    # checked here, before a sweep's worth of STEP files get built for
-    # models that could never be given ports.
-    complaint = registry.get(solve_settings["solution_type"]).validate(
-        run_manager.parameter_values_for("port_count", sweep_params, parameter_defaults)
-    )
-    if complaint:
-        return redirect(url_for("index", error=complaint))
-
     settings = {
         **solve_settings,
         "aedt_version": request.form.get("aedt_version") or None,
@@ -583,14 +594,27 @@ def new_run():
         "use_altium": "use_altium" in request.form,
         "materials": _materials_from_form(request.form),
     }
-    run = Run.create(sweep_params, settings, parameter_defaults)
+    # A driven run needs two real ports to have an S21 at all, and
+    # port_count is geometry rather than an analysis setting -- so it is
+    # checked here, before a sweep's worth of STEP files get built for
+    # models that could never be given ports. A pair is checked for both.
+    try:
+        run = pipeline.create_run(sweep_params, settings, parameter_defaults)
+    except ValueError as complaint:
+        return redirect(url_for("index", error=str(complaint)))
     label = request.form.get("label", "").strip()[:80]
+    partner = companion.prerequisite_of(run)
     if notes or label:
-        if notes:
-            run.config["notes"] = notes
-        if label:
-            run.config["label"] = label
-        run.save()
+        # A pair is two runs, and both are told what the user said of it.
+        targets = [(run, " (driven)" if partner else "")]
+        if partner:
+            targets.append((partner, " (eigenmodes)"))
+        for each, suffix in targets:
+            if notes:
+                each.config["notes"] = notes
+            if label:
+                each.config["label"] = label[:80 - len(suffix)] + suffix
+            each.save()
     _start_pipeline_thread(run)
     return redirect(url_for("run_status", run_id=run.run_id))
 
@@ -726,6 +750,7 @@ def run_status(run_id):
         "run_status.html",
         run=run,
         run_name=_run_name(run),
+        pair_link=_pair_link(run),
         rows=_combo_rows(run),
         phases=_phase_meta(),
         is_running=_is_running(run_id) or bool(elsewhere),
@@ -752,6 +777,18 @@ def run_status(run_id):
         # rows it otherwise buries the results underneath it.
         combos_open=not run.is_complete,
     )
+
+
+def _pair_link(run) -> Optional[dict]:
+    """What to say, and where to link, for a run that is half of a pair."""
+    if run.config.get(companion.EIGEN_LINK):
+        return {"run_id": run.config[companion.EIGEN_LINK],
+                "text": "Driven run paired with the Eigenmode run"
+                        " whose modes its fine frequency windows are centred on:"}
+    if run.config.get(companion.DRIVEN_LINK):
+        return {"run_id": run.config[companion.DRIVEN_LINK],
+                "text": "Eigenmode run paired with the Driven run that follows it, on the same geometry:"}
+    return None
 
 
 def _run_disk_usage(run) -> int:
@@ -982,6 +1019,8 @@ def run_plot(run_id):
         solution_type=registry.solution_type_of(run.config.get("analysis_settings", {})),
         dark=request.args.get("theme") == "dark",
         plotlyjs_src=url_for("plotly_js"),
+        mode_markers=(companion.mode_markers(run, df["combo_id"].unique())
+                      if plotting.has_sparameters(df) and "combo_id" in df.columns else None),
     )
     return Response(html, mimetype="text/html")
 

@@ -169,6 +169,7 @@ MATERIAL_LABELS: Dict[str, str] = {
     "mat_chip": "Chip material",
     "mat_vacuum": "Vacuum material",
     "perfect_e_box": "Perfect E on box/lid_inside",
+    "box_conductivity": "Box conductivity when not perfect E (S/m)",
     "mat_conductor_pcb": "PCB conductor",
     "mat_conductor_chip": "Chip conductor",
     "perfect_e_conductors": "Perfect E on the conductors",
@@ -176,6 +177,15 @@ MATERIAL_LABELS: Dict[str, str] = {
     "include_wirebonds": "Include wire bonds",
 }
 
+
+# The box and lid are aluminium, which is superconducting below ~1.2 K, so
+# perfect E is the right default for them. Perfect E puts the mode and dip
+# POSITIONS in the right place but exaggerates dip depth and Q: nothing is
+# lost in the walls. With perfect E off, the box and lid_inside get a
+# finite-conductivity boundary of this conductivity instead -- 6061 at
+# liquid-helium temperature is of the order of 1e8 S/m (room temperature
+# is 3.8e7), and a purer aluminium is higher still.
+DEFAULT_BOX_CONDUCTIVITY = 1e8
 
 # The SMP connector's materials. All of it is vendor geometry, not a
 # design variable, so it is hardcoded here rather than exposed as run
@@ -905,6 +915,32 @@ def _assign_material(hfss, obj, material: str, is_conductor: bool, log) -> bool:
     return False
 
 
+def _assign_box_conductivity(hfss, name: str, mat_settings: dict, log) -> bool:
+    """A finite-conductivity boundary on the box (or its lid_inside) for a
+    run that turned perfect E off for it.
+
+    The conductivity is the run's `box_conductivity`, not the box
+    material's library value: that is a room-temperature figure, and the
+    box sits at cryogenic temperature. Not given a thickness -- an
+    Eigenmode design refuses one on this boundary, and the solid already
+    is the metal -- so it is the surface impedance of a bulk wall.
+    Returns whether the boundary was made.
+    """
+    try:
+        sigma = float(mat_settings.get("box_conductivity") or DEFAULT_BOX_CONDUCTIVITY)
+    except (TypeError, ValueError):
+        sigma = DEFAULT_BOX_CONDUCTIVITY
+    if sigma <= 0:
+        sigma = DEFAULT_BOX_CONDUCTIVITY
+    try:
+        hfss.assign_finite_conductivity(name, conductivity=sigma, use_thickness=False)
+    except Exception as exc:
+        log(f"WARNING: could not give {name} a finite conductivity of {sigma:g} S/m ({exc}); "
+            "it is left without a boundary.")
+        return False
+    return True
+
+
 def assign_materials_and_boundaries(hfss, mat_settings: dict, log=logger.info,
                                     sheets: Optional[List[str]] = None) -> Dict[str, object]:
     """Give every solid in the imported model its material and boundary.
@@ -949,6 +985,8 @@ def assign_materials_and_boundaries(hfss, mat_settings: dict, log=logger.info,
             objects_dict.setdefault(key, obj)
             if perfect_e_key and mat_settings.get(perfect_e_key):
                 hfss.assign_perfect_e(assignment=obj.name)
+            elif perfect_e_key == "perfect_e_box":
+                _assign_box_conductivity(hfss, obj.name, mat_settings, log)
             break
         else:
             unmatched.append(obj.name)
@@ -1309,7 +1347,13 @@ def build_model(
             )
             return
 
-        solver.create_setup(hfss, dimensions_txt_content, analysis_settings, log=log)
+        # A driven run paired with an Eigenmode run gets that run's modes for
+        # this combination, to put fine frequency windows around.
+        from ..workflow import companion
+        solver.create_setup(
+            hfss, dimensions_txt_content,
+            companion.settings_with_modes(run, combo_id, analysis_settings, log=log), log=log,
+        )
 
         hfss.save_project(project_path)
         closed = close_project_safely(hfss, log=log)

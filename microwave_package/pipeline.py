@@ -32,8 +32,9 @@ from ansys_analyze_common import queue_common
 from . import paths
 from .design.sweep import SweepParameter, expand_values, split_swept_and_fixed
 from .hfss import model_builder, registry
-from .hfss.driven import ports
-from .workflow import plotting, postprocess, resilient_io, results, stages
+from .hfss.driven import DRIVEN_MODAL, ports
+from .hfss.eigenmode import EIGENMODE
+from .workflow import companion, plotting, postprocess, resilient_io, results, stages
 from .workflow.monitor import monitor_run
 from .workflow import run_manager
 from .workflow.run_manager import Run
@@ -120,6 +121,8 @@ def run_pipeline(run: Run, queue: "queue_common.QueuePaths", log=logger.info, st
     """
     run.claim_driver()
     try:
+        if not _finish_prerequisite(run, queue, log=log, stop_event=stop_event):
+            return
         _run_stages(run, queue, log=log, stop_event=stop_event)
     except resilient_io.Stopped as stopped:
         # Somewhere that was waiting for the share gave up because this
@@ -138,6 +141,46 @@ def run_pipeline(run: Run, queue: "queue_common.QueuePaths", log=logger.info, st
             log(f"Run {run.run_id} stopped. Nothing already built is lost -- "
                 "resume it to carry on from where it stopped.")
         run.release_driver()
+
+
+def _finish_prerequisite(run: Run, queue, log=logger.info, stop_event=None) -> bool:
+    """For a Driven run paired with an Eigenmode run: finish that one first.
+
+    The driven run's fine windows are centred on the eigenmodes, so they
+    have to exist before its models are built, and its geometry is the
+    Eigenmode run's (see workflow/companion.py). Resumable like anything
+    else here: an Eigenmode run that is already complete costs nothing.
+
+    Returns False when the run was stopped meanwhile, which leaves this one
+    stopped too. An Eigenmode run that failed outright does not take this
+    one down with it -- the driven run goes ahead with the coarse sweep,
+    and says so.
+    """
+    eigen = companion.prerequisite_of(run)
+    if eigen is None:
+        return True
+    if eigen.state.get("stage") != "complete":
+        log(f"This run is paired with Eigenmode run {eigen.run_id}, whose modes its fine "
+            "frequency windows are centred on -- finishing that one first.")
+        try:
+            run_pipeline(eigen, queue, log=log, stop_event=stop_event)
+        except Exception as exc:
+            logger.exception("The paired Eigenmode run %s failed", eigen.run_id)
+            eigen.state["stage"] = "error"
+            eigen.state["error"] = repr(exc)
+            eigen.save_state()
+            log(f"The Eigenmode run {eigen.run_id} failed ({exc}); continuing with the driven "
+                "run, which will have no automatic fine windows.")
+        eigen = Run.load(eigen.run_id)
+        if _stopped(stop_event):
+            run.set_stage("stopped")
+            return False
+        if eigen.state.get("stage") != "complete":
+            log(f"WARNING: Eigenmode run {eigen.run_id} did not complete "
+                f"(stage {eigen.state.get('stage')}); combinations without its modes get no "
+                "automatic fine windows.")
+    companion.seed_geometry(run, eigen, log=log)
+    return True
 
 
 def _run_stages(run: Run, queue: "queue_common.QueuePaths", log=logger.info, stop_event=None) -> None:
@@ -338,6 +381,10 @@ def _run_stages(run: Run, queue: "queue_common.QueuePaths", log=logger.info, sto
 DEFAULT_ANALYSIS_SETTINGS = {
     "solution_type": registry.default_solution_type(),
     **registry.all_defaults(),
+    # Solve Eigenmode AND Driven Modal for every combination, as a pair of
+    # runs (see workflow/companion.py). Which solution type the form or
+    # command line picked only matters with this off.
+    "run_both": True,
     "aedt_version": None,
     "student_version": True,
     "graphical": False,
@@ -353,6 +400,10 @@ DEFAULT_ANALYSIS_SETTINGS = {
         "mat_chip": "silicon",
         "mat_vacuum": "vacuum",
         "perfect_e_box": True,
+        # Used only with perfect_e_box off: the box and lid_inside then get
+        # a finite-conductivity boundary of this value (see
+        # model_builder.DEFAULT_BOX_CONDUCTIVITY).
+        "box_conductivity": model_builder.DEFAULT_BOX_CONDUCTIVITY,
         # Conductors default to perfect E rather than to a named metal.
         # This is not a shortcut: HFSS's stock copper and niobium carry
         # ROOM-TEMPERATURE normal-state conductivity, which at
@@ -377,8 +428,41 @@ DEFAULT_ANALYSIS_SETTINGS = {
 }
 
 
+def create_run(sweep_params, analysis_settings: dict, parameter_defaults=None) -> Run:
+    """Create what a new run asks for, and return the run to start.
+
+    With `run_both` that is a pair -- an Eigenmode run and a Driven run on
+    the same sweep (see workflow/companion.py) -- and the one returned is
+    the Driven run, which finishes the Eigenmode run first when started.
+    Otherwise it is one run of the chosen solution type.
+
+    Every solution type the run will use is validated against the geometry
+    before anything is created, not per combination: a driven run needs
+    two real ports to have an S21, and finding that out one model at a
+    time would mean a sweep's worth of geometry built for projects that
+    can never be given ports. Raises ValueError with the reason.
+    """
+    both = analysis_settings.get("run_both")
+    types = [EIGENMODE, DRIVEN_MODAL] if both else [registry.solution_type_of(analysis_settings)]
+    port_counts = run_manager.parameter_values_for("port_count", sweep_params, parameter_defaults)
+    for solution_type in types:
+        complaint = registry.get(solution_type).validate(port_counts)
+        if complaint:
+            raise ValueError(complaint)
+    if both:
+        return companion.create_pair(sweep_params, analysis_settings, parameter_defaults)[1]
+    return Run.create(sweep_params, analysis_settings, parameter_defaults)
+
+
 def build_analysis_settings(args: argparse.Namespace) -> dict:
+    # Every solver's defaults underneath, so a setting the command line has
+    # no flag for (the fine-window ones, mostly) still takes its default.
     return {
+        **registry.all_defaults(),
+        "run_both": getattr(args, "run_both", False),
+        "fine_windows": getattr(args, "fine_windows", "auto"),
+        "fine_windows_manual": getattr(args, "fine_windows_manual", ""),
+        "adapt_at": getattr(args, "adapt_at", "f_stop"),
         "solution_type": args.solution_type,
         "modes": args.modes,
         "max_passes": args.max_passes,
@@ -403,6 +487,8 @@ def build_analysis_settings(args: argparse.Namespace) -> dict:
             "mat_chip": args.mat_chip,
             "mat_vacuum": args.mat_vacuum,
             "perfect_e_box": args.perfect_e_box,
+            "box_conductivity": getattr(
+                args, "box_conductivity", model_builder.DEFAULT_BOX_CONDUCTIVITY),
             "mat_conductor_pcb": args.mat_conductor_pcb,
             "mat_conductor_chip": args.mat_conductor_chip,
             "perfect_e_conductors": args.perfect_e_conductors,
@@ -446,6 +532,21 @@ def parse_args() -> argparse.Namespace:
              "(board only); 'bonds' puts one on the PCB just outboard of the wire bonds; "
              "'chip' puts one on the die's CPW just inboard of where the bonds land.",
     )
+    parser.add_argument(
+        "--fine-windows", choices=["auto", "off"], default="auto",
+        help="Driven sweep: add a narrow, densely sampled window around each eigenmode "
+             "(needs the paired Eigenmode run) beside the coarse sweep.")
+    parser.add_argument(
+        "--fine-windows-manual", default="", metavar="LO:HI:STEP[;...]",
+        help="Driven sweep: extra fine windows in GHz, e.g. '12.1:12.4:0.002;15:15.2:0.001'.")
+    parser.add_argument(
+        "--adapt-at", choices=["f_stop", "highest_mode"], default="f_stop",
+        help="Driven sweep: refine the mesh at the top of the sweep, or just above the "
+             "highest eigenmode in it.")
+    parser.add_argument(
+        "--no-pair", dest="run_both", action="store_false", default=True,
+        help="Solve only --solution-type. By default every combination is solved twice, "
+             "as an Eigenmode run and then a Driven Modal run on the same geometry.")
     # Shared.
     parser.add_argument("--max-passes", type=int, default=99)
     parser.add_argument("--min-passes", type=int, default=3)
@@ -459,6 +560,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--mat-chip", type=str, default="silicon")
     parser.add_argument("--mat-vacuum", type=str, default="vacuum")
     parser.add_argument("--no-perfect-e-box", dest="perfect_e_box", action="store_false", default=True)
+    parser.add_argument(
+        "--box-conductivity", type=float, default=model_builder.DEFAULT_BOX_CONDUCTIVITY,
+        help="With --no-perfect-e-box: the box and lid's conductivity in S/m (a finite-"
+             "conductivity boundary). Perfect E puts mode and dip POSITIONS in the right "
+             "place but exaggerates dip depth and Q.")
     parser.add_argument("--no-altium", dest="use_altium", action="store_false", default=True,
                         help="Skip layout generation and build the SolidWorks-only geometry")
     parser.add_argument("--mat-conductor-pcb", type=str, default="copper")
@@ -529,18 +635,10 @@ def main() -> None:
                 "Pinned for this run: %s",
                 ", ".join(f"{n}={v:g}" for n, v in parameter_defaults.items()),
             )
-        analysis_settings = build_analysis_settings(args)
-        # Checked before anything is built, not per combination: a driven
-        # run needs two real ports to have an S21, and finding that out
-        # one model at a time would mean a sweep's worth of geometry
-        # built for projects that can never be given ports.
-        complaint = registry.get(analysis_settings["solution_type"]).validate(
-            run_manager.parameter_values_for("port_count", sweep_params, parameter_defaults)
-        )
-        if complaint:
-            raise SystemExit(complaint)
-
-        run = Run.create(sweep_params, analysis_settings, parameter_defaults)
+        try:
+            run = create_run(sweep_params, build_analysis_settings(args), parameter_defaults)
+        except ValueError as exc:
+            raise SystemExit(f"{exc} (--no-pair solves just the one --solution-type.)")
         logger.info("Created run %s with %d combination(s)", run.run_id, len(run.state["combos"]))
 
     stop_event = threading.Event()

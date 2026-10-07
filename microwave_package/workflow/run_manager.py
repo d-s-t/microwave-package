@@ -289,6 +289,11 @@ class Run:
         parameter_defaults: Optional[Dict[str, float]] = None,
     ) -> "Run":
         run_id = _dt.datetime.now().strftime("run_%Y%m%d_%H%M%S")
+        # Two runs made in the same second (a pair is) must not share a folder.
+        taken, suffix = run_id, 1
+        while os.path.exists(os.path.join(str(paths.RUNS_ROOT), run_id)):
+            suffix += 1
+            run_id = f"{taken}_{suffix}"
         run = cls(run_id)
         os.makedirs(run.run_dir, exist_ok=True)
         os.makedirs(run.plots_dir, exist_ok=True)

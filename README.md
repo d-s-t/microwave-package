@@ -22,6 +22,9 @@ A run asks HFSS one of two questions, chosen per run:
   two SMP ports over a frequency sweep; the answer is S11 and S21 across
   the band, plus a Touchstone file per combination.
 
+By default a run does **both**, on the same geometry (see
+[Eigenmode and Driven together](#eigenmode-and-driven-together)).
+
 They share the same geometry and differ only in what is solved on it.
 Each is a solver plugged into [`hfss/registry.py`](microwave_package/hfss/registry.py),
 which is where the contract between a solution type and the rest of the
@@ -197,6 +200,13 @@ even a perfect line reads S11 = S21 = -6 dB at low frequency. They are for seein
 where a feature comes from -- a notch the connector plane shows and the chip plane
 does not is made outside the die.
 
+Without `--no-pair` the command above solves both: an Eigenmode run first
+and then the Driven run, which gets fine frequency windows around the
+modes (`--no-pair` solves just the `--solution-type`). `--fine-windows
+off`, `--fine-windows-manual LO:HI:STEP[;...]`, `--adapt-at
+highest_mode` and `--box-conductivity` (with `--no-perfect-e-box`) set the
+options described below; the finer factors are settings in the web form.
+
 Run `python -m microwave_package.pipeline --help` for every analysis
 setting -- they are grouped by which solution type they apply to.
 
@@ -209,6 +219,64 @@ and retries until the share comes back, then continues from wherever it
 was. You can also just stop it (Ctrl-C, or close the web UI's process)
 and resume later with `--resume`/the web UI's Resume button; nothing
 already built or queued is lost.
+
+## Eigenmode and Driven together
+
+An HFSS design has one solution type, and a queue task names one project,
+one design and one solution type, so an Eigenmode design and a Driven
+Modal design cannot share a setup or a task. A combination is therefore
+solved as **a pair of ordinary runs over the same sweep**, linked on
+their status pages and in their configs (`eigen_run_id` / `driven_run_id`;
+see [`workflow/companion.py`](microwave_package/workflow/companion.py)).
+The queue schema is unchanged and the worker needs no change.
+
+- Tick **Both, on the same geometry** under *What to solve* (on by
+  default; `--no-pair` on the command line turns it off). It needs
+  `port_count = 2`, and is refused up front otherwise.
+- The **Eigenmode run goes first**. The **Driven run** then starts from its
+  geometry (the STEP files and copper, so Altium and SolidWorks are not
+  asked again) and reads its modes. Starting, stopping or resuming the
+  Driven run does the same to the Eigenmode run it waits for; resuming the
+  Eigenmode run alone works as before. If the Eigenmode run fails, the
+  Driven run still goes ahead with the coarse sweep alone and says so.
+- **Fine windows.** Box modes have Q of about 60-500, so they are 25-35 MHz
+  wide while the coarse sweep steps about 100 MHz, and a narrow dip is
+  under-sampled. Beside the coarse sweep, each eigenmode below the sweep
+  stop gets a window of its own, as extra interpolating sweeps (`Fine_1`,
+  `Fine_2`, ...) in the same setup:
+  half-width = 0.5 x f/Q (that is f/(2Q)) plus a 1 % margin on f, step =
+  f/Q / 20 (that is f/(20Q)). The margin is there because the eigenmode
+  solve has no connectors, so its frequency is only a hint of where the
+  driven dip lands. Overlapping windows merge, and a cap of 2000 points
+  across all windows makes every step coarser by the same factor rather
+  than dropping a mode. All of these are driven settings (*Window
+  half-width*, *Points per linewidth*, *Window margin*, *Q to assume when
+  an eigenmode has none*, *Max fine-window points*), as are *Fine windows*
+  (automatic or off) and *Extra fine windows*, a list of `lo:hi:step` in
+  GHz, for windows you pick yourself -- those work without an Eigenmode run
+  too. The fine points are folded into the run's results, in frequency
+  order, with a `sweep` column saying which sweep each came from.
+- **Mesh frequency.** *Adapt the mesh at* is the top of the sweep by default
+  (as before); the other choice is just above the highest eigenmode in
+  the band.
+- **Plots.** The driven run's S-parameter plot against frequency shows the
+  paired run's eigenmodes as triangles along the foot of the curves; they
+  follow the combination filter. Hover for the mode's frequency and Q.
+- Each run is complete in itself, so the comparison page, results CSVs and
+  deleting a run work on each as before. Runs made before this exist
+  unpaired and are untouched.
+
+### The box's conductor model
+
+*Perfect E on box/lid_inside* stays on by default: the box is probably
+aluminium, which is superconducting below about 1.2 K. Perfect E puts the
+mode and dip **positions** in the right place but exaggerates dip
+**depth** and Q, because nothing is lost in the walls. Turning it off
+gives the box and lid a finite-conductivity boundary of *Box conductivity*
+(S/m, default 1e8, about 6061 aluminium at liquid-helium temperature;
+3.8e7 at room temperature), with no thickness -- an Eigenmode design
+refuses one on that boundary. The setting is `box_conductivity` in a run's
+`materials`, and is listed on the comparison page.
 
 ## Output
 

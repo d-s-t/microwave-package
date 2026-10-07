@@ -19,6 +19,7 @@ from typing import Dict, List, Optional
 
 import pandas as pd
 import plotly.express as px
+import plotly.graph_objects as go
 
 from ..design import parameter_meta
 from ..hfss import registry
@@ -286,6 +287,7 @@ def figure_html(
     plotlyjs_src: Optional[str] = None,
     run_colours: Optional[Dict[str, str]] = None,
     note: Optional[str] = None,
+    mode_markers: Optional[List[Dict]] = None,
 ) -> str:
     """Render one scatter of this run's results as HTML.
 
@@ -303,6 +305,12 @@ def figure_html(
     colour, in comparison order, including runs the filter has hidden --
     keeps each run's colour and marker its own however many are shown.
     `note` is a line to show above the figure.
+
+    `mode_markers` -- `{combo_id, freq_ghz, q}` per eigenmode, from the
+    Eigenmode run a driven run is paired with -- are drawn as triangles
+    along the foot of an S-parameter curve, one per mode of the
+    combinations shown, so a dip can be read against the resonance it
+    belongs to.
     """
     options = [o["value"] for o in axis_options(df, sweep_param_names)]
     if not options:
@@ -371,6 +379,9 @@ def figure_html(
         plot_bgcolor="rgba(0,0,0,0)",
         margin=dict(l=60, r=30, t=30, b=60),
     )
+    if as_curve and mode_markers:
+        _add_mode_markers(figure, df, y, mode_markers, dark)
+
     if compared:
         # Run names are whatever their runs were called, often a sentence:
         # a legend beside the plot would take half its width, so it goes
@@ -421,6 +432,38 @@ def figure_html(
     )
 
 
+def _add_mode_markers(figure, df: pd.DataFrame, y: str, markers: List[Dict], dark: bool) -> None:
+    """Eigenmodes as triangles at the bottom of the plotted curves.
+
+    Only the combinations in `df` (so a filter hides their modes with
+    them), and only inside the frequency range being drawn. Where
+    combinations share a mode frequency to the kHz it is drawn once.
+    """
+    shown = set(df["combo_id"]) if "combo_id" in df.columns else None
+    low, high = df["freq_ghz"].min(), df["freq_ghz"].max()
+    seen, xs, texts = set(), [], []
+    for marker in markers:
+        f = marker["freq_ghz"]
+        if (shown is not None and marker["combo_id"] not in shown) or not low <= f <= high:
+            continue
+        key = round(f, 6)
+        if key in seen:
+            continue
+        seen.add(key)
+        q = marker.get("q")
+        xs.append(f)
+        texts.append(f"eigenmode {f:.4f} GHz" + (f", Q {q:.0f}" if isinstance(q, (int, float)) and q == q else "")
+                     + f" ({marker['combo_id']})")
+    if not xs:
+        return
+    figure.add_trace(go.Scatter(
+        x=xs, y=[float(df[y].min())] * len(xs), mode="markers", name="Eigenmodes",
+        text=texts, hoverinfo="text",
+        marker=dict(symbol="triangle-up", size=9, color="#e9a100" if dark else "#b47600",
+                    line=dict(width=1, color=_SURFACE["dark" if dark else "light"])),
+    ))
+
+
 # The figure is embedded in an iframe, so a click on a point has to be
 # handed out to the run page that owns the panel. Same origin either way;
 # postMessage keeps it to one explicit channel rather than reaching
@@ -454,8 +497,10 @@ def plot_results(df: pd.DataFrame, run, sweep_param_names: List[str], log=logger
     log(f"Combined {len(df)} rows into {combined_csv}")
 
     solution_type = registry.solution_type_of(run.config.get("analysis_settings", {}))
+    from ..workflow import companion
     html = figure_html(
         df, sweep_param_names, solution_type=solution_type,
+        mode_markers=companion.mode_markers(run) if has_sparameters(df) else None,
         **default_axes(df, sweep_param_names, solution_type),
     )
 

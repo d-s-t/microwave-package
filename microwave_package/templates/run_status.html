@@ -135,6 +135,10 @@
     </form>
   </span>
 </p>
+{% if pair_link %}
+<p class="muted" style="margin-top:-.4rem">{{ pair_link.text }}
+  <a href="{{ url_for('run_status', run_id=pair_link.run_id) }}">{{ pair_link.run_id }}</a>.</p>
+{% endif %}
 
 {# One row per phase, filled in by renderPhases() -- the widths and the
    counts are patched on every poll anyway, so they are not also

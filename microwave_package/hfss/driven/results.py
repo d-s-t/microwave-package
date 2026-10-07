@@ -18,6 +18,8 @@ import os
 import re
 from typing import Any, Dict, List, Optional
 
+from . import windows
+
 logger = logging.getLogger("microwave_package")
 
 
@@ -34,6 +36,7 @@ def _sweep_solution_name(hfss, setup) -> str:
     candidates = [
         name for name in hfss.existing_analysis_sweeps
         if name.split(" : ")[0] == setup.name and not name.endswith("LastAdaptive")
+        and not _is_fine(name)
     ]
     if not candidates:
         raise RuntimeError(
@@ -45,6 +48,34 @@ def _sweep_solution_name(hfss, setup) -> str:
             "machine."
         )
     return candidates[0]
+
+
+def _is_fine(solution: str) -> bool:
+    return solution.split(" : ")[-1].startswith(windows.FINE_SWEEP_PREFIX)
+
+
+def _fine_solution_names(hfss, setup) -> List[str]:
+    """The "<setup> : Fine_n" solutions, in window order (see windows.py)."""
+    names = [
+        name for name in hfss.existing_analysis_sweeps
+        if name.split(" : ")[0] == setup.name and _is_fine(name)
+    ]
+    return sorted(names, key=lambda n: int(re.sub(r"\D", "", n.split(" : ")[-1]) or 0))
+
+
+def merge_sweeps(coarse: List[Dict[str, Any]], fine: List[tuple]) -> List[Dict[str, Any]]:
+    """The coarse sweep's rows with every fine window's rows folded in.
+
+    One curve, in frequency order. Where a fine point lands on a coarse
+    one (within a kHz) the fine row wins: it comes from the window that
+    was put there to resolve this very frequency.
+    """
+    rows = [dict(row, sweep=row.get("sweep") or "coarse") for row in coarse]
+    # `fine` is (sweep name, rows) pairs.
+    fine_rows = [dict(row, sweep=name) for name, window in fine for row in window]
+    taken = {round(row["freq_ghz"], 6) for row in fine_rows}
+    rows = [row for row in rows if round(row["freq_ghz"], 6) not in taken] + fine_rows
+    return sorted(rows, key=lambda row: row["freq_ghz"])
 
 
 # What comes back for each port pair, and what the results table calls it.
@@ -73,7 +104,26 @@ def get_sparameter_results(hfss, setup, log, out_dir: Optional[str] = None) -> L
             "before handing the task back as done. Check the worker's log."
         )
 
-    solution = _sweep_solution_name(hfss, setup)
+    coarse = _rows_for_solution(hfss, setup, _sweep_solution_name(hfss, setup), log, out_dir)
+    fine = []
+    for solution in _fine_solution_names(hfss, setup):
+        # A window that did not solve costs its own resolution, not the
+        # curve: the coarse sweep above is the result.
+        try:
+            fine.append((solution.split(" : ")[-1],
+                         _rows_for_solution(hfss, setup, solution, log, None)))
+        except Exception as exc:
+            log(f"WARNING: could not read {solution}: {exc}")
+    if not fine:
+        return coarse
+    merged = merge_sweeps(coarse, fine)
+    log(f"{setup.name}: {sum(len(rows) for _n, rows in fine)} fine-window point(s) folded into "
+        f"the {len(coarse)}-point sweep ({len(merged)} in all).")
+    return merged
+
+
+def _rows_for_solution(hfss, setup, solution: str, log, out_dir: Optional[str]) -> List[Dict[str, Any]]:
+    """One sweep solution's rows: a point per frequency."""
     available = set(hfss.post.available_report_quantities(solution=solution) or [])
     groups = _port_groups(available)
     if _needs_combining(available, groups):

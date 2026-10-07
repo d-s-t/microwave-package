@@ -27,7 +27,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Iterable, List, Optional
 
 # Settings every solver takes, with the same meaning. Each entry is
-# {name, label, kind ("int"/"float"/"select"), default, and optionally
+# {name, label, kind ("int"/"float"/"select"/"text"), default, and optionally
 # help / max / options} -- `kind` decides both the form control and the
 # type a submitted value is coerced to.
 SHARED: List[Dict[str, Any]] = [
@@ -209,6 +209,8 @@ def coerce(field_spec: Dict[str, Any], raw: Any) -> Any:
         return int(raw)
     if kind == "float":
         return float(raw)
+    if kind == "text":
+        return str(raw).strip()
     if kind == "select":
         allowed = [option["value"] for option in field_spec["options"]]
         if raw not in allowed:

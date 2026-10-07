@@ -162,6 +162,25 @@ It says nothing about the board's transmission.
    large.
 4. Run the wire-bond comparison again with the sweep reaching past 17 GHz.
 5. Pick runs by dip position, not dip depth.
+6. **Re-run the pair `0929_102232` / `1005_130249` with fine windows, to
+   test whether the depth scatter was under-sampling.** Solve it with
+   *Both, on the same geometry* (the same setup twice, as two pairs) so the
+   Driven run gets a window around each eigenmode below its stop, with
+   `fine_windows` on `auto` and the defaults (half-width f/(2Q), step
+   f/(20Q)). If under-sampling was the cause, the narrow dips should now
+   agree in depth between the two repeats to within a few dB; if they
+   still differ by tens of dB the cause is somewhere else -- the mesh
+   (try *Adapt the mesh at* the top of the sweep and a lower *Max delta S*)
+   or the interpolating sweep itself. Compare the two with the comparison
+   page. The same pair, with *Perfect E on box/lid_inside* off, gives the
+   dip depth a lossy wall would show.
+
+   **New (not yet run, and only unit-tested):** one run can now solve both
+   the eigenmodes and the S-parameters of each combination, with fine
+   windows around each mode and the modes drawn on the S21 plot. See the
+   README, "Eigenmode and Driven together". Nothing in this paragraph has
+   been tried on AEDT: the setup code, sweep merging and the finite-
+   conductivity boundary were tested against stand-ins for HFSS only.
 
 ## Defaults changed
 

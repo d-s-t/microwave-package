@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import logging
 
+from . import windows
+
 logger = logging.getLogger("microwave_package")
 
 SETUP_NAME = "Setup_1"
@@ -47,8 +49,13 @@ def create_setup(hfss, dimensions_txt_content: str, analysis_settings: dict,
             f"The frequency sweep needs f_stop > f_start; got {f_start} -> {f_stop} GHz."
         )
 
+    # The eigenmodes of this geometry, when the run was paired with an
+    # Eigenmode run: model_builder puts them in the settings it passes here.
+    modes = analysis_settings.get("eigenmodes") or ()
+    mesh_ghz = windows.mesh_frequency_ghz(analysis_settings, modes)
+
     setup = hfss.create_setup(name=SETUP_NAME)
-    setup.props["Frequency"] = f"{f_stop}GHz"
+    setup.props["Frequency"] = f"{mesh_ghz}GHz"
     setup.props["MaxDeltaS"] = analysis_settings["max_delta_s"]
     setup.props["MaximumPasses"] = analysis_settings["max_passes"]
     setup.props["MinimumPasses"] = analysis_settings["min_passes"]
@@ -75,8 +82,45 @@ def create_setup(hfss, dimensions_txt_content: str, analysis_settings: dict,
             "it the setup solves one frequency and there is no S-parameter curve."
         )
     log(
-        f"Driven setup: adaptive at {f_stop} GHz (MaxDeltaS "
+        f"Driven setup: adaptive at {mesh_ghz:g} GHz (MaxDeltaS "
         f"{analysis_settings['max_delta_s']}), interpolating sweep "
         f"{f_start}-{f_stop} GHz over {analysis_settings['sweep_points']} points."
     )
+    add_fine_sweeps(hfss, analysis_settings, modes, log)
     return setup
+
+
+def add_fine_sweeps(hfss, analysis_settings: dict, modes, log=logger.info) -> list:
+    """Add one narrow interpolating sweep per fine window (see windows.py).
+
+    HFSS allows several sweeps in one setup and solves each against the
+    setup's single adaptive mesh, so a window costs a few extra frequency
+    solves rather than another adaptive run. A window that cannot be
+    added is logged and skipped: the coarse sweep still gives a curve,
+    and one bad window is not worth losing the model over.
+
+    Returns the windows that were added.
+    """
+    planned = windows.plan(analysis_settings, modes)
+    if not planned:
+        if modes:
+            log("Driven setup: no fine windows (turned off, or no mode inside the band).")
+        return []
+    added = []
+    for index, window in enumerate(planned, start=1):
+        sweep = hfss.create_linear_count_sweep(
+            setup=SETUP_NAME, unit="GHz",
+            start_frequency=window.lo, stop_frequency=window.hi,
+            num_of_freq_points=window.points,
+            name=f"{windows.FINE_SWEEP_PREFIX}{index}",
+            sweep_type="Interpolating", save_fields=False,
+        )
+        if not sweep:
+            log(f"WARNING: could not add fine window {window.lo:.4f}-{window.hi:.4f} GHz.")
+            continue
+        added.append(window)
+    log(
+        f"Driven setup: {len(added)} fine window(s), {windows.total_points(added)} points "
+        "-- " + "; ".join(f"{w.lo:.4f}-{w.hi:.4f} GHz @ {w.step * 1e3:.2f} MHz" for w in added)
+    )
+    return added
