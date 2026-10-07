@@ -14,8 +14,8 @@
 }
 
 Const
-    Dir     = 'C:\Users\david\Documents\uni\lab\microwave-package\base_parts\altium\generated\';
-    OutPath = 'C:\Users\david\Documents\uni\lab\microwave-package\base_parts\altium\verify_report.txt';
+    Dir     = '<ALTIUM_DIR>\generated\';
+    OutPath = '<ALTIUM_DIR>\verify_report.txt';
 
 Var
     Rpt : TStringList;

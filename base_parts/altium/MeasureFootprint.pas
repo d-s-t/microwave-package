@@ -33,8 +33,8 @@
 }
 
 Const
-    ParamPath = 'C:\Users\david\Documents\uni\lab\microwave-package\base_parts\altium\params.txt';
-    OutPath   = 'C:\Users\david\Documents\uni\lab\microwave-package\base_parts\altium\measure_report.txt';
+    ParamPath = '<ALTIUM_DIR>\params.txt';
+    OutPath   = '<ALTIUM_DIR>\measure_report.txt';
 
 Var
     Rpt : TStringList;

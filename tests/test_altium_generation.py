@@ -57,6 +57,55 @@ class TestWriteParams(unittest.TestCase):
         self.assertTrue(os.path.isfile(nested))
 
 
+class TestScriptsRunFromAnyCheckout(unittest.TestCase):
+    """The scripts committed one machine's folder once, and every other
+    checkout's first write became a modal "Cannot create file" dialog."""
+
+    SCRIPTS = (
+        paths.ALTIUM_GENERATOR, paths.ALTIUM_COPPER_EXPORTER,
+        paths.ALTIUM_FOOTPRINT_MEASURER, paths.ALTIUM_PING,
+        paths.ALTIUM_DIR / "VerifyGenerated.pas",
+    )
+
+    def setUp(self):
+        patcher = mock.patch.object(paths, "ALTIUM_RESOLVED_DIR",
+                                    paths.Path(tempfile.mkdtemp()) / "resolved")
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_no_script_names_a_folder_of_its_own(self):
+        for script in self.SCRIPTS:
+            with self.subTest(script=script.name):
+                self.assertNotIn(b":\\", script.read_bytes())
+
+    def test_what_altium_runs_names_this_checkout(self):
+        for script in self.SCRIPTS:
+            with self.subTest(script=script.name):
+                with open(ag.resolve_script(str(script)), "rb") as f:
+                    text = f.read()
+                self.assertNotIn(b"<ALTIUM_DIR>", text)
+                if script != paths.ALTIUM_PING:
+                    self.assertIn(str(paths.ALTIUM_DIR).encode("mbcs"), text)
+
+    def test_a_quote_in_the_folder_stays_inside_the_string(self):
+        folder = paths.Path(tempfile.mkdtemp()) / "O'Brien"
+        with mock.patch.object(paths, "ALTIUM_DIR", folder):
+            with open(ag.resolve_script(str(paths.ALTIUM_GENERATOR)), "rb") as f:
+                text = f.read()
+        self.assertIn(b"O''Brien\\params.txt'", text)
+
+    def test_the_source_itself_is_left_alone(self):
+        before = paths.ALTIUM_GENERATOR.read_bytes()
+        ag.resolve_script(str(paths.ALTIUM_GENERATOR))
+        self.assertEqual(paths.ALTIUM_GENERATOR.read_bytes(), before)
+
+    def test_an_unchanged_copy_is_not_rewritten(self):
+        first = ag.resolve_script(str(paths.ALTIUM_GENERATOR))
+        os.utime(first, (0, 0))
+        ag.resolve_script(str(paths.ALTIUM_GENERATOR))
+        self.assertEqual(os.stat(first).st_mtime, 0)
+
+
 class TestReadSentinel(unittest.TestCase):
     def setUp(self):
         self.dir = tempfile.mkdtemp()

@@ -85,8 +85,8 @@
 }
 
 Const
-    ParamPath = 'C:\Users\david\Documents\uni\lab\microwave-package\base_parts\altium\params.txt';
-    OutPath   = 'C:\Users\david\Documents\uni\lab\microwave-package\base_parts\altium\generate_report.txt';
+    ParamPath = '<ALTIUM_DIR>\params.txt';
+    OutPath   = '<ALTIUM_DIR>\generate_report.txt';
 
     { How far the die's own copper (trace + coplanar grounds) is pulled
       in from the die's physical edge. The SUBSTRATE outline stays the
