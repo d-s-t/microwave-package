@@ -42,7 +42,7 @@
 
 "no_chip" = 0 ' (boolean) when set to 1, the bare board: no chip, opening, pedestal or wire bonds, just the CPW from one connector to the other. 0 builds the full package.
 
-"screws_on" = 0 ' (boolean) when set to 1, four M2 countersunk screws hold the lid, PCB and box together at the PCB corners. 0 builds without them.
+"screws_on" = 1 ' (boolean) when set to 1, four M2 countersunk screws hold the lid, PCB and box together at the PCB corners. 0 builds without them.
 
 "screw_inset" = 2.5 ' distance from the PCB edge to the screw centre, on both axes (the 4.28 mm countersink must stay inside the lid outline)
 
