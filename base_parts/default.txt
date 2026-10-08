@@ -54,7 +54,21 @@
 
 "screw_keepout_diameter" = 3.0 ' no copper or via inside this circle round each PCB hole
 
-"screw_engagement" = 0.8 ' how far the thread bites into the box floor
+"screw_engagement" = 0.8 ' length of thread the screw engages in the box (3-4 mm wanted in aluminium; needs floor_width to match)
+
+"floor_width" = 1 ' thickness of the box floor under the board (was wall_width * 1; not yet wired into box_height or the SolidWorks parts)
+
+"lid_width" = 1 ' thickness of lid_inside where the screws pass (measured 1.0 mm today; needs at least head height + screw_lid_seat = 1.2 mm; not yet wired into lid_inside.SLDPRT)
+
+"screw_lid_seat" = 0.3 ' minimum lid material left under the countersink
+
+"screw_standoff_diameter" = 4 ' diameter of the boss under each PCB corner that fills the pedestal_depth gap, so the screw clamps the board flat instead of bending it into the gap
+
+"screw_hole_runout" = 1 ' how far the tap-drill hole goes beyond the engaged thread (the drill point and the tap chamfer)
+
+"screw_floor_skin" = 0.8 ' minimum metal left under the bottom of the blind threaded hole
+
+"screw_length" = 0 ' length of the screw as cut, head top to tip; 0 means work it out from the stack (lid + board + standoff + engagement)
 
 "distortion_radius" = 0.6
 
