@@ -166,8 +166,8 @@ PCB and box together with four M2 ISO 10642 countersunk screws, `screw_inset`
 in from the PCB edge on both axes, with holes in all three parts: a clearance
 hole in the lid with a 90 degree countersink the head sits flush in, a
 clearance hole and copper keep-out in the PCB, and a tap-drill hole in the box
-through a standoff under each corner (the board floats `pedestal_depth` above
-the floor, and the screw clamps it against the standoff). They sit inside the
+into the floor under each corner (the board rests on the floor there; the
+pedestal is a recess cut under the chip). They sit inside the
 PCB corners, not in the box wall, which is `wall_width` = 1 mm thick and
 cannot hold an M2 thread.
 
@@ -181,7 +181,7 @@ CPW, the SMP launch or the die and its bond fingers, a floor too thin for the
 thread (`floor_width` against `screw_engagement`, `screw_hole_runout` and 0.8
 mm of skin) or a lid too thin for the head (`lid_width` against the 1.14 mm
 head plus 0.3 mm of seat). Off by default. Not automated: the same holes,
-standoffs and the `floor_width` / `lid_width` dimensions in `box.SLDPRT` and
+the tapped holes and the `floor_width` / `lid_width` dimensions in `box.SLDPRT` and
 `lid_inside.SLDPRT`, which are binaries -- see the pull request.
 
 **Stop this run** stops a run without losing anything. It is cooperative

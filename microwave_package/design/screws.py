@@ -21,17 +21,17 @@ in base_parts/screws/ (ISO 10642 M2, A2 steel, every length from 3 to
 
 **Where.** The screws sit INSIDE the board's corners, `screw_inset` in from
 the PCB edge on both axes, not in bosses outside the box outline. The wall
-is `wall_width` (1 mm), which cannot hold an M2 thread. The board floats
-`pedestal_depth` above the floor at the corners, so each screw has a
-standoff of that height under it (`screw_standoff_diameter`), which is what
-the screw clamps the board against.
+is `wall_width` (1 mm), which cannot hold an M2 thread. The board rests on
+the box floor there (the "pedestal" is a recess cut under the chip, not a
+raised boss), so the screw clamps it against the floor, and the thread has
+`floor_width + pedestal_depth` of metal to go into.
 
 **Which parts.** Three holes along one axis:
 
     lid         clearance hole, with a 90 degree countersink the head sits
                 flush in
     PCB         clearance hole, with a copper keep-out round it
-    box         tap-drill hole through the standoff and into the floor
+    box         tap-drill hole into the floor
 
 In the HFSS model the box's hole is the screw's own diameter, not the tap
 drill: the thread is a surface the model does not resolve, and a screw
@@ -40,7 +40,7 @@ validate. The tap drill is for the part drawing.
 
 **How long.** Screws can be shortened, so the length is not picked from a
 list of what the vendor drew: it is the exact distance from the lid's top to
-a tip `screw_engagement` below the standoff's top (or `screw_length`, if
+a tip `screw_engagement` below the floor top (or `screw_length`, if
 given). The model used is the shortest STEP at least that long, with the
 excess cut off the tip, which is what shortening one on the bench does.
 """
@@ -85,8 +85,7 @@ class Screws:
     clearance_diameter: float   # PCB and lid
     tap_diameter: float         # box, for the drawing
     keepout_diameter: float     # copper keep-out round each PCB hole
-    standoff_diameter: float    # boss under each PCB corner
-    engagement: float           # thread engaged in the box, below the standoff's top
+    engagement: float           # thread engaged in the box, below the floor top
     hole_runout: float          # tap-drill depth beyond the engaged thread
     length: float               # 0 = work it out from the stack
 
@@ -125,24 +124,23 @@ def plan(values: Dict[str, float]) -> Optional[Screws]:
         clearance_diameter=values.get("screw_clearance_diameter", 2.3),
         tap_diameter=values.get("screw_tap_diameter", 1.6),
         keepout_diameter=values.get("screw_keepout_diameter", 3.0),
-        standoff_diameter=values.get("screw_standoff_diameter", 4.0),
         engagement=values.get("screw_engagement", 3.0),
         hole_runout=values.get("screw_hole_runout", 1.0),
         length=values.get("screw_length", 0.0),
     )
 
 
-def length_for(screws: Screws, lid_top: float, standoff_top: float) -> float:
+def length_for(screws: Screws, lid_top: float, floor_top: float) -> float:
     """The screw's length, head top to tip.
 
-    `lid_top` is the lid's flat top face and `standoff_top` the face the
+    `lid_top` is the lid's flat top face and `floor_top` the face the
     board rests on (the board's underside), both in the model's up axis.
     Unless `screw_length` says otherwise, the tip is `engagement` below the
-    standoff's top.
+    floor top.
     """
     if screws.length > 0:
         return screws.length
-    return (lid_top - standoff_top) + screws.engagement
+    return (lid_top - floor_top) + screws.engagement
 
 
 def model_length(needed: float) -> int:

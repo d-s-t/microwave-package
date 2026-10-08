@@ -103,11 +103,11 @@ class TestThePlan(unittest.TestCase):
 class TestLength(unittest.TestCase):
     def test_it_is_the_stack_plus_the_engagement(self):
         plan = screws.plan(with_screws(screw_engagement=3.0))
-        self.assertAlmostEqual(screws.length_for(plan, lid_top=7.4, standoff_top=5.5), 7.4 - 5.5 + 3.0)
+        self.assertAlmostEqual(screws.length_for(plan, lid_top=7.4, floor_top=5.5), 7.4 - 5.5 + 3.0)
 
     def test_a_given_length_wins(self):
         plan = screws.plan(with_screws(screw_length=6.0))
-        self.assertEqual(screws.length_for(plan, lid_top=7.4, standoff_top=5.5), 6.0)
+        self.assertEqual(screws.length_for(plan, lid_top=7.4, floor_top=5.5), 6.0)
 
     def test_the_model_is_the_shortest_one_that_is_long_enough(self):
         self.assertEqual(screws.model_length(4.9), 5)
@@ -139,9 +139,9 @@ class TestConstraints(unittest.TestCase):
     def test_a_thick_enough_stack_takes_the_screws(self):
         self.assertIsNone(constraints.check_layout(fit()))
 
-    def test_the_standoff_makes_up_part_of_the_floor(self):
-        """The hole starts at the top of the standoff, so a taller
-        pedestal_depth needs less floor."""
+    def test_the_pedestal_recess_makes_up_part_of_the_floor(self):
+        """The board rests on the floor at floor_width + pedestal_depth,
+        so a deeper pedestal needs less floor_width."""
         need = 3.0 + 1.0 + screws.MIN_FLOOR_SKIN
         self.assertIsNotNone(constraints.check_layout(
             with_screws(floor_width=need - 0.6, lid_width=1.5, pedestal_depth=0.5)))
@@ -167,9 +167,6 @@ class TestConstraints(unittest.TestCase):
     def test_a_clearance_hole_wider_than_the_countersink_is_caught(self):
         self.assertIn("countersink", constraints.check_layout(
             fit(screw_clearance_diameter=4.5, screw_keepout_diameter=5.0)))
-
-    def test_a_standoff_too_small_for_the_hole_is_caught(self):
-        self.assertIn("standoff", constraints.check_layout(fit(screw_standoff_diameter=2.5)))
 
     def test_a_thread_too_short_to_hold_is_caught(self):
         self.assertIn("screw_engagement", constraints.check_layout(fit(screw_engagement=0.5)))

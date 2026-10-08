@@ -104,10 +104,10 @@ def build_screws(hfss, frame, stack, values, copper_targets: List[str],
             f"under it) -- increase lid_width and rebuild the lid"
         )
 
-    # The standoff's top is the board's underside; the tip is `engagement`
-    # below it.
-    standoff_top = stack.pcb_bottom
-    length = screw_plan.length_for(screws, lid_top, standoff_top)
+    # The board rests on the floor, so the floor's top is the board's
+    # underside; the tip is `engagement` below it.
+    floor_top = stack.pcb_bottom
+    length = screw_plan.length_for(screws, lid_top, floor_top)
     tip = lid_top - length
     box_bottom = modeler["box"].bounding_box[1]
     if tip < box_bottom + screw_plan.MIN_FLOOR_SKIN:
@@ -129,9 +129,9 @@ def build_screws(hfss, frame, stack, values, copper_targets: List[str],
     for index, (u, v) in enumerate(screws.positions, start=1):
         tag = f"screw_{index}"
 
-        # box: through the standoff and down to the tip, at the screw's own
+        # box: down from the floor top to the tip, at the screw's own
         # diameter
-        hole = _hole_tool(modeler, frame, u, v, shank_r, tip, standoff_top, f"{tag}_box_hole")
+        hole = _hole_tool(modeler, frame, u, v, shank_r, tip, floor_top, f"{tag}_box_hole")
         modeler.subtract("box", [hole], keep_originals=False)
 
         # board: the clearance hole through the substrate

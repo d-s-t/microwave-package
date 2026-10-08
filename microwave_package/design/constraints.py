@@ -385,18 +385,16 @@ def check_screws(values: Dict[str, float], gap: float) -> Optional[str]:
                 f"{_fmt(screw_plan.MIN_LID_SEAT)} mm of lid under it) -- increase lid_width")
     pedestal = get("pedestal_depth")
     floor = get("floor_width", get("wall_width", 1.0))
-    # the hole starts at the top of the standoff, which is pedestal_depth
-    # above the floor, and has to leave a skin under it
+    # the board rests on the floor, which is floor_width plus the
+    # pedestal's recess thick away from the chip; the hole starts at its top
+    # and has to leave a skin under it
     needed = screws.hole_depth + screw_plan.MIN_FLOOR_SKIN - pedestal
     if floor < needed:
         return (f"floor_width {_fmt(floor)} mm is too thin for the screws: a thread of "
                 f"{_fmt(screws.engagement)} mm plus {_fmt(screws.hole_runout)} mm of drill past it and "
                 f"{_fmt(screw_plan.MIN_FLOOR_SKIN)} mm of skin under it needs {_fmt(needed)} mm "
-                f"with the {_fmt(pedestal)} mm standoff -- increase floor_width, or reduce "
+                f"with the {_fmt(pedestal)} mm pedestal_depth -- increase floor_width, or reduce "
                 f"screw_engagement or screw_hole_runout")
-    if pedestal > 0 and screws.standoff_diameter < clear + 0.8:
-        return (f"screw_standoff_diameter {_fmt(screws.standoff_diameter)} mm leaves under "
-                f"0.4 mm of boss round the {_fmt(clear)} mm hole -- increase it")
 
     half_length = get("pcb_length") / 2.0
     half_side = get("pcb_side") / 2.0

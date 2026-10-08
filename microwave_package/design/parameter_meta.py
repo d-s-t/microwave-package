@@ -64,7 +64,6 @@ LABELS: Dict[str, str] = {
     "screw_inset": "Screw inset from PCB edge",
     "floor_width": "Box floor thickness",
     "lid_width": "Lid thickness at the screws",
-    "screw_standoff_diameter": "Screw standoff diameter",
     "screw_hole_runout": "Tap-drill depth past the thread",
     "screw_length": "Screw length (0 = from the stack)",
     "screw_clearance_diameter": "Screw clearance hole (lid, PCB)",
@@ -110,7 +109,7 @@ BOOLEAN_PARAMETERS = {DISTORTION_PARAM, NO_CHIP_PARAM, SCREWS_PARAM}
 
 SCREW_GEOMETRY_PARAMETERS = [
     "screw_inset", "screw_clearance_diameter", "screw_tap_diameter",
-    "screw_keepout_diameter", "screw_standoff_diameter", "screw_engagement",
+    "screw_keepout_diameter", "screw_engagement",
     "screw_hole_runout", "screw_length",
 ]
 
