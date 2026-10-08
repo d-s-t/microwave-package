@@ -59,6 +59,14 @@ COUNTERSINK_HALF_ANGLE_DEG = 45.0
 # the head and lid_inside's outline.
 EDGE_MARGIN = 0.5
 
+# Metal left under the bottom of the blind threaded hole, and under the
+# head's countersink in the lid. Minimums rather than parameters: with the
+# screw fixed, each is the difference of two dimensions that are already
+# parameters (floor_width and the hole's depth; lid_width and the head's
+# height), so a third would be a second way to set the same number.
+MIN_FLOOR_SKIN = 0.8
+MIN_LID_SEAT = 0.3
+
 # Floor left under the thread's tip. A thread that comes out of the box's
 # underside is a hole in the case.
 MIN_FLOOR_LEFT = 0.1
