@@ -62,7 +62,11 @@ LABELS: Dict[str, str] = {
     "no_chip": "Bare board (no chip)",
     "screws_on": "Corner screws",
     "screw_inset": "Screw inset from PCB edge",
-    "screw_head_diameter": "Screw head diameter",
+    "floor_width": "Box floor thickness",
+    "lid_width": "Lid thickness at the screws",
+    "screw_standoff_diameter": "Screw standoff diameter",
+    "screw_hole_runout": "Tap-drill depth past the thread",
+    "screw_length": "Screw length (0 = from the stack)",
     "screw_clearance_diameter": "Screw clearance hole (lid, PCB)",
     "screw_tap_diameter": "Screw tap-drill hole (box)",
     "screw_keepout_diameter": "Copper keep-out round the screw",
@@ -105,8 +109,9 @@ SCREWS_PARAM = "screws_on"
 BOOLEAN_PARAMETERS = {DISTORTION_PARAM, NO_CHIP_PARAM, SCREWS_PARAM}
 
 SCREW_GEOMETRY_PARAMETERS = [
-    "screw_inset", "screw_head_diameter", "screw_clearance_diameter",
-    "screw_tap_diameter", "screw_keepout_diameter", "screw_engagement",
+    "screw_inset", "screw_clearance_diameter", "screw_tap_diameter",
+    "screw_keepout_diameter", "screw_standoff_diameter", "screw_engagement",
+    "screw_hole_runout", "screw_length",
 ]
 
 
@@ -202,7 +207,7 @@ GROUPS: List[dict] = [
         "title": "Additional parameters",
         "hint": "Mechanical features and margins that do not affect the interior fields.",
         "collapsed": True,
-        "names": ["wall_width", "wing_length", "wing_width"],
+        "names": ["wall_width", "floor_width", "lid_width", "wing_length", "wing_width"],
     },
     {
         "title": "Corner screws",

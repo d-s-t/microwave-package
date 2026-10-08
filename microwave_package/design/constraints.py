@@ -350,28 +350,53 @@ def check_screws(values: Dict[str, float], gap: float) -> Optional[str]:
     def get(name: str, default: float = 0.0) -> float:
         return values.get(name, default)
 
-    inset = get("screw_inset", 2.2)
-    head, clear = screws.head_diameter, screws.clearance_diameter
-    if clear < screws.shank_diameter + 0.1:
+    inset = get("screw_inset", 2.5)
+    clear = screws.clearance_diameter
+    sink = screw_plan.COUNTERSINK_DIAMETER
+    if clear < screw_plan.SCREW_DIAMETER + 0.1:
         return (f"screw_clearance_diameter {_fmt(clear)} mm leaves no room for an "
-                f"{_fmt(screws.shank_diameter)} mm screw -- increase it")
-    if screws.tap_diameter >= screws.shank_diameter:
+                f"{_fmt(screw_plan.SCREW_DIAMETER)} mm screw -- increase it")
+    if clear >= sink:
+        return (f"screw_clearance_diameter {_fmt(clear)} mm is as wide as the {_fmt(sink)} mm "
+                f"countersink, so the head would have nothing to sit on -- reduce it")
+    if screws.tap_diameter >= screw_plan.SCREW_DIAMETER:
         return (f"screw_tap_diameter {_fmt(screws.tap_diameter)} mm is not smaller than the "
-                f"{_fmt(screws.shank_diameter)} mm screw, so there would be no thread to cut")
-    if head <= clear:
-        return (f"screw_head_diameter {_fmt(head)} mm is not larger than the "
-                f"{_fmt(clear)} mm clearance hole, so the head would fall through")
+                f"{_fmt(screw_plan.SCREW_DIAMETER)} mm screw, so there would be no thread to cut")
     if screws.keepout_diameter < clear:
         return (f"screw_keepout_diameter {_fmt(screws.keepout_diameter)} mm is smaller than the "
                 f"{_fmt(clear)} mm hole it is meant to keep copper out of")
+    if screws.engagement < screw_plan.MIN_ENGAGEMENT:
+        return (f"screw_engagement {_fmt(screws.engagement)} mm is under the "
+                f"{_fmt(screw_plan.MIN_ENGAGEMENT)} mm a thread needs to hold anything")
     if inset - clear / 2.0 < screw_plan.EDGE_MARGIN:
         return (f"screw_inset {_fmt(inset)} mm leaves only {_fmt(inset - clear / 2.0)} mm between "
                 f"the PCB hole and the board edge, under the {_fmt(screw_plan.EDGE_MARGIN)} mm "
                 f"a router needs -- increase screw_inset or reduce screw_clearance_diameter")
-    if inset - head / 2.0 < 0.2:
-        return (f"screw_inset {_fmt(inset)} mm puts the {_fmt(head)} mm head within "
-                f"{_fmt(inset - head / 2.0)} mm of the lid's edge -- increase screw_inset "
-                f"to at least {_fmt(head / 2.0 + 0.2)} mm")
+    if inset - sink / 2.0 < 0.2:
+        return (f"screw_inset {_fmt(inset)} mm puts the {_fmt(sink)} mm countersink within "
+                f"{_fmt(inset - sink / 2.0)} mm of the lid's edge -- increase screw_inset "
+                f"to at least {_fmt(sink / 2.0 + 0.2)} mm")
+
+    # the stack: lid on top, floor below
+    lid = get("lid_width", 1.0)
+    if lid < screws.min_lid_thickness:
+        return (f"lid_width {_fmt(lid)} mm is under the {_fmt(screws.min_lid_thickness)} mm the "
+                f"countersunk head needs ({_fmt(screw_plan.HEAD_HEIGHT)} mm of head plus "
+                f"{_fmt(screw_plan.MIN_LID_SEAT)} mm of lid under it) -- increase lid_width")
+    pedestal = get("pedestal_depth")
+    floor = get("floor_width", get("wall_width", 1.0))
+    # the hole starts at the top of the standoff, which is pedestal_depth
+    # above the floor, and has to leave a skin under it
+    needed = screws.hole_depth + screw_plan.MIN_FLOOR_SKIN - pedestal
+    if floor < needed:
+        return (f"floor_width {_fmt(floor)} mm is too thin for the screws: a thread of "
+                f"{_fmt(screws.engagement)} mm plus {_fmt(screws.hole_runout)} mm of drill past it and "
+                f"{_fmt(screw_plan.MIN_FLOOR_SKIN)} mm of skin under it needs {_fmt(needed)} mm "
+                f"with the {_fmt(pedestal)} mm standoff -- increase floor_width, or reduce "
+                f"screw_engagement or screw_hole_runout")
+    if pedestal > 0 and screws.standoff_diameter < clear + 0.8:
+        return (f"screw_standoff_diameter {_fmt(screws.standoff_diameter)} mm leaves under "
+                f"0.4 mm of boss round the {_fmt(clear)} mm hole -- increase it")
 
     half_length = get("pcb_length") / 2.0
     half_side = get("pcb_side") / 2.0

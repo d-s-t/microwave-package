@@ -44,9 +44,7 @@
 
 "screws_on" = 0 ' (boolean) when set to 1, four M2 countersunk screws hold the lid, PCB and box together at the PCB corners. 0 builds without them.
 
-"screw_inset" = 2.2 ' distance from the PCB edge to the screw centre, on both axes (the head, 3.8 mm across, must stay inside the lid outline)
-
-"screw_head_diameter" = 3.8 ' ISO 10642 M2 head diameter
+"screw_inset" = 2.5 ' distance from the PCB edge to the screw centre, on both axes (the 4.28 mm countersink must stay inside the lid outline)
 
 "screw_clearance_diameter" = 2.3 ' hole in the lid and the PCB (M2 is 2.0 mm, plus the margin a drill and a router need)
 
@@ -54,7 +52,7 @@
 
 "screw_keepout_diameter" = 3.0 ' no copper or via inside this circle round each PCB hole
 
-"screw_engagement" = 0.8 ' length of thread the screw engages in the box (3-4 mm wanted in aluminium; needs floor_width to match)
+"screw_engagement" = 3 ' length of thread the screw engages in the box, measured down from the top of the standoff (3-4 mm in aluminium; needs floor_width to match)
 
 "floor_width" = 1 ' thickness of the box floor under the board (was wall_width * 1; must be at least screw_engagement + screw_hole_runout + 0.8 mm of skin - pedestal_depth; not yet wired into box_height or the SolidWorks parts)
 
@@ -96,7 +94,7 @@
 
 "chip_metal_thickness"= 0.0002	' thickness of the chip conductor (200 nm)
 
-"box_height"= "wall_width"*1.5 + "pedestal_depth" + "pcb_width" + 2 * "copper_thickness"
+"box_height"= "floor_width" + "wall_width"*0.5 + "pedestal_depth" + "pcb_width" + 2 * "copper_thickness"
 
 "box_length"= "pcb_length" + 2 * "wall_width"
 

@@ -678,7 +678,11 @@ def build_layout(hfss, combo_dir: str, dimensions_txt_content: str,
     # the pedestal, the die is let into the board so their faces finish
     # flush, and the extra half wall_width above the copper is
     # lid_inside's own headroom (see place_lid_inside).
-    pcb_bottom = wall + pedestal
+    # The floor under the board is its own dimension now (it was the wall
+    # thickness), so that a floor thick enough to thread a screw into does
+    # not thicken the walls. The equations file falls back to the wall for
+    # a dimensions.txt from before the split.
+    pcb_bottom = v.get("floor_width", wall) + pedestal
     pcb_top = pcb_bottom + pcb_width
     # The metal's thickness AS DRAWN: a film below SHEET_BELOW_MM is a
     # sheet, so it has none in the model, and whatever rests on it --

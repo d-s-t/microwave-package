@@ -1,12 +1,13 @@
 """Tests for the four M2 corner screws (screws_on = 1).
 
 The plan, the layout checks and the HFSS builder are exercised here, the
-last against a modeller that records what it was asked to cut and build.
-Nothing opens Altium, SolidWorks or AEDT.
+last against a modeller that records what it was asked to import, cut and
+move. Nothing opens Altium, SolidWorks or AEDT.
 
 Run: python -m unittest discover -s tests
 """
 import logging
+import os
 import unittest
 
 from microwave_package import paths
@@ -33,6 +34,12 @@ def with_screws(**overrides):
     return dict(defaults(), screws_on=1, **overrides)
 
 
+def fit(**overrides):
+    """Screws on, with a floor and a lid thick enough for them -- the
+    shipped defaults are the thin ones the parts have today."""
+    return with_screws(floor_width=5.0, lid_width=1.5, **overrides)
+
+
 class TestTheParameter(unittest.TestCase):
     def test_it_is_off_by_default(self):
         self.assertEqual(defaults()["screws_on"], 0)
@@ -46,107 +53,130 @@ class TestTheParameter(unittest.TestCase):
 
     def test_its_dimensions_are_in_the_form(self):
         listed = [n for g in parameter_meta.grouped(defaults()) for n in g["names"]]
-        for name in parameter_meta.SCREW_GEOMETRY_PARAMETERS:
+        for name in parameter_meta.SCREW_GEOMETRY_PARAMETERS + ["floor_width", "lid_width"]:
             self.assertIn(name, listed)
             self.assertIn(name, defaults())
             self.assertNotEqual(parameter_meta.label_for(name), name, f"{name} has no label")
 
     def test_every_dimension_has_a_drawing(self):
-        for name in parameter_meta.SCREW_GEOMETRY_PARAMETERS:
+        for name in parameter_meta.SCREW_GEOMETRY_PARAMETERS + ["floor_width", "lid_width"]:
             self.assertTrue((paths.PARAMETER_DRAWINGS_DIR / f"{name}.svg").is_file(),
                             f"no drawing for {name}")
+
+    def test_the_floor_starts_as_the_wall_so_nothing_moves(self):
+        v = defaults()
+        self.assertEqual(v["floor_width"], v["wall_width"])
+
+    def test_the_vendor_models_are_all_there(self):
+        for length in screws.MODEL_LENGTHS:
+            self.assertTrue(os.path.isfile(screw_builder.model_path(length)), length)
 
 
 class TestThePlan(unittest.TestCase):
     def test_four_screws_inset_from_the_corners(self):
-        plan = screws.plan(with_screws(pcb_length=50.0, pcb_side=25.0, screw_inset=2.2))
+        plan = screws.plan(with_screws(pcb_length=50.0, pcb_side=25.0, screw_inset=2.5))
         self.assertEqual(len(plan.positions), 4)
         for u, v in plan.positions:
-            self.assertAlmostEqual(abs(u), 22.8)
-            self.assertAlmostEqual(abs(v), 10.3)
+            self.assertAlmostEqual(abs(u), 22.5)
+            self.assertAlmostEqual(abs(v), 10.0)
         self.assertEqual(len({(round(u, 6), round(v, 6)) for u, v in plan.positions}), 4)
 
-    def test_the_head_is_a_ninety_degree_cone(self):
-        """One millimetre of radius per millimetre of depth, so the cone
-        runs from the 2.0 mm shank out to the 3.8 mm head in 0.9 mm."""
+    def test_the_countersink_continues_the_heads_cone(self):
+        """A 90 degree cone grows one millimetre of radius per millimetre,
+        from the 2.0 mm shank, so over the head's 1.14 mm it reaches 4.28."""
+        self.assertAlmostEqual(screws.COUNTERSINK_DIAMETER, 2.0 + 2 * 1.14)
         plan = screws.plan(with_screws())
-        self.assertAlmostEqual(plan.head_height, 0.9)
-        self.assertAlmostEqual(plan.countersink_depth, (3.8 - 2.3) / 2.0)
+        self.assertAlmostEqual(plan.countersink_depth, (screws.COUNTERSINK_DIAMETER - 2.3) / 2.0)
+        self.assertLess(plan.countersink_depth, screws.HEAD_HEIGHT)
 
-    def test_the_countersink_is_shallower_than_the_head(self):
-        """It stops at the clearance hole, which is wider than the shank."""
-        plan = screws.plan(with_screws())
-        self.assertLess(plan.countersink_depth, plan.head_height)
-
-    def test_the_lid_has_to_be_as_thick_as_the_head_is_tall(self):
-        self.assertAlmostEqual(screws.plan(with_screws()).min_lid_thickness, 0.9)
+    def test_the_lid_needs_the_head_and_a_seat_under_it(self):
+        self.assertAlmostEqual(screws.plan(with_screws()).min_lid_thickness, 1.14 + 0.3)
 
 
-class TestChoosingALength(unittest.TestCase):
-    def test_the_longest_that_stays_within_the_wanted_bite(self):
-        # 2.5 mm of lid and board above a 1 mm floor, 0.8 mm bite: 3.3 at most
-        self.assertEqual(screws.choose_length(2.5, 0.8, 1.0), 3)
+class TestLength(unittest.TestCase):
+    def test_it_is_the_stack_plus_the_engagement(self):
+        plan = screws.plan(with_screws(screw_engagement=3.0))
+        self.assertAlmostEqual(screws.length_for(plan, lid_top=7.4, standoff_top=5.5), 7.4 - 5.5 + 3.0)
 
-    def test_it_steps_up_a_size_when_the_stack_needs_it(self):
-        self.assertEqual(screws.choose_length(3.4, 0.8, 1.0), 4)
+    def test_a_given_length_wins(self):
+        plan = screws.plan(with_screws(screw_length=6.0))
+        self.assertEqual(screws.length_for(plan, lid_top=7.4, standoff_top=5.5), 6.0)
 
-    def test_it_never_comes_out_of_the_underside(self):
-        for span in (2.0, 2.5, 3.0, 3.5, 5.0, 7.0, 11.0):
-            try:
-                length = screws.choose_length(span, 0.8, 1.0)
-            except ValueError:
-                continue
-            self.assertLessEqual(length, span + 1.0 - screws.MIN_FLOOR_LEFT)
-            self.assertGreaterEqual(length, span + screws.MIN_ENGAGEMENT)
+    def test_the_model_is_the_shortest_one_that_is_long_enough(self):
+        self.assertEqual(screws.model_length(4.9), 5)
+        self.assertEqual(screws.model_length(5.0), 5)
+        self.assertEqual(screws.model_length(5.1), 6)
+        self.assertEqual(screws.model_length(2.0), 3)
 
-    def test_a_stack_between_two_sizes_says_what_to_change(self):
-        with self.assertRaisesRegex(ValueError, "wall_width"):
-            screws.choose_length(3.9, 0.8, 1.0)
+    def test_longer_than_any_model_says_what_to_change(self):
+        with self.assertRaisesRegex(ValueError, "screw_engagement"):
+            screws.model_length(25.0)
 
 
 class TestConstraints(unittest.TestCase):
     def test_the_defaults_are_unchanged(self):
         self.assertIsNone(constraints.check_layout(defaults()))
 
-    def test_the_default_board_takes_the_screws(self):
-        self.assertIsNone(constraints.check_layout(with_screws()))
+    def test_the_default_floor_is_too_thin_for_the_screws(self):
+        reason = constraints.check_layout(with_screws(lid_width=1.5))
+        self.assertIn("floor_width", reason)
+
+    def test_the_default_lid_is_too_thin_for_the_head(self):
+        reason = constraints.check_layout(with_screws(floor_width=5.0))
+        self.assertIn("lid_width", reason)
+
+    def test_a_thick_enough_stack_takes_the_screws(self):
+        self.assertIsNone(constraints.check_layout(fit()))
+
+    def test_the_standoff_makes_up_part_of_the_floor(self):
+        """The hole starts at the top of the standoff, so a taller
+        pedestal_depth needs less floor."""
+        need = 3.0 + 1.0 + screws.MIN_FLOOR_SKIN
+        self.assertIsNotNone(constraints.check_layout(
+            with_screws(floor_width=need - 0.6, lid_width=1.5, pedestal_depth=0.5)))
+        self.assertIsNone(constraints.check_layout(
+            with_screws(floor_width=need - 0.4, lid_width=1.5, pedestal_depth=0.5)))
 
     def test_a_bare_board_takes_them_too(self):
-        self.assertIsNone(constraints.check_layout(with_screws(no_chip=1)))
+        self.assertIsNone(constraints.check_layout(fit(no_chip=1)))
 
     def test_a_hole_too_near_the_board_edge_is_caught(self):
-        self.assertIn("screw_inset", constraints.check_layout(with_screws(screw_inset=1.4)))
+        self.assertIn("screw_inset", constraints.check_layout(fit(screw_inset=1.4)))
 
-    def test_a_head_that_would_leave_the_lid_is_caught(self):
-        reason = constraints.check_layout(with_screws(screw_inset=1.9))
-        self.assertIn("lid", reason)
-
-    def test_a_hole_wider_than_the_head_is_caught(self):
-        self.assertIn("head", constraints.check_layout(
-            with_screws(screw_clearance_diameter=4.0, screw_keepout_diameter=4.5)))
+    def test_a_countersink_that_would_leave_the_lid_is_caught(self):
+        self.assertIn("lid", constraints.check_layout(fit(screw_inset=2.2)))
 
     def test_a_tap_drill_as_big_as_the_screw_is_caught(self):
-        self.assertIn("thread", constraints.check_layout(with_screws(screw_tap_diameter=2.0)))
+        self.assertIn("thread", constraints.check_layout(fit(screw_tap_diameter=2.0)))
 
     def test_a_clearance_hole_the_screw_cannot_fit_is_caught(self):
         self.assertIn("screw_clearance_diameter",
-                      constraints.check_layout(with_screws(screw_clearance_diameter=2.0)))
+                      constraints.check_layout(fit(screw_clearance_diameter=2.0)))
+
+    def test_a_clearance_hole_wider_than_the_countersink_is_caught(self):
+        self.assertIn("countersink", constraints.check_layout(
+            fit(screw_clearance_diameter=4.5, screw_keepout_diameter=5.0)))
+
+    def test_a_standoff_too_small_for_the_hole_is_caught(self):
+        self.assertIn("standoff", constraints.check_layout(fit(screw_standoff_diameter=2.5)))
+
+    def test_a_thread_too_short_to_hold_is_caught(self):
+        self.assertIn("screw_engagement", constraints.check_layout(fit(screw_engagement=0.5)))
 
     def test_a_keepout_that_reaches_the_cpw_gap_is_caught(self):
-        reason = constraints.check_layout(with_screws(pcb_side=7.0))
-        self.assertIn("CPW", reason)
+        self.assertIn("CPW", constraints.check_layout(fit(pcb_side=7.0)))
 
     def test_a_keepout_that_reaches_the_connector_is_caught(self):
         """A narrow board puts the corner screw alongside the launch."""
-        reason = constraints.check_layout(with_screws(pcb_side=9.5, port_space=2.0))
+        reason = constraints.check_layout(fit(pcb_side=10.0, port_space=2.0))
         self.assertIsNotNone(reason)
         self.assertIn("SMP", reason)
 
     def test_with_no_chip_the_die_does_not_count(self):
         big = dict(chip_length=44.0, chip_side=20.0, bonding_clearence=0.6)
         gap = 0.27
-        self.assertIn("die", constraints.check_screws(with_screws(**big), gap))
-        self.assertIsNone(constraints.check_screws(with_screws(no_chip=1, **big), gap))
+        self.assertIn("die", constraints.check_screws(fit(**big), gap))
+        self.assertIsNone(constraints.check_screws(fit(no_chip=1, **big), gap))
 
     def test_the_generator_is_told_the_screws_are_off_by_default(self):
         self.assertEqual(ag.build_params(defaults())["screws_on"], 0)
@@ -161,11 +191,19 @@ class FakeBody:
 
 
 class FakeModeler:
-    def __init__(self, lid=(0, 1.45, 0, 30, 3.5, 30), box=(0, 0.0, 0, 30, 6.0, 30)):
+    """Records what would have been imported, cut and moved. An imported
+    screw model is a body of its own file's length, tip on the origin."""
+
+    def __init__(self, lid, box):
         self.bodies = {"lid_inside": FakeBody("lid_inside", list(lid)),
                        "box": FakeBody("box", list(box))}
-        self.cylinders, self.cones, self.subtractions, self.unites = [], [], [], []
+        self.cylinders, self.cones, self.boxes = [], [], []
+        self.subtractions, self.unites, self.moves, self.imports = [], [], [], []
         self._n = 0
+
+    @property
+    def object_names(self):
+        return list(self.bodies)
 
     def __getitem__(self, name):
         return self.bodies[name]
@@ -184,42 +222,87 @@ class FakeModeler:
         return self._make(self.cones, dict(origin=origin, bottom=bottom_radius,
                                            top=top_radius, height=height))
 
+    def create_box(self, origin, sizes, **kw):
+        return self._make(self.boxes, dict(origin=origin, sizes=sizes))
+
+    def import_3d_cad(self, path):
+        self.imports.append(path)
+        length = int(os.path.basename(path).split("M2x")[1].split("_")[0])
+        self._n += 1
+        self.bodies[f"imported{self._n}"] = FakeBody(f"imported{self._n}", [-1, 0, -1, 1, length, 1])
+
     def unite(self, names):
         self.unites.append(list(names))
 
     def subtract(self, target, tools, keep_originals=True):
         self.subtractions.append((target, list(tools), keep_originals))
 
+    def move(self, names, vector):
+        self.moves.append((list(names), list(vector)))
+
 
 class FakeHfss:
-    def __init__(self, **kw):
-        self.modeler = FakeModeler(**kw)
+    def __init__(self, lid, box):
+        self.modeler = FakeModeler(lid, box)
 
 
 FRAME = cg.Frame(x_offset=26.0, z_offset=13.5)
-STACK = cg.Stack(pcb_bottom=1.0, pcb_top=1.381, chip_bottom=1.0, chip_top=1.381,
+# floor 5 mm + 0.5 pedestal: the board's underside at 5.5
+STACK = cg.Stack(pcb_bottom=5.5, pcb_top=5.881, chip_bottom=5.5, chip_top=5.881,
                  copper_thickness=0.035, chip_metal_thickness=0.0002)
+LID = (0, 5.916, 0, 52, 7.416, 27)      # 1.5 mm thick, resting on the copper
+BOX = (0, 0.0, 0, 52, 9.0, 27)
 
 
-def build(values=None, **modeler):
-    hfss = FakeHfss(**modeler)
+def build(values=None, lid=LID, box=BOX):
+    hfss = FakeHfss(lid, box)
     names = screw_builder.build_screws(
-        hfss, FRAME, STACK, values or with_screws(wall_width=1.0), ["pcb_copper_top"],
-        log=lambda _m: None)
+        hfss, FRAME, STACK, values or fit(), ["pcb_copper_top"], log=lambda _m: None)
     return hfss, names
 
 
 class TestTheBuilder(unittest.TestCase):
     def test_nothing_is_built_when_the_screws_are_off(self):
-        hfss = FakeHfss()
+        hfss = FakeHfss(LID, BOX)
         self.assertIsNone(screw_builder.build_screws(
             hfss, FRAME, STACK, defaults(), ["pcb_copper_top"], log=lambda _m: None))
-        self.assertEqual(hfss.modeler.cylinders, [])
+        self.assertEqual(hfss.modeler.imports, [])
         self.assertEqual(hfss.modeler.subtractions, [])
 
-    def test_four_screws_are_named_for_the_material_rule(self):
-        _, names = build()
+    def test_the_vendor_model_is_imported_not_drawn(self):
+        hfss, names = build()
         self.assertEqual(names, ["screw_1", "screw_2", "screw_3", "screw_4"])
+        self.assertEqual(len(hfss.modeler.imports), 4)
+        for path in hfss.modeler.imports:
+            self.assertTrue(os.path.isfile(path), path)
+            self.assertIn("ISO_10642_M2x", path)
+
+    def test_the_screw_is_cut_to_length_from_the_next_model_up(self):
+        """Lid top 7.416, board underside 5.5, 3 mm engagement: 4.916 mm,
+        from the M2x5, shortened by 0.084 mm."""
+        hfss, _ = build()
+        self.assertTrue(all("M2x5_" in p for p in hfss.modeler.imports))
+        trims = [r for _, r in hfss.modeler.boxes]
+        self.assertEqual(len(trims), 4)
+        self.assertAlmostEqual(trims[0]["sizes"][1], 0.084 + 2.0, places=3)
+
+    def test_a_model_of_exactly_the_length_is_not_cut(self):
+        hfss, _ = build(fit(screw_length=5.0))
+        self.assertEqual(hfss.modeler.boxes, [])
+
+    def test_the_top_ends_up_flush_with_the_lid(self):
+        """Moved up by lid top minus the model's length, since its top
+        is at Y = length."""
+        hfss, _ = build()
+        for _, vector in hfss.modeler.moves:
+            self.assertAlmostEqual(vector[1], 7.416 - 5)
+
+    def test_it_is_moved_onto_each_corner(self):
+        hfss, _ = build()
+        xs = sorted(round(v[0], 3) for _, v in hfss.modeler.moves)
+        self.assertEqual(xs, [3.5, 3.5, 48.5, 48.5])
+
+    def test_the_screws_take_the_box_material_by_name(self):
         rule = next(r for r in model_builder.MATERIAL_RULES if r[0] in "screw_1")
         self.assertEqual(rule[2:], ("mat_box", "perfect_e_box"))
 
@@ -237,27 +320,21 @@ class TestTheBuilder(unittest.TestCase):
         self.assertIn(1.0, radii)
         self.assertNotIn(0.8, radii)
 
-    def test_the_head_cone_is_the_countersink_cone(self):
-        """Same radius at the flat top, so the head sits flush."""
+    def test_the_countersink_reaches_the_cone_diameter_at_the_lid_top(self):
         hfss, _ = build()
-        top_radii = {round(c["top"], 3) for _, c in hfss.modeler.cones}
-        self.assertEqual(top_radii, {1.9})
+        self.assertEqual({round(c["top"], 3) for _, c in hfss.modeler.cones}, {2.14})
 
-    def test_the_lid_must_be_thick_enough_for_the_head(self):
-        with self.assertRaisesRegex(ValueError, "thinner"):
-            build(lid=(0, 1.45, 0, 30, 1.9, 30))
+    def test_a_lid_thinner_than_the_head_and_seat_is_refused(self):
+        with self.assertRaisesRegex(ValueError, "lid_width"):
+            build(lid=(0, 5.916, 0, 52, 6.9, 27))
 
-    def test_a_stack_no_screw_fits_is_reported(self):
-        with self.assertRaisesRegex(ValueError, "wall_width"):
-            build(lid=(0, 1.45, 0, 30, 4.9, 30))
+    def test_a_screw_that_would_come_out_of_the_box_is_refused(self):
+        with self.assertRaisesRegex(ValueError, "floor_width"):
+            build(box=(0, 3.0, 0, 52, 9.0, 27))
 
-    def test_the_tip_stays_in_the_floor(self):
-        hfss, _ = build()
-        shanks = [r for _, r in hfss.modeler.cylinders
-                  if r["radius"] == 1.0 and r["height"] > 1.5]
-        self.assertEqual(len(shanks), 4)
-        for shank in shanks:
-            self.assertGreaterEqual(shank["origin"][1], screws.MIN_FLOOR_LEFT)
+    def test_a_screw_longer_than_every_model_is_refused(self):
+        with self.assertRaisesRegex(ValueError, "longest"):
+            build(fit(screw_length=30.0), box=(0, -40.0, 0, 52, 9.0, 27))
 
 
 if __name__ == "__main__":
