@@ -41,10 +41,11 @@ def fit(**overrides):
 
 
 class TestTheParameter(unittest.TestCase):
-    def test_it_is_off_by_default(self):
-        self.assertEqual(defaults()["screws_on"], 0)
-        self.assertIsNone(screws.plan(defaults()))
-        self.assertFalse(screws.enabled(defaults()))
+    def test_it_is_on_by_default_and_off_when_told(self):
+        self.assertEqual(defaults()["screws_on"], 1)
+        self.assertIsNotNone(screws.plan(defaults()))
+        self.assertIsNone(screws.plan(dict(defaults(), screws_on=0)))
+        self.assertFalse(screws.enabled(dict(defaults(), screws_on=0)))
 
     def test_it_is_a_flag_not_a_swept_dimension(self):
         self.assertIn(parameter_meta.SCREWS_PARAM, parameter_meta.BOOLEAN_PARAMETERS)
@@ -63,9 +64,15 @@ class TestTheParameter(unittest.TestCase):
             self.assertTrue((paths.PARAMETER_DRAWINGS_DIR / f"{name}.svg").is_file(),
                             f"no drawing for {name}")
 
-    def test_the_floor_starts_as_the_wall_so_nothing_moves(self):
+    def test_the_default_floor_and_lid_take_the_screws(self):
+        """The shipped stack has to satisfy the rules the screws impose,
+        or the shipped defaults would be refused."""
         v = defaults()
-        self.assertEqual(v["floor_width"], v["wall_width"])
+        plan = screws.plan(v)
+        self.assertGreaterEqual(v["lid_width"], plan.min_lid_thickness)
+        self.assertGreaterEqual(
+            v["floor_width"] + v["pedestal_depth"],
+            plan.hole_depth + screws.MIN_FLOOR_SKIN)
 
     def test_the_vendor_models_are_all_there(self):
         for length in screws.MODEL_LENGTHS:
@@ -114,16 +121,20 @@ class TestLength(unittest.TestCase):
 
 
 class TestConstraints(unittest.TestCase):
-    def test_the_defaults_are_unchanged(self):
+    def test_the_shipped_defaults_are_buildable(self):
         self.assertIsNone(constraints.check_layout(defaults()))
 
-    def test_the_default_floor_is_too_thin_for_the_screws(self):
-        reason = constraints.check_layout(with_screws(lid_width=1.5))
+    def test_a_floor_as_thin_as_the_old_one_is_refused(self):
+        reason = constraints.check_layout(with_screws(floor_width=1.0))
         self.assertIn("floor_width", reason)
 
-    def test_the_default_lid_is_too_thin_for_the_head(self):
-        reason = constraints.check_layout(with_screws(floor_width=5.0))
+    def test_a_lid_as_thin_as_the_old_one_is_refused(self):
+        reason = constraints.check_layout(with_screws(lid_width=1.0))
         self.assertIn("lid_width", reason)
+
+    def test_without_the_screws_the_old_thin_stack_is_fine(self):
+        self.assertIsNone(constraints.check_layout(
+            dict(defaults(), screws_on=0, floor_width=1.0, lid_width=1.0)))
 
     def test_a_thick_enough_stack_takes_the_screws(self):
         self.assertIsNone(constraints.check_layout(fit()))
@@ -178,8 +189,9 @@ class TestConstraints(unittest.TestCase):
         self.assertIn("die", constraints.check_screws(fit(**big), gap))
         self.assertIsNone(constraints.check_screws(fit(no_chip=1, **big), gap))
 
-    def test_the_generator_is_told_the_screws_are_off_by_default(self):
-        self.assertEqual(ag.build_params(defaults())["screws_on"], 0)
+    def test_the_generator_is_told_when_the_screws_are_on(self):
+        self.assertEqual(ag.build_params(defaults())["screws_on"], 1)
+        self.assertEqual(ag.build_params(dict(defaults(), screws_on=0))["screws_on"], 0)
 
 
 # --- the HFSS builder, against a recorder -------------------------------
@@ -265,7 +277,8 @@ class TestTheBuilder(unittest.TestCase):
     def test_nothing_is_built_when_the_screws_are_off(self):
         hfss = FakeHfss(LID, BOX)
         self.assertIsNone(screw_builder.build_screws(
-            hfss, FRAME, STACK, defaults(), ["pcb_copper_top"], log=lambda _m: None))
+            hfss, FRAME, STACK, dict(defaults(), screws_on=0), ["pcb_copper_top"],
+            log=lambda _m: None))
         self.assertEqual(hfss.modeler.imports, [])
         self.assertEqual(hfss.modeler.subtractions, [])
 

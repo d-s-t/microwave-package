@@ -54,9 +54,9 @@
 
 "screw_engagement" = 3 ' length of thread the screw engages in the box, measured down from the top of the standoff (3-4 mm in aluminium; needs floor_width to match)
 
-"floor_width" = 1 ' thickness of the box floor under the board (was wall_width * 1; must be at least screw_engagement + screw_hole_runout + 0.8 mm of skin - pedestal_depth; not yet wired into box_height or the SolidWorks parts)
+"floor_width" = 4.8 ' thickness of the box floor under the board (was wall_width * 1 = 1 mm); must be at least screw_engagement + screw_hole_runout + 0.8 mm of skin - pedestal_depth = 4.3 mm (4.8 with no pedestal, which the bare board has)
 
-"lid_width" = 1 ' thickness of lid_inside where the screws pass (measured 1.0 mm today; must be at least the 0.9 mm head plus 0.3 mm of seat under it, 1.2 mm; not yet wired into lid_inside.SLDPRT)
+"lid_width" = 1.5 ' thickness of lid_inside (was 1.0 mm); must be at least the 1.14 mm head plus 0.3 mm of seat under the countersink, 1.44 mm
 
 "screw_standoff_diameter" = 4 ' diameter of the boss under each PCB corner that fills the pedestal_depth gap, so the screw clamps the board flat instead of bending it into the gap
 
