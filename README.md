@@ -166,7 +166,7 @@ PCB and box together with four M2 ISO 10642 countersunk screws, `screw_inset`
 in from the PCB edge on both axes, with holes in all three parts: a clearance
 hole in the lid with a 90 degree countersink the head sits flush in, a
 clearance hole and copper keep-out in the PCB, and a tap-drill hole in the box
-into the floor under each corner (the board rests on the floor there; the
+through the floor under each corner (the board rests on the floor there; the
 pedestal is a recess cut under the chip). They sit inside the
 PCB corners, not in the box wall, which is `wall_width` = 1 mm thick and
 cannot hold an M2 thread.
@@ -177,9 +177,7 @@ long; screws can be shortened) and moved onto the corners. They take the box's
 material and perfect-E setting. The generator keeps its ground vias out of the
 keep-out; HFSS cuts the holes in `box`, `lid_inside`, the board and its
 copper. The layout check refuses a board where the keep-out would reach the
-CPW, the SMP launch or the die and its bond fingers, a floor too thin for the
-thread (`floor_width` against `screw_engagement`, `screw_hole_runout` and 0.8
-mm of skin) or a lid too thin for the head (`lid_width` against the 1.14 mm
+CPW, the SMP launch or the die and its bond fingers, or a lid too thin for the head (`lid_width` against the 1.14 mm
 head plus 0.3 mm of seat). Off by default. Not automated: the same holes,
 the tapped holes and the `floor_width` / `lid_width` dimensions in `box.SLDPRT` and
 `lid_inside.SLDPRT`, which are binaries -- see the pull request.

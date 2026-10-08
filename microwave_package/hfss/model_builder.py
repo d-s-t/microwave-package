@@ -682,7 +682,9 @@ def build_layout(hfss, combo_dir: str, dimensions_txt_content: str,
     # thickness), so that a floor thick enough to thread a screw into does
     # not thicken the walls. The equations file falls back to the wall for
     # a dimensions.txt from before the split.
-    pcb_bottom = v.get("floor_width", wall) + pedestal
+    from ..design import screws as screw_plan
+
+    pcb_bottom = screw_plan.floor_width(v) + pedestal
     pcb_top = pcb_bottom + pcb_width
     # The metal's thickness AS DRAWN: a film below SHEET_BELOW_MM is a
     # sheet, so it has none in the model, and whatever rests on it --

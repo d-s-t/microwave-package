@@ -105,16 +105,17 @@ def build_screws(hfss, frame, stack, values, copper_targets: List[str],
         )
 
     # The board rests on the floor, so the floor's top is the board's
-    # underside; the tip is `engagement` below it.
+    # underside; the hole goes right through, so the tip is flush with the
+    # box's underside.
     floor_top = stack.pcb_bottom
     length = screw_plan.length_for(screws, lid_top, floor_top)
     tip = lid_top - length
     box_bottom = modeler["box"].bounding_box[1]
-    if tip < box_bottom + screw_plan.MIN_FLOOR_SKIN:
+    if tip < box_bottom - 0.01:
         raise ValueError(
-            f"a {length:.2f} mm screw would end {tip - box_bottom:.2f} mm above the box's "
-            f"underside, under the {screw_plan.MIN_FLOOR_SKIN:g} mm of skin the threaded hole "
-            f"needs -- increase floor_width, or reduce screw_engagement"
+            f"a {length:.2f} mm screw would come out {box_bottom - tip:.2f} mm below the box's "
+            f"underside -- the floor is thinner than screw_length expects; reduce screw_length "
+            f"or raise screw_engagement"
         )
     model = screw_plan.model_length(length)
     trim = model - length
