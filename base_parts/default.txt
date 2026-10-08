@@ -94,7 +94,7 @@
 
 "chip_metal_thickness"= 0.0002	' thickness of the chip conductor (200 nm)
 
-"box_height"= "floor_width" + "wall_width"*0.5 + "pedestal_depth" + "pcb_width" + 2 * "copper_thickness"
+"box_height"= "floor_width" + "lid_width" + "pedestal_depth" + "pcb_width" + 2 * "copper_thickness"
 
 "box_length"= "pcb_length" + 2 * "wall_width"
 
