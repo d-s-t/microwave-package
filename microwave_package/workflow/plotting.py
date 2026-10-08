@@ -50,6 +50,86 @@ PLOT_FILENAME = "modes_scatter_plot.html"
 RESULTS_FILENAME = "all_results.csv"
 
 
+# A driven run's rows say which sweep each came from: the broad one
+# ("coarse"), or one of the fine windows ("Fine_1", ...) -- either its own,
+# placed around an eigenmode, or a refinement run's, which also carries the
+# refinement's run id. Rows from before this was recorded have no `sweep`
+# and are all broad data.
+SWEEP_COLUMN = "sweep"
+BROAD_SWEEP = "coarse"
+REFINEMENT_COLUMN = "refinement"
+WINDOW_COLUMN = "window"
+LINE_COLUMN = "_line"
+
+VIEW_BROAD, VIEW_FINE, VIEW_BOTH = "broad", "fine", "both"
+VIEWS = [
+    {"value": VIEW_BOTH, "label": "Broad + fine, one trace"},
+    {"value": VIEW_BROAD, "label": "Broad only"},
+    {"value": VIEW_FINE, "label": "Fine ranges only"},
+]
+
+
+def fine_mask(df: pd.DataFrame) -> pd.Series:
+    """Which rows come from a fine window rather than the broad sweep."""
+    if SWEEP_COLUMN not in df.columns:
+        return pd.Series(False, index=df.index)
+    sweep = df[SWEEP_COLUMN]
+    return sweep.notna() & (sweep != BROAD_SWEEP)
+
+
+def has_fine_data(df: pd.DataFrame) -> bool:
+    return bool(fine_mask(df).any())
+
+
+def _window_labels(df: pd.DataFrame) -> pd.Series:
+    """One label per fine window of a combination: its sweep name, and the
+    refinement run it came from when it came from one."""
+    refined = df[REFINEMENT_COLUMN].fillna("") if REFINEMENT_COLUMN in df.columns else ""
+    return (refined.astype(str) + ":" if REFINEMENT_COLUMN in df.columns else "") + df[SWEEP_COLUMN].astype(str)
+
+
+def apply_view(df: pd.DataFrame, view: Optional[str]) -> pd.DataFrame:
+    """The broad data, the fine data, or both as one trace per combination.
+
+    Marks each row's line in `_line` so a curve is drawn per combination --
+    or, for the fine data alone, per combination AND window, so that
+    several ranges are separate pieces instead of one line running across
+    the gaps between them.
+
+    "Both" puts a fine window's points where the broad sweep's own points
+    inside that window were, which are interpolated samples of the same
+    curve -- keeping both would draw a zig-zag where they disagree.
+    """
+    if not has_fine_data(df):
+        out = df.copy()
+        if view == VIEW_FINE:
+            return out.iloc[0:0]
+        return out
+    fine = fine_mask(df)
+    group = df["combo_id"].astype(str) if "combo_id" in df.columns else pd.Series("", index=df.index)
+    if "run_id" in df.columns:
+        group = df["run_id"].astype(str) + "/" + group
+    if view == VIEW_BROAD:
+        out = df[~fine].copy()
+        out[LINE_COLUMN] = group[~fine]
+        return out
+    windows = df[fine].assign(**{WINDOW_COLUMN: _window_labels(df[fine])})
+    if view == VIEW_FINE:
+        out = windows.copy()
+        out[LINE_COLUMN] = group[fine] + "|" + out[WINDOW_COLUMN]
+        return out
+    # Both: drop the broad rows that fall inside a fine window of the same
+    # combination, then draw each combination as one line.
+    keep = ~fine
+    spans = windows.groupby([group[fine], windows[WINDOW_COLUMN]])["freq_ghz"].agg(["min", "max"]).reset_index()
+    for _, span in spans.iterrows():
+        inside = (group == span.iloc[0]) & ~fine & df["freq_ghz"].between(span["min"], span["max"])
+        keep &= ~inside
+    out = df[keep | fine].copy()
+    out[LINE_COLUMN] = group[keep | fine]
+    return out.sort_values("freq_ghz", kind="stable")
+
+
 def has_sparameters(df: pd.DataFrame) -> bool:
     """Whether this results table holds a scattering matrix.
 
@@ -340,7 +420,8 @@ def figure_html(
     # measurement and joining them would invent a trend.
     as_curve = has_sparameters(df) and x == "freq_ghz"
     draw = px.line if as_curve else px.scatter
-    extra = {"line_group": "combo_id"} if as_curve and "combo_id" in df.columns else {}
+    extra = {"line_group": LINE_COLUMN if LINE_COLUMN in df.columns else "combo_id"} \
+        if as_curve and ("combo_id" in df.columns or LINE_COLUMN in df.columns) else {}
 
     compared = RUN_COLUMN in df.columns
     if compared:
@@ -360,9 +441,11 @@ def figure_html(
     figure = draw(
         df.sort_values(x) if as_curve else df,
         x=x, y=y, color=color,
-        hover_data=list(dict.fromkeys(
+        hover_data={**{c: True for c in dict.fromkeys(
             c for c in (RUN_COLUMN, "combo_id", MODE_COLUMN, *options)
-            if c in df.columns and c not in (x, y))),
+            if c in df.columns and c not in (x, y))},
+            # the line a row is drawn on is bookkeeping, not data
+            **({LINE_COLUMN: False} if LINE_COLUMN in df.columns else {})},
         # always first in each point's customdata, whatever hover_data
         # holds -- the run page reads it back to tell which combination
         # was clicked (see the click bridge below). A comparison's rows

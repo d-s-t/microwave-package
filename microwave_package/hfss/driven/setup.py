@@ -62,29 +62,36 @@ def create_setup(hfss, dimensions_txt_content: str, analysis_settings: dict,
     setup.props["MinimumConvergedPasses"] = analysis_settings["min_converged"]
     setup.update()
 
-    sweep = hfss.create_linear_count_sweep(
-        setup=SETUP_NAME,
-        unit="GHz",
-        start_frequency=f_start,
-        stop_frequency=f_stop,
-        num_of_freq_points=int(analysis_settings["sweep_points"]),
-        name=SWEEP_NAME,
-        sweep_type="Interpolating",
-        # The S-matrix is what this run is for, and an interpolating
-        # sweep cannot save fields at its interpolated points anyway.
-        # Not saving them keeps the solved project small enough to copy
-        # back over the queue share.
-        save_fields=False,
-    )
-    if not sweep:
-        raise RuntimeError(
-            f"Could not add the {SWEEP_NAME} frequency sweep to {SETUP_NAME}. Without "
-            "it the setup solves one frequency and there is no S-parameter curve."
+    broad = analysis_settings.get("coarse_sweep", "on") != "off"
+    if broad:
+        sweep = hfss.create_linear_count_sweep(
+            setup=SETUP_NAME,
+            unit="GHz",
+            start_frequency=f_start,
+            stop_frequency=f_stop,
+            num_of_freq_points=int(analysis_settings["sweep_points"]),
+            name=SWEEP_NAME,
+            sweep_type="Interpolating",
+            # The S-matrix is what this run is for, and an interpolating
+            # sweep cannot save fields at its interpolated points anyway.
+            # Not saving them keeps the solved project small enough to copy
+            # back over the queue share.
+            save_fields=False,
         )
+        if not sweep:
+            raise RuntimeError(
+                f"Could not add the {SWEEP_NAME} frequency sweep to {SETUP_NAME}. Without "
+                "it the setup solves one frequency and there is no S-parameter curve."
+            )
+
+    elif not (windows.parse_manual(analysis_settings.get("fine_windows_manual"))
+              or analysis_settings.get("fine_windows", "auto") == "auto" and modes):
+        raise ValueError("The broad sweep is off and there is no fine window to solve instead.")
     log(
         f"Driven setup: adaptive at {mesh_ghz:g} GHz (MaxDeltaS "
-        f"{analysis_settings['max_delta_s']}), interpolating sweep "
-        f"{f_start}-{f_stop} GHz over {analysis_settings['sweep_points']} points."
+        f"{analysis_settings['max_delta_s']}), "
+        + (f"interpolating sweep {f_start}-{f_stop} GHz over {analysis_settings['sweep_points']} points."
+           if broad else "no broad sweep, fine windows only.")
     )
     add_fine_sweeps(hfss, analysis_settings, modes, log)
     return setup

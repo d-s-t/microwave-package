@@ -50,6 +50,18 @@ def _sweep_solution_name(hfss, setup) -> str:
     return candidates[0]
 
 
+def _broad_solution_name(hfss, setup) -> Optional[str]:
+    """The broad sweep's solution, or None for a setup that has only fine
+    windows (a refinement of an earlier run) -- which is an error only if
+    there are no fine windows either."""
+    try:
+        return _sweep_solution_name(hfss, setup)
+    except RuntimeError:
+        if _fine_solution_names(hfss, setup):
+            return None
+        raise
+
+
 def _is_fine(solution: str) -> bool:
     return solution.split(" : ")[-1].startswith(windows.FINE_SWEEP_PREFIX)
 
@@ -104,7 +116,8 @@ def get_sparameter_results(hfss, setup, log, out_dir: Optional[str] = None) -> L
             "before handing the task back as done. Check the worker's log."
         )
 
-    coarse = _rows_for_solution(hfss, setup, _sweep_solution_name(hfss, setup), log, out_dir)
+    broad = _broad_solution_name(hfss, setup)
+    coarse = _rows_for_solution(hfss, setup, broad, log, out_dir) if broad else []
     fine = []
     for solution in _fine_solution_names(hfss, setup):
         # A window that did not solve costs its own resolution, not the
@@ -115,6 +128,8 @@ def get_sparameter_results(hfss, setup, log, out_dir: Optional[str] = None) -> L
         except Exception as exc:
             log(f"WARNING: could not read {solution}: {exc}")
     if not fine:
+        if not broad:
+            raise RuntimeError(f"{setup.name} has neither a broad sweep nor a fine window solution.")
         return coarse
     merged = merge_sweeps(coarse, fine)
     log(f"{setup.name}: {sum(len(rows) for _n, rows in fine)} fine-window point(s) folded into "
@@ -388,7 +403,10 @@ def export_touchstone(hfss, setup, out_dir: str, log) -> Optional[str]:
     making its S-parameters only usable from inside this project. Not
     fatal if it fails -- the table is the primary record.
     """
-    sweep = _sweep_solution_name(hfss, setup).split(" : ")[1]
+    broad = _broad_solution_name(hfss, setup)
+    if broad is None:
+        return None
+    sweep = broad.split(" : ")[1]
     try:
         port_count = len(hfss.excitation_names)
     except Exception:
@@ -430,9 +448,9 @@ def read_results(hfss, setup_names, task, out_dir: str, log) -> List[Dict[str, A
             row["setup"] = setup_name
             # The 2-port file is the one the rows describe, when a
             # multi-port project wrote one beside its full matrix.
-            sweep = _sweep_solution_name(hfss, setup).split(" : ")[1]
-            combined = os.path.join(out_dir, f"{setup.name}_{sweep}.s2p")
-            if os.path.isfile(combined):
+            broad = _broad_solution_name(hfss, setup)
+            combined = os.path.join(out_dir, f"{setup.name}_{broad.split(' : ')[1]}.s2p") if broad else ""
+            if combined and os.path.isfile(combined):
                 row["touchstone"] = os.path.basename(combined)
             elif touchstone:
                 row["touchstone"] = os.path.basename(touchstone)

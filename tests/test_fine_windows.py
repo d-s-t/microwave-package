@@ -69,12 +69,16 @@ class TestManualWindows(unittest.TestCase):
             windows.parse_manual("12.1:12.4:0.002; 15:15.2:0.001\n17:17.5:0.01"),
             [Window(12.1, 12.4, 0.002), Window(15.0, 15.2, 0.001), Window(17.0, 17.5, 0.01)])
 
+    def test_lo_hi_alone_takes_a_hundred_steps(self):
+        [w] = windows.parse_manual("12:13")
+        self.assertEqual((w.lo, w.hi, w.points), (12.0, 13.0, 101))
+
     def test_blank_is_none(self):
         self.assertEqual(windows.parse_manual(""), [])
         self.assertEqual(windows.parse_manual(None), [])
 
     def test_a_malformed_window_says_what_it_should_look_like(self):
-        for bad in ("12.1:12.4", "a:b:c", "12.4:12.1:0.01", "1:2:0"):
+        for bad in ("12.1", "a:b:c", "12.4:12.1:0.01", "1:2:0"):
             with self.assertRaisesRegex(ValueError, "lo:hi:step|lo < hi"):
                 windows.parse_manual(bad)
 

@@ -25,6 +25,7 @@ import logging
 import signal
 import sys
 import threading
+import time
 from typing import Callable, Dict, List, Optional
 
 from ansys_analyze_common import queue_common
@@ -104,6 +105,32 @@ class _QueueProbe:
         return self.reachable
 
 
+# The runs this process is driving right now. Two threads driving one run
+# would build and queue every combination twice -- and a Driven run that
+# started while its Eigenmode run was being driven by a thread of its own
+# would be built without that run's modes, so it waits for them instead.
+_DRIVING: set = set()
+_DRIVING_LOCK = threading.Lock()
+
+
+def _begin_driving(run_id: str) -> bool:
+    with _DRIVING_LOCK:
+        if run_id in _DRIVING:
+            return False
+        _DRIVING.add(run_id)
+        return True
+
+
+def _end_driving(run_id: str) -> None:
+    with _DRIVING_LOCK:
+        _DRIVING.discard(run_id)
+
+
+def _being_driven(run_id: str) -> bool:
+    with _DRIVING_LOCK:
+        return run_id in _DRIVING
+
+
 def _stopped(stop_event) -> bool:
     return stop_event is not None and stop_event.is_set()
 
@@ -119,6 +146,10 @@ def run_pipeline(run: Run, queue: "queue_common.QueuePaths", log=logger.info, st
     none of SolidWorks, Altium or AEDT can be interrupted mid-call
     anyway -- records it, and the run ends where it stood, resumable.
     """
+    if not _begin_driving(run.run_id):
+        log(f"Run {run.run_id} is already being driven by another thread in this process "
+            "-- not starting a second driver on it.")
+        return
     run.claim_driver()
     try:
         if not _finish_prerequisite(run, queue, log=log, stop_event=stop_event):
@@ -135,6 +166,7 @@ def run_pipeline(run: Run, queue: "queue_common.QueuePaths", log=logger.info, st
         # a leftover, and saying so on the page would be a lie. (A
         # process that was killed outright cannot do this, which is why
         # the stages clear it on the way in as well.)
+        _end_driving(run.run_id)
         stages.clear_stale_progress(run)
         if _stopped(stop_event) and run.state.get("stage") != "complete":
             run.set_stage("stopped")
@@ -156,9 +188,25 @@ def _finish_prerequisite(run: Run, queue, log=logger.info, stop_event=None) -> b
     one down with it -- the driven run goes ahead with the coarse sweep,
     and says so.
     """
+    parent = companion.refined_parent(run)
+    if parent is not None:
+        # A refinement starts from its parent's finished geometry.
+        companion.seed_geometry(run, parent, log=log)
+        return True
     eigen = companion.prerequisite_of(run)
     if eigen is None:
         return True
+    if _being_driven(eigen.run_id):
+        # Something else in this process is already finishing it. Wait for
+        # that rather than starting a second driver on the same run.
+        log(f"Eigenmode run {eigen.run_id} is being driven by another thread -- waiting for it "
+            "to finish before building this run's models.")
+        while _being_driven(eigen.run_id):
+            if _stopped(stop_event):
+                run.set_stage("stopped")
+                return False
+            time.sleep(1.0)
+        eigen = Run.load(eigen.run_id)
     if eigen.state.get("stage") != "complete":
         log(f"This run is paired with Eigenmode run {eigen.run_id}, whose modes its fine "
             "frequency windows are centred on -- finishing that one first.")

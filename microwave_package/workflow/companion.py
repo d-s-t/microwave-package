@@ -31,12 +31,17 @@ from typing import Callable, Dict, List, Optional, Tuple
 from ..hfss import registry
 from ..hfss.driven import DRIVEN_MODAL
 from ..hfss.eigenmode import EIGENMODE
+from ..design.sweep import SweepParameter
 from .run_manager import Run
 
 logger = logging.getLogger("microwave_package")
 
 EIGEN_LINK = "eigen_run_id"
 DRIVEN_LINK = "driven_run_id"
+# A refinement is a driven run that re-solves chosen combinations of
+# another driven run over narrower frequency ranges.
+REFINES_LINK = "refines_run_id"
+REFINED_BY = "refined_by"
 
 # What a combination's geometry is, among the files in its folder. The
 # rest -- the AEDT project, the solved results -- belong to the solve and
@@ -72,6 +77,93 @@ def prerequisite_of(run: Run) -> Optional[Run]:
     except (OSError, ValueError, KeyError):
         logger.warning("Run %s is paired with %s, which cannot be loaded.", run.run_id, run_id)
         return None
+
+
+def refined_parent(run: Run) -> Optional[Run]:
+    """The driven run this one refines, or None."""
+    run_id = run.config.get(REFINES_LINK)
+    if not run_id:
+        return None
+    try:
+        return Run.load(run_id)
+    except (OSError, ValueError, KeyError):
+        logger.warning("Run %s refines %s, which cannot be loaded.", run.run_id, run_id)
+        return None
+
+
+def refinements_of(run: Run) -> List[Run]:
+    """The refinement runs made from this one, oldest first, skipping any
+    that have since been deleted."""
+    found = []
+    for run_id in run.config.get(REFINED_BY) or []:
+        try:
+            found.append(Run.load(run_id))
+        except (OSError, ValueError, KeyError):
+            continue
+    return found
+
+
+def refinable_combos(run: Run) -> List[str]:
+    """The combinations of a driven run that have S-parameters to refine."""
+    return [cid for cid, combo in run.state["combos"].items() if combo.get("post_status") == "done"]
+
+
+def create_refinement(parent: Run, ranges_text: str, combo_ids: List[str],
+                      points_cap: int = 20000) -> Run:
+    """A new driven run that re-solves `combo_ids` of `parent` over `ranges_text`.
+
+    `ranges_text` is the `lo:hi:step; ...` list the fine windows take (see
+    hfss/driven/windows.py) -- as many ranges as wanted. The new run:
+
+      * has the same geometry (it borrows the parent's, see `seed_geometry`)
+        and the same settings and materials, so it is the same device;
+      * solves ONLY those windows -- no broad sweep, no eigenmode windows;
+      * adapts its mesh at the frequency the parent adapted at, so the
+        fine data lines up with the broad data in one trace;
+      * is linked both ways (`refines_run_id` / `refined_by`), which is
+        what lets the parent's page show broad, fine, or both together.
+
+    Raises ValueError for anything that cannot be refined, with the reason.
+    """
+    from ..hfss.driven import windows
+
+    settings = parent.analysis_settings
+    if registry.solution_type_of(settings) != DRIVEN_MODAL:
+        raise ValueError("Only a Driven Modal run has a frequency range to refine.")
+    wanted = list(dict.fromkeys(combo_ids))
+    available = set(refinable_combos(parent))
+    missing = [c for c in wanted if c not in available]
+    if not wanted:
+        raise ValueError("Pick at least one combination to refine.")
+    if missing:
+        raise ValueError(f"These combinations have no results to refine yet: {', '.join(missing)}.")
+    parsed = windows.parse_manual(ranges_text)
+    if not parsed:
+        raise ValueError("Give at least one frequency range, as lo:hi:step in GHz.")
+
+    # Where the parent meshed: the top of its band unless it said otherwise.
+    parent_mesh = windows.mesh_frequency_ghz(settings)
+    child_settings = {
+        **settings,
+        "coarse_sweep": "off",
+        "fine_windows": "off",
+        "fine_windows_manual": "; ".join(f"{w.lo:g}:{w.hi:g}:{w.step:g}" for w in parsed),
+        "f_start_ghz": min(w.lo for w in parsed),
+        "f_stop_ghz": max(w.hi for w in parsed),
+        "adapt_ghz": parent_mesh,
+        "fine_max_points": points_cap,
+    }
+    sweep_params = [SweepParameter(name=p["name"], values=p["values"])
+                    for p in parent.config.get("sweep_params", [])]
+    child = Run.create(sweep_params, child_settings, parent.parameter_defaults)
+    keep = set(wanted)
+    child.state["combos"] = {c: v for c, v in child.state["combos"].items() if c in keep}
+    child.config[REFINES_LINK] = parent.run_id
+    child.config["label"] = f"{parent.label or parent.run_id} (fine)"[:80]
+    child.save()
+    parent.config[REFINED_BY] = [*parent.config.get(REFINED_BY, []), child.run_id]
+    parent.save_config()
+    return child
 
 
 def partner_id(run: Run) -> Optional[str]:

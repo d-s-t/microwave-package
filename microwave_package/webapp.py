@@ -751,6 +751,9 @@ def run_status(run_id):
         run=run,
         run_name=_run_name(run),
         pair_link=_pair_link(run),
+        has_fine=df is not None and plotting.has_fine_data(df),
+        views=plotting.VIEWS,
+        refine=_refine_panel(run),
         rows=_combo_rows(run),
         phases=_phase_meta(),
         is_running=_is_running(run_id) or bool(elsewhere),
@@ -789,6 +792,37 @@ def _pair_link(run) -> Optional[dict]:
         return {"run_id": run.config[companion.DRIVEN_LINK],
                 "text": "Eigenmode run paired with the Driven run that follows it, on the same geometry:"}
     return None
+
+
+def _refine_panel(run) -> Optional[dict]:
+    """What the run page's refine panel needs, or None when the run has
+    nothing to refine: it must be a driven run with some finished
+    combinations. Also lists the refinements already made from it."""
+    if registry.solution_type_of(run.analysis_settings) != "DrivenModal":
+        return None
+    parent = companion.refined_parent(run)
+    return {
+        "combos": companion.refinable_combos(run),
+        "children": [{"run_id": c.run_id, "name": _run_name(c), "stage": c.state.get("stage"),
+                      "ranges": c.analysis_settings.get("fine_windows_manual", ""),
+                      "combos": list(c.state["combos"])}
+                     for c in companion.refinements_of(run)],
+        "refines": parent.run_id if parent else None,
+    }
+
+
+@app.route("/runs/<run_id>/refine", methods=["POST"])
+def refine_run(run_id):
+    """Start a refinement: re-solve chosen combinations of this driven run
+    over finer frequency ranges, as a new run linked to this one."""
+    run = Run.load(run_id)
+    try:
+        child = companion.create_refinement(
+            run, request.form.get("ranges", ""), request.form.getlist("combo"))
+    except ValueError as complaint:
+        return redirect(url_for("run_status", run_id=run_id, error=str(complaint)))
+    _start_pipeline_thread(child)
+    return redirect(url_for("run_status", run_id=child.run_id))
 
 
 def _run_disk_usage(run) -> int:
@@ -959,8 +993,7 @@ def run_status_json(run_id):
     })
 
 
-def _results_frame(run):
-    """This run's combined results table, or None if it has none yet."""
+def _read_results_csv(run):
     csv_path = os.path.join(run.plots_dir, plotting.RESULTS_FILENAME)
     if not os.path.exists(csv_path):
         return None
@@ -969,6 +1002,27 @@ def _results_frame(run):
     except (OSError, ValueError):
         logger.warning("Could not read results for run %s", run.run_id)
         return None
+
+
+def _results_frame(run):
+    """This run's combined results table, or None if it has none yet.
+
+    A run that has been refined also carries its refinements' rows: the
+    fine data sits in the same table as the broad data, told apart by the
+    `sweep` column (and `refinement`, which says which run), so the plot
+    can show either or both.
+    """
+    df = _read_results_csv(run)
+    if df is None:
+        return None
+    children = []
+    for child in companion.refinements_of(run):
+        fine = _read_results_csv(child)
+        if fine is not None and not fine.empty:
+            children.append(fine.assign(**{plotting.REFINEMENT_COLUMN: child.run_id}))
+    if children:
+        df = pd.concat([df, *children], ignore_index=True)
+    return df
 
 
 def _plot_filters(args) -> Dict[str, list]:
@@ -1002,6 +1056,14 @@ def run_plot(run_id):
         return send_from_directory(run.plots_dir, plotting.PLOT_FILENAME)
 
     df = plotting.apply_filters(df, _plot_filters(request.args))
+    if plotting.has_sparameters(df):
+        df = plotting.apply_view(df, request.args.get("data", plotting.VIEW_BOTH))
+        if df.empty:
+            return Response(
+                "<!doctype html><meta charset='utf-8'>"
+                "<p style='font:14px system-ui;color:#888;padding:2rem;text-align:center'>"
+                "No fine-range data for this selection yet -- refine the run, or pick another view.</p>",
+                mimetype="text/html")
     if df.empty:
         return Response(
             "<!doctype html><meta charset='utf-8'>"

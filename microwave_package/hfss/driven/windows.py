@@ -99,9 +99,14 @@ def windows_from_modes(
     return windows
 
 
+# A window typed as lo:hi alone gets this many steps across it.
+DEFAULT_MANUAL_STEPS = 100
+
+
 def parse_manual(text: Optional[str]) -> List[Window]:
     """Windows typed by hand: `lo:hi:step` in GHz, separated by `;` or
-    newlines -- the same shape as a swept parameter's `start:stop:step`."""
+    newlines -- the same shape as a swept parameter's `start:stop:step`.
+    `lo:hi` alone takes `DEFAULT_MANUAL_STEPS` steps across the window."""
     windows = []
     for item in (text or "").replace("\n", ";").split(";"):
         item = item.strip()
@@ -109,13 +114,15 @@ def parse_manual(text: Optional[str]) -> List[Window]:
             continue
         parts = item.split(":")
         try:
-            if len(parts) != 3:
+            if len(parts) not in (2, 3):
                 raise ValueError
-            lo, hi, step = (float(p) for p in parts)
+            numbers = [float(p) for p in parts]
         except ValueError:
             raise ValueError(
                 f"Fine window {item!r} is not lo:hi:step in GHz (for example 12.1:12.4:0.002)."
             ) from None
+        lo, hi = numbers[0], numbers[1]
+        step = numbers[2] if len(numbers) == 3 else (hi - lo) / DEFAULT_MANUAL_STEPS
         if not (0 < lo < hi) or step <= 0:
             raise ValueError(f"Fine window {item!r} needs 0 < lo < hi and a positive step.")
         windows.append(Window(lo, hi, step))
@@ -189,6 +196,10 @@ def mesh_frequency_ghz(settings: Dict[str, Any], modes: Sequence[Tuple[float, An
     that is coarser than the shortest wavelength the sweep asks about.
     """
     f_stop = float(settings["f_stop_ghz"])
+    # A refinement of an earlier run adapts where that run did, so the
+    # mesh -- and with it the fine data -- lines up with the broad data.
+    if float(settings.get("adapt_ghz") or 0) > 0:
+        return float(settings["adapt_ghz"])
     if settings.get("adapt_at", "f_stop") != "highest_mode":
         return f_stop
     inside = [float(f) for f, _q in modes if 0 < float(f) < f_stop]

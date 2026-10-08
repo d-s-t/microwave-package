@@ -34,6 +34,15 @@ FIELDS: List[Dict[str, Any]] = [
                 "delta freq.",
     },
     {
+        "name": "coarse_sweep", "label": "Broad sweep", "kind": "select", "default": "on",
+        "options": [
+            {"value": "on", "label": "On",
+             "help": "The sweep over the whole band, as always."},
+            {"value": "off", "label": "Off",
+             "help": "Only the fine windows -- what a refinement of an earlier run uses."},
+        ],
+    },
+    {
         "name": "fine_windows", "label": "Fine windows around the eigenmodes", "kind": "select",
         "default": "auto",
         "options": [

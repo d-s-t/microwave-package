@@ -266,6 +266,29 @@ The queue schema is unchanged and the worker needs no change.
   deleting a run work on each as before. Runs made before this exist
   unpaired and are untouched.
 
+### Refining a frequency range afterwards
+
+On a finished Driven run's page, **Refine a frequency range** re-solves
+chosen combinations over narrower ranges, for as many ranges as you like
+(`lo:hi:step` in GHz, `;`-separated; `lo:hi` alone takes 100 steps; or
+*+ use the plot's zoom range* to take whatever the plot is zoomed to).
+It starts a new Driven run linked to the first: the same geometry (borrowed,
+not rebuilt), the same settings, only the chosen combinations, no broad
+sweep, and the mesh adapted at the frequency the original adapted at so
+the two line up. Refining again adds more.
+
+The original run's plot then has a **Data** selector: *Broad only*, *Fine
+ranges only* (each range its own piece, not one line across the gaps), or
+*Broad + fine, one trace* (the default), where a fine window's points
+replace the broad sweep's interpolated samples inside it. The fine windows
+placed around eigenmodes automatically are fine data too, so the same
+selector works on them. The refinement is a run in its own right, with its
+own page and results.
+
+Caveat: the refinement rebuilds the model and re-adapts the mesh rather than
+reusing the solved project, so with identical settings it should land on the
+same mesh, but a slight offset between broad and fine data is possible.
+
 ### The box's conductor model
 
 *Perfect E on box/lid_inside* stays on by default: the box is probably

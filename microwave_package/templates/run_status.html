@@ -355,6 +355,14 @@
     {% endfor %}
   </select>
   <button type="button" id="swap-axes" title="Swap the X and Y axes">&#8646; swap</button>
+  {% if has_fine %}
+  <label for="data-view" title="This run has fine frequency ranges as well as its broad sweep">Data</label>
+  <select id="data-view">
+    {% for view in views %}
+    <option value="{{ view.value }}">{{ view.label }}</option>
+    {% endfor %}
+  </select>
+  {% endif %}
 </div>
 {% endif %}
 {% if filter_options %}
@@ -385,6 +393,43 @@
 <p><a class="button" href="{{ url_for('run_results_csv', run_id=run.run_id) }}">Download CSV</a>
    <span class="muted">-- click any point for that combination's details</span></p>
 <iframe id="plot-frame" src="{{ url_for('run_plot', run_id=run.run_id) }}"></iframe>
+{% endif %}
+
+{% if refine and plot_exists %}
+<h2>Refine a frequency range</h2>
+{% if refine.refines %}
+<p class="muted">This run is a refinement of
+  <a href="{{ url_for('run_status', run_id=refine.refines) }}">{{ refine.refines }}</a>; its data also
+  shows on that run's plot, as the fine ranges.</p>
+{% endif %}
+{% if refine.children %}
+<ul class="muted">
+  {% for child in refine.children %}
+  <li><a href="{{ url_for('run_status', run_id=child.run_id) }}">{{ child.name }}</a>
+    -- {{ child.stage }}; {{ child.ranges }} GHz; {{ child.combos | join(', ') }}</li>
+  {% endfor %}
+</ul>
+{% endif %}
+{% if refine.combos %}
+<form method="post" action="{{ url_for('refine_run', run_id=run.run_id) }}" class="refine-form">
+  <p class="muted">Re-solve some combinations over narrower ranges, as a new run on the same
+    geometry. It adds to this plot -- <em>Broad only</em>, <em>Fine ranges only</em> and
+    <em>Broad + fine</em> then switch between them. Any number of ranges, each
+    <code>lo:hi:step</code> in GHz (or just <code>lo:hi</code> for 100 steps), separated by <code>;</code>.
+    Refining again adds more ranges.</p>
+  <label>Ranges (GHz)
+    <input type="text" name="ranges" id="refine-ranges" size="60" placeholder="12.1:12.4:0.002; 15.0:15.2"></label>
+  <button type="button" class="mini" id="refine-from-plot"
+          title="Add the frequency range currently zoomed to on the plot above">+ use the plot's zoom range</button>
+  <div class="chips" style="margin:.5rem 0">
+    <strong>Combinations</strong>
+    {% for combo in refine.combos %}
+    <label class="chip"><input type="checkbox" name="combo" value="{{ combo }}" checked>{{ combo }}</label>
+    {% endfor %}
+  </div>
+  <button type="submit" class="start-run">Refine</button>
+</form>
+{% endif %}
 {% endif %}
 
 {% if heatmap_combos %}
@@ -713,6 +758,7 @@ setInterval(poll, 4000);
   var x = document.getElementById("axis-x");
   var y = document.getElementById("axis-y");
   var colour = document.getElementById("axis-color");
+  var dataView = document.getElementById("data-view");
   if (!x || !y) { return; }
 
   var base = "{{ url_for('run_plot', run_id=run.run_id) }}";
@@ -758,6 +804,7 @@ setInterval(poll, 4000);
       theme: window.themeIsDark() ? "dark" : "light",
     });
     if (colour && colour.value) { params.set("color", colour.value); }
+    if (dataView) { params.set("data", dataView.value); }
     applyFilters(params);
     frame.src = base + "?" + params.toString();
   }
@@ -784,7 +831,24 @@ setInterval(poll, 4000);
     }
   }
 
-  [x, y, colour].forEach(function (select) {
+  // Refine form: fill the ranges box from whatever the plot is zoomed to.
+  var fromPlot = document.getElementById("refine-from-plot");
+  if (fromPlot) {
+    fromPlot.addEventListener("click", function () {
+      var plot = frame.contentDocument && frame.contentDocument.querySelector(".js-plotly-plot");
+      var axis = plot && plot._fullLayout && plot._fullLayout.xaxis;
+      if (!axis || x.value !== "freq_ghz") {
+        alert("Put frequency on the X axis, and zoom to the range you want, first.");
+        return;
+      }
+      var lo = Math.max(axis.range[0], 0), hi = axis.range[1];
+      var box = document.getElementById("refine-ranges");
+      box.value = (box.value.trim() ? box.value.trim().replace(/;?$/, "; ") : "")
+        + lo.toFixed(4) + ":" + hi.toFixed(4);
+    });
+  }
+
+  [x, y, colour, dataView].forEach(function (select) {
     if (select) { select.addEventListener("change", render); }
   });
 
