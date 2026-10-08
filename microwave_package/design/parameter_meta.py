@@ -60,6 +60,13 @@ LABELS: Dict[str, str] = {
     "chip_metal_thickness": "Chip metal thickness",
     "no_distortion": "Distortion",
     "no_chip": "Bare board (no chip)",
+    "screws_on": "Corner screws",
+    "screw_inset": "Screw inset from PCB edge",
+    "screw_head_diameter": "Screw head diameter",
+    "screw_clearance_diameter": "Screw clearance hole (lid, PCB)",
+    "screw_tap_diameter": "Screw tap-drill hole (box)",
+    "screw_keepout_diameter": "Copper keep-out round the screw",
+    "screw_engagement": "Thread engagement in the box floor",
     # distortion geometry
     "distortion_radius": "Distortion radius",
     "distortion_x": "Distortion offset along feedline",
@@ -89,7 +96,18 @@ DISTORTION_PARAM = "no_distortion"
 # bond pads or wire bonds. It is a plain on/off pinned for the whole
 # run, never swept, so it has no mode table like the distortion does.
 NO_CHIP_PARAM = "no_chip"
-BOOLEAN_PARAMETERS = {DISTORTION_PARAM, NO_CHIP_PARAM}
+
+# The corner-screws flag: 1 adds four M2 countersunk screws at the PCB's
+# corners, with their holes in the lid, the PCB and the box floor. A plain
+# on/off pinned for the whole run, like no_chip. Its dimensions are swept
+# like any other parameter -- see SCREW_GEOMETRY_PARAMETERS.
+SCREWS_PARAM = "screws_on"
+BOOLEAN_PARAMETERS = {DISTORTION_PARAM, NO_CHIP_PARAM, SCREWS_PARAM}
+
+SCREW_GEOMETRY_PARAMETERS = [
+    "screw_inset", "screw_head_diameter", "screw_clearance_diameter",
+    "screw_tap_diameter", "screw_keepout_diameter", "screw_engagement",
+]
 
 
 def is_bare_board(values) -> bool:
@@ -185,6 +203,13 @@ GROUPS: List[dict] = [
         "hint": "Mechanical features and margins that do not affect the interior fields.",
         "collapsed": True,
         "names": ["wall_width", "wing_length", "wing_width"],
+    },
+    {
+        "title": "Corner screws",
+        "hint": "The four M2 countersunk screws at the PCB corners and the holes for them. "
+                "Only used when the Corner screws box above is ticked.",
+        "collapsed": True,
+        "names": SCREW_GEOMETRY_PARAMETERS,
     },
 ]
 

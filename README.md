@@ -161,6 +161,24 @@ into the form still wins. Started any other way, set it by hand. Eigenmode
 runs solve normally, but the chip-field columns come back flagged
 "object 'chip' not found", since there is no chip to measure.
 
+**Corner screws.** The "Corner screws" tick (`screws_on = 1`) holds the lid,
+PCB and box together with four M2 ISO 10642 countersunk screws, `screw_inset`
+(2.2 mm) in from the PCB edge on both axes, and puts the holes in all three
+parts: a clearance hole (2.3 mm) in the lid with a 90 degree countersink the
+3.8 mm head sits flush in, a clearance hole with a 3.0 mm copper keep-out in
+the PCB, and a tap-drill hole (1.6 mm) in the box floor. They sit inside the
+PCB corners, not in the box wall: the wall is `wall_width` = 1 mm, which cannot
+hold an M2 thread. The screws take the box's material and perfect-E setting.
+The generator keeps its ground vias out of the keep-out; HFSS cuts the holes
+in box, lid_inside, the board and its copper, and builds the screws from a
+cylinder and a cone at the STEP's dimensions. The layout check refuses a board
+where the keep-out would reach the CPW, the SMP launch or the die and its bond
+fingers. Off by default, so runs with and without compare directly. The screw
+length is the longest standard one that stays in the 1 mm floor, chosen from
+the lid's measured thickness at build time. Not automated: the same holes in
+`box.SLDPRT` and `lid_inside.SLDPRT`, which are binaries -- see the pull
+request for what to add by hand.
+
 **Stop this run** stops a run without losing anything. It is cooperative
 rather than a kill -- none of the three programs can be interrupted
 mid-call -- so each finishes the combination it is in the middle of,

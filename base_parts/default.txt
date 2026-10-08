@@ -42,6 +42,20 @@
 
 "no_chip" = 0 ' (boolean) when set to 1, the bare board: no chip, opening, pedestal or wire bonds, just the CPW from one connector to the other. 0 builds the full package.
 
+"screws_on" = 0 ' (boolean) when set to 1, four M2 countersunk screws hold the lid, PCB and box together at the PCB corners. 0 builds without them.
+
+"screw_inset" = 2.2 ' distance from the PCB edge to the screw centre, on both axes (the head, 3.8 mm across, must stay inside the lid outline)
+
+"screw_head_diameter" = 3.8 ' ISO 10642 M2 head diameter
+
+"screw_clearance_diameter" = 2.3 ' hole in the lid and the PCB (M2 is 2.0 mm, plus the margin a drill and a router need)
+
+"screw_tap_diameter" = 1.6 ' tap-drill hole in the box floor the screw cuts its thread into
+
+"screw_keepout_diameter" = 3.0 ' no copper or via inside this circle round each PCB hole
+
+"screw_engagement" = 0.8 ' how far the thread bites into the box floor
+
 "distortion_radius" = 0.6
 
 "distortion_x" = 0.0

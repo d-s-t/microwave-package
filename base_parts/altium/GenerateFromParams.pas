@@ -133,6 +133,14 @@ Const
 Var
     Rpt : TStringList;
 
+    { The four corner screws' copper keep-outs, when screws_on is set:
+      each screw's centre sits at (+-ScrewU, +-ScrewV) and no via may come
+      within ScrewKeepR of it (the keep-out's radius). ScrewKeepR <= 0
+      means no screws. Held here rather than threaded through TryVia and
+      AddViaLattice's argument lists, which already carry a dozen
+      numbers each. }
+    ScrewU, ScrewV, ScrewKeepR : Double;
+
     { The connector library, held open across both launches.
 
       Globals rather than passed around because the footprint is a LIVE
@@ -749,6 +757,14 @@ Begin
         Reach := VoidR + Dia / 2.0 + MinGap - GapTolerance;
         If ((X - LaunchX) * (X - LaunchX) + Y * Y < Reach * Reach) Or
            ((X + LaunchX) * (X + LaunchX) + Y * Y < Reach * Reach) Then Exit;
+    End;
+    If ScrewKeepR > 0.0 Then
+    Begin
+        { Edge to edge: the via's own radius and MinGap on top of the
+          keep-out circle, the same way every other obstacle is treated. }
+        Reach := ScrewKeepR + Dia / 2.0 + MinGap - GapTolerance;
+        If ((Abs(X) - ScrewU) * (Abs(X) - ScrewU) + (Abs(Y) - ScrewV) * (Abs(Y) - ScrewV)
+            < Reach * Reach) Then Exit;
     End;
     If ViaObstructed(Board, X, Y, Dia, MinGap) Then Exit;
     AddVia(Board, X, Y, Dia, Dia / 2.0);
@@ -1484,6 +1500,19 @@ Begin
         CavHalfS := 0.0;
         CavThrough := False;
         Say('no_chip=1');
+    End;
+
+    { The corner screws' keep-out. The centre is screw_inset in from the
+      board edge on both axes -- the same arithmetic screws.plan does in
+      Python, so the two cannot place a screw differently. }
+    ScrewKeepR := 0.0;
+    If ParamOf(P, 'screws_on', 0.0) > 0.5 Then
+    Begin
+        ScrewU := HalfL - ParamOf(P, 'screw_inset', 2.2);
+        ScrewV := HalfS - ParamOf(P, 'screw_inset', 2.2);
+        ScrewKeepR := ParamOf(P, 'screw_keepout_diameter', 3.0) / 2.0;
+        Say('screws_on=1');
+        Say('screw_keepout_r_mm=' + FloatToStr(ScrewKeepR));
     End;
 
     { Placed so the outermost land sits port_space from the board edge. }

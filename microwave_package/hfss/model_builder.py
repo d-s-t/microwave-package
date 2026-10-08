@@ -232,6 +232,10 @@ MATERIAL_RULES = [
     ("pcb_via",         "pcb_vias",        "mat_conductor_pcb",   "perfect_e_conductors"),
     ("pcb_substrate",   "pcb",             "mat_pcb",             None),
     ("wirebond",        "wirebond",        "mat_wirebond",        "perfect_e_conductors"),
+    # The corner screws are steel in life; here they take the box's metal
+    # and, with it, its perfect-E setting, so a perfect-E box has perfect-E
+    # screws and the with/without comparison changes only the geometry.
+    ("screw",           "screw",           "mat_box",             "perfect_e_box"),
     # The SMP connector imports as three bodies, and place_connectors sets
     # the material on all three (LCP bead, brass conductors) -- hence None
     # for both rules. The bead rule must precede the bare "connector" one.
@@ -700,6 +704,7 @@ def build_layout(hfss, combo_dir: str, dimensions_txt_content: str,
                 f"{SHEET_BELOW_MM * 1000:g} um, so drawn as a sheet -- its thickness "
                 "does not enter the model.")
 
+    pcb_bodies: List[str] = []   # the board's copper, for the screws' keep-out
     _drop_superseded_solids(hfss, log)
     build_vacuum(
         hfss, frame, stack,
@@ -744,6 +749,7 @@ def build_layout(hfss, combo_dir: str, dimensions_txt_content: str,
             thickness=stack.copper_thickness, prefix="pcb", log=log,
         )
         remember_sheets(made, stack.copper_thickness, copper)
+        pcb_bodies = [name for names in made.values() for name in names]
         # The generator already draws the copper round the opening, so
         # this normally cuts nothing. It is here for the copper.txt an
         # older generator wrote, where it is the difference between a
@@ -806,6 +812,16 @@ def build_layout(hfss, combo_dir: str, dimensions_txt_content: str,
         )
     else:
         log("No bonds.txt for this combination -- the die is not bonded.")
+
+    # The corner screws, if asked for: holes in box, lid_inside, the board
+    # and its copper, then the screws themselves. After everything they
+    # cut through exists.
+    from . import screws as screw_builder
+
+    try:
+        screw_builder.build_screws(hfss, frame, stack, v, pcb_bodies, log=log)
+    except ValueError as exc:
+        raise RuntimeError(f"Corner screws: {exc}") from exc
 
     ground_offset = None
     if chip is not None:
