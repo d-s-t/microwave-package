@@ -644,7 +644,9 @@ def build_layout(hfss, combo_dir: str, dimensions_txt_content: str,
     file -- a run built with Altium off is still perfectly valid, and was
     the only kind of run until the Altium stage existed.
     """
-    from ..design import cavity as cavity_plan, copper_geometry as cg, equations as eq
+    from ..design import (
+        cavity as cavity_plan, copper_geometry as cg, equations as eq, parameter_meta,
+    )
 
     v = eq.get_numeric_parameters(dimensions_txt_content)
 
@@ -719,6 +721,10 @@ def build_layout(hfss, combo_dir: str, dimensions_txt_content: str,
     # question when it drew the board -- so the hole in the model is the
     # feature on the board, wiggle room and all.
     opening = cavity_plan.plan(v)
+    bare = parameter_meta.is_bare_board(v)
+    if bare:
+        log("Bare board (no_chip): no die, opening, bond pads or wire bonds -- "
+            "the CPW runs unbroken from one connector to the other.")
 
     cg.build_substrates(
         hfss.modeler, frame, stack,
@@ -751,7 +757,9 @@ def build_layout(hfss, combo_dir: str, dimensions_txt_content: str,
         # material override lets the metal win where they overlap. See
         # `copper_geometry._via_post` for why they are not drilled.
 
-    chip = boards.get("chip")
+    # A bare board never has a die, whatever an earlier run left in
+    # copper.txt.
+    chip = None if bare else boards.get("chip")
     if chip is not None and len(chip):
         # Through-vias in the die, if it ever carries any, are posts in
         # the die in the same way.
@@ -781,7 +789,9 @@ def build_layout(hfss, combo_dir: str, dimensions_txt_content: str,
     from ..design import bonds as bond_layout
 
     bonds_path = os.path.join(combo_dir, "bonds.txt")
-    if not include_wirebonds:
+    if bare:
+        pass  # nothing to bond to; said above
+    elif not include_wirebonds:
         log("Wire bonds turned off for this run -- the die is not bonded.")
     elif os.path.isfile(bonds_path):
         cg.build_bond_wires(

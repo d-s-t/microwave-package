@@ -40,6 +40,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Dict
 
+from . import parameter_meta
+
 # Per-side clearance between the die and the opening, used when the
 # equations file does not carry one -- an older run's dimensions.txt,
 # or a caller working from a partial parameter set.
@@ -83,9 +85,23 @@ class Cavity:
         """How it reads in a log line or a report."""
         return "through cutout" if self.through else "blind pocket"
 
+    @property
+    def is_empty(self) -> bool:
+        """True for the bare board (`no_chip`), which has no opening at
+        all: nothing is cut, and every consumer leaves its copper whole."""
+        return self.half_length <= 0.0 or self.half_side <= 0.0
+
 
 def plan(values: Dict[str, float]) -> Cavity:
-    """The opening for one combination's equation-file values."""
+    """The opening for one combination's equation-file values.
+
+    With `no_chip` set there is no die to drop in, so there is no opening
+    either: an empty `Cavity`, which Altium reads as "no opening" (a
+    zero-size one) and the HFSS builder skips.
+    """
+    if parameter_meta.is_bare_board(values):
+        return Cavity(half_length=0.0, half_side=0.0, depth=0.0, through=False)
+
     clearance = values.get("cavity_clearance", DEFAULT_CLEARANCE)
     chip_length = values.get("chip_length", 6.3)
     chip_side = values.get("chip_side", 6.3)

@@ -1425,6 +1425,7 @@ Var
     SmpOrigin, BondSpan : Double;
     CavHalfL, CavHalfS, CavDepth : Double;
     CavThrough : Boolean;
+    NoChip : Boolean;
     nStitch, nStitchSkip, nShield, nShieldSkip, nBonds, nLaunch, i : Integer;
 Begin
     Rpt := TStringList.Create;
@@ -1471,6 +1472,19 @@ Begin
     CavHalfS   := ParamOf(P, 'cavity_side', ChipHalfS * 2.0) / 2.0;
     CavDepth   := ParamOf(P, 'cavity_depth', ParamOf(P, 'pcb_width', 0.381));
     CavThrough := ParamOf(P, 'cavity_through', 1.0) > 0.5;
+
+    { Bare-board mode (no_chip = 1): no die, so no opening, no bond
+      fingers and no chip document. A zero-size opening is already how
+      every routine here reads "no opening" -- the centre conductor runs
+      unbroken and the ground and back planes stay whole. }
+    NoChip := ParamOf(P, 'no_chip', 0.0) > 0.5;
+    If NoChip Then
+    Begin
+        CavHalfL := 0.0;
+        CavHalfS := 0.0;
+        CavThrough := False;
+        Say('no_chip=1');
+    End;
 
     { Placed so the outermost land sits port_space from the board edge. }
     SmpOrigin := HalfL - PortSpace + ParamOf(P, 'smp_outer_v', -2.6);
@@ -1549,14 +1563,19 @@ Begin
     { The opening itself, after the copper: the copper is what has to
       make room for it, so a failure here leaves a board whose planes
       already stand clear rather than one with copper across a hole. }
-    PCBServer.PreProcess;
-    Try
-        AddCavity(Board, CavHalfL, CavHalfS, CavDepth, CavThrough);
-        Say('package_cavity=ok');
-    Except
-        Say('package_cavity=FAIL');
+    If NoChip Then
+        Say('package_cavity=skipped')
+    Else
+    Begin
+        PCBServer.PreProcess;
+        Try
+            AddCavity(Board, CavHalfL, CavHalfS, CavDepth, CavThrough);
+            Say('package_cavity=ok');
+        Except
+            Say('package_cavity=FAIL');
+        End;
+        PCBServer.PostProcess;
     End;
-    PCBServer.PostProcess;
 
     { The library is opened OUTSIDE the edit batch. PreProcess and
       PostProcess bracket edits to one board, and opening a second
@@ -1589,14 +1608,19 @@ Begin
     Client.ShowDocument(Doc);
     Say('signal_pad_mm=' + FloatToStr(TraceHalfL));
 
-    PCBServer.PreProcess;
-    Try
-        nBonds := AddBondPads(Board, BondPath, PadW, PadH, Trace, False);
-        Say('package_bond_pads=' + IntToStr(nBonds));
-    Except
-        Say('package_bond_pads=FAIL');
+    If NoChip Then
+        Say('package_bond_pads=skipped')
+    Else
+    Begin
+        PCBServer.PreProcess;
+        Try
+            nBonds := AddBondPads(Board, BondPath, PadW, PadH, Trace, False);
+            Say('package_bond_pads=' + IntToStr(nBonds));
+        Except
+            Say('package_bond_pads=FAIL');
+        End;
+        PCBServer.PostProcess;
     End;
-    PCBServer.PostProcess;
 
     { The vias run LAST, now that the launch and the bond fingers are
       really on the board: TryVia checks every candidate against the
@@ -1654,6 +1678,15 @@ Begin
         Except
             Say('saved_package=FAIL');
         End;
+    End;
+
+    If NoChip Then
+    Begin
+        Say('chip_body=skipped');
+        Say('chip_bond_pads=skipped');
+        Say('ok=1');
+        Say('stage=end');
+        Exit;
     End;
 
     ChipDoc := Client.OpenNewDocument('PCB', 'chip', 'chip', False);

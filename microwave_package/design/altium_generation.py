@@ -923,6 +923,10 @@ def _missing_features(report: Dict[str, str]) -> str:
         why = report.get("smp_library") or report.get("smp_footprint") or "unknown"
         problems.append(f"no connector was placed ({why})")
 
+    # A bare board (no_chip) deliberately has no die, opening or bonds:
+    # the script reports those as "skipped", and only the board is held
+    # to account.
+    bare = report.get("no_chip") == "1"
     for key, feature in (
         ("package_body", "the package's copper"),
         ("chip_body", "the die's copper"),
@@ -930,6 +934,8 @@ def _missing_features(report: Dict[str, str]) -> str:
         ("package_bond_pads", "the board's bond fingers"),
         ("chip_bond_pads", "the die's bond pads"),
     ):
+        if bare and key != "package_body":
+            continue
         value = report.get(key)
         if value is None:
             problems.append(f"{feature} was never reported on")
