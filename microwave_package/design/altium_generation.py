@@ -942,6 +942,14 @@ def _missing_features(report: Dict[str, str]) -> str:
         elif value in ("FAIL", "0"):
             problems.append(f"{feature} failed")
 
+    # With the corner screws on, the board needs its four holes.
+    if report.get("screws_on") == "1":
+        holes = report.get("package_screw_holes")
+        if holes is None:
+            problems.append("the screw holes were never reported on")
+        elif holes != "4":
+            problems.append("the screw holes failed")
+
     # The cavity is only a cutout if Altium agreed it was one. A Kind
     # that did not take leaves a plain copper region on the keep-out
     # layer, which looks like a cutout in the tree and is not one.

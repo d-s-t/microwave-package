@@ -217,6 +217,28 @@ class TestConstraints(unittest.TestCase):
         self.assertEqual(ag.build_params(dict(defaults(), screws_on=0))["screws_on"], 0)
 
 
+class TestTheAltiumBoardHasItsHoles(unittest.TestCase):
+    BOARD = {
+        "package_body": "ok", "chip_body": "ok", "package_cavity": "ok",
+        "package_ports": "2", "package_bond_pads": "54", "chip_bond_pads": "54",
+        "cavity_kind_readback": "board_cutout",
+    }
+
+    def test_a_board_without_screws_is_not_asked_for_holes(self):
+        self.assertEqual(ag._missing_features(self.BOARD), "")
+
+    def test_with_screws_the_four_holes_are_required(self):
+        on = dict(self.BOARD, screws_on="1")
+        self.assertIn("never reported on", ag._missing_features(on))
+        self.assertIn("failed", ag._missing_features(dict(on, package_screw_holes="FAIL")))
+        self.assertEqual(ag._missing_features(dict(on, package_screw_holes="4")), "")
+
+    def test_the_generator_reads_the_hole_size_from_the_parameters(self):
+        script = (paths.ALTIUM_GENERATOR).read_text(encoding="utf-8", errors="replace")
+        self.assertIn("screw_clearance_diameter", script)
+        self.assertIn("eRegionKind_BoardCutout", script)
+
+
 # --- the HFSS builder, against a recorder -------------------------------
 
 class FakeBody:
