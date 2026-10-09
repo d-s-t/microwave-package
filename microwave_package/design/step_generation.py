@@ -98,6 +98,46 @@ def open_and_activate_part(swApp, part_path: str) -> Tuple[Optional[object], Opt
         return None, str(e)
 
 
+def _same_path(a: str, b: str) -> bool:
+    return os.path.normcase(os.path.abspath(a)) == os.path.normcase(os.path.abspath(b))
+
+
+def link_equations(swModel, equations_path: str, log: Callable[[str], None] = logger.info) -> bool:
+    """Make sure the part reads its dimensions from `equations_path`.
+
+    A SolidWorks part links its equations to an external file by ABSOLUTE
+    path, and stores that path in the part. A part saved in one checkout
+    or worktree therefore reads the equations file of the checkout it was
+    saved in, whatever file this pipeline writes: the box and lid came out
+    with the screws and floor of someone else's `default.txt`, so a run
+    that asked for no screws had them, and its board sat inside a floor
+    that had not moved with it.
+
+    So the link is pointed at the file the pipeline is writing, and the
+    values re-read, whenever it points anywhere else. Returns whether it
+    had to be changed; a part with no link, or one whose link cannot be
+    read, is left alone (and said so).
+    """
+    try:
+        manager = swModel.GetEquationMgr
+        linked = getattr(manager, "FilePath", None)
+    except Exception as exc:
+        log(f"WARNING: could not read the equation link of a part ({exc}); its dimensions may "
+            "not follow this run's equations file.")
+        return False
+    if not linked or _same_path(str(linked), equations_path):
+        return False
+    try:
+        manager.FilePath = str(equations_path)
+        manager.UpdateValuesFromExternalEquationFile
+        swModel.ForceRebuild3(False)
+    except Exception as exc:
+        log(f"WARNING: could not point a part's equations at {equations_path} ({exc}).")
+        return False
+    log(f"A part was linked to {linked}; it now reads {equations_path}.")
+    return True
+
+
 def rebuild_model(swModel) -> None:
     logger.info("Rebuilding part...")
     try:
@@ -230,6 +270,7 @@ class Session:
             if not model:
                 eq.write_file(equations_path, original_content)
                 raise RuntimeError(f"Could not open/activate {name} ({part_path}): {err}")
+            link_equations(model, equations_path, log=log)
             parts[name] = model
         return cls(app, parts, equations_path, original_content)
 
