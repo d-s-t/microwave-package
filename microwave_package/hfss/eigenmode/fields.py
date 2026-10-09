@@ -259,9 +259,40 @@ POST_PROCESSING_OPS: Dict[str, Callable[..., Dict[str, Any]]] = {
 }
 
 
+# The student licence will not read fields from a solved mesh over its limit.
+# The worker solves with a full licence, so a big board gets solved fine and
+# is then opened here, where every field export fails -- and PyAEDT does not
+# survive the first failure (its design state is left half reset, so every
+# later call dies on "no attribute 'default_solution'"). The frequencies and
+# Qs do not need the mesh and come out regardless.
+STUDENT_MESH_LIMIT = "is greater than the limit for simulation in Ansys Electronics Desktop Student"
+
+
+def mesh_limit_reason(hfss) -> Optional[str]:
+    """Why fields cannot be read from this project, if AEDT said the solved
+    mesh is over the student licence's limit; None if it did not."""
+    try:
+        messages = hfss.odesktop.GetMessages(hfss.project_name, hfss.design_name, 2)
+    except Exception:
+        return None
+    for message in messages or []:
+        text = str(message)
+        if STUDENT_MESH_LIMIT in text:
+            size = ""
+            if "Mesh size (" in text:
+                size = " (" + text.split("Mesh size (", 1)[1].split(")", 1)[0] + ")"
+            return (f"the solved mesh{size} is over the student licence's limit, so the fields "
+                    "cannot be read on this machine -- the frequencies and Q are unaffected; "
+                    "post-process with a full licence, or solve a coarser mesh")
+    return None
+
+
 def run_post_processing(hfss, task: Dict[str, Any], mode_context: Dict[str, Any], out_dir: str) -> Dict[str, Any]:
     """Run every op listed in task['post_processing'] for a single mode."""
     combined: Dict[str, Any] = {}
+    known = getattr(hfss, "_mesh_limit_reason", None)
+    if known:
+        return {"skipped": True, "reason": known}
     for step in task.get("post_processing", []):
         op_name = step.get("op")
         op_fn = POST_PROCESSING_OPS.get(op_name)
@@ -274,6 +305,15 @@ def run_post_processing(hfss, task: Dict[str, Any], mode_context: Dict[str, Any]
             result = op_fn(hfss, task, mode_context, step.get("params", {}), out_dir)
             combined.update(result or {})
         except Exception as exc:  # keep going so one bad op doesn't kill the rest
+            reason = mesh_limit_reason(hfss)
+            if reason:
+                # Not a failure of this op: nothing here can read the
+                # fields, and trying again only repeats the same error
+                # for every op of every mode.
+                hfss._mesh_limit_reason = reason
+                combined.pop("post_processing_errors", None)
+                combined.update({"skipped": True, "reason": reason})
+                break
             combined.setdefault("post_processing_errors", []).append(f"{op_name} failed: {exc}")
     return combined
 

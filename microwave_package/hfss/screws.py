@@ -79,15 +79,15 @@ def _import_screw(hfss, length: int, name: str, log) -> str:
     return name
 
 
-def build_screws(hfss, frame, stack, values, copper_targets: List[str],
-                 log=logger.info) -> Optional[List[str]]:
+def build_screws(hfss, frame, stack, values, log=logger.info) -> Optional[List[str]]:
     """Cut the holes and stand the four screws up. Returns their names, or
     None when `screws_on` is off.
 
-    `copper_targets` are the board's copper bodies, which the keep-out is
-    cut out of. Raises ValueError, naming what to change, if the lid is too
-    thin for the head, the screw is longer than any model, or it would come
-    out of the box.
+    The copper round each hole is not cut here: the Altium board is drawn
+    without it, and `copper.txt` carries it into the model (see
+    GenerateFromParams.pas, AddScrewBlocks). Raises ValueError, naming what
+    to change, if the lid is too thin for the head, the screw is longer
+    than any model, or it would come out of the box.
     """
     screws = screw_plan.plan(values)
     if screws is None:
@@ -123,7 +123,6 @@ def build_screws(hfss, frame, stack, values, copper_targets: List[str],
         f"from the M2x{model} model" + (f" cut {trim:.2f} mm shorter." if trim > 1e-6 else "."))
 
     shank_r = screw_plan.SCREW_DIAMETER / 2.0
-    keepout_r = screws.keepout_diameter / 2.0
     clear_r = screws.clearance_diameter / 2.0
 
     names: List[str] = []
@@ -140,14 +139,6 @@ def build_screws(hfss, frame, stack, values, copper_targets: List[str],
                               stack.pcb_bottom - OVERSHOOT, stack.pcb_top + OVERSHOOT,
                               f"{tag}_pcb_hole")
         modeler.subtract("pcb_substrate", [pcb_hole], keep_originals=False)
-
-        # board copper: the keep-out, through both layers
-        if copper_targets:
-            span = max(stack.copper_thickness, OVERSHOOT)
-            keepout = _hole_tool(modeler, frame, u, v, keepout_r,
-                                 stack.pcb_bottom - span - OVERSHOOT,
-                                 stack.pcb_copper_top + OVERSHOOT, f"{tag}_keepout")
-            modeler.subtract(list(copper_targets), [keepout], keep_originals=False)
 
         # lid: clearance bore and countersink
         sink = _countersink_tool(modeler, frame, u, v, screws, lid_top, lid_bottom, f"{tag}_sink")
