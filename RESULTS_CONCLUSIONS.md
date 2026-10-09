@@ -230,21 +230,64 @@ gives up round a screw reaches 2 mm from the centre line but the SMP launch is
 [run_20261009_230504]. S21 is poor everywhere because that port is a tap, so
 the clean fractions cannot be compared, but the depths can: the notches at
 16.75 and 17.15 GHz fall from -38 and -52 dB to -4 dB, and 25.75 GHz from -68 to
--40 dB. So the deepest notches are tied to the SMP connector and its launch;
+-40 dB. This suggests the deepest notches are tied to the SMP connector and its launch (the lumped port is a different port, so it is not a clean A/B);
 the box modes alone (B1) have none within 0.2 GHz of 16.75 GHz.
 
 **What this says for the design.** (1) The deepest notches above 16 GHz do not
 move with the board's length or width, are absent as eigenmodes, and shrink
 when the connector is removed: look at the connector and its launch (the
 capped bore and the pin in the model, the ground fence and `route_clearence`
-at the launch), not at the box. (2) The chip makes S21 worse in every band, so
-for the clean-band target a smaller chip opening and fewer chip features are
-worth more than anything done to the box. (3) The box modes still sit at
+at the launch), not at the box. (2) The chip makes S21 worse in every band (measured); whether
+removing or shrinking it is worth more than the box levers is not measured yet. (3) The box modes still sit at
 the places the earlier runs found; board size remains the lever that moves
 them.
 
-Next: the lid channel and the via lattice (one dimension at a time), a 35 mm
-board length, and eigenmodes above 18.6 GHz (start the search at about 18 GHz).
+**B5, via lattice step** (`via_max_spacing`; bare 50 x 25 mm, connector plane)
+[run_20261009_232127]. The deep
+notch moves with the lattice: 17.5 GHz (-47 dB) at 0.5 mm, 16.75 GHz (-38 dB)
+at 0.8 mm, 15.75 GHz (-68 dB) at 1.2 mm, and the one near 25.75 GHz moves to
+24.5 GHz at 1.2 mm. So they depend on the via lattice, not on the connector
+alone. Clean fractions of 2-10 / 10-17 / 17-20 / 20-26 GHz: 0.5 mm 75 / 39 / 8 / 0 %;
+0.8 mm 80 / 50 / 1 / 0 %; 1.2 mm 72 / 32 / 50 / 0 %.
+
+**B6, eigenmodes from about 15 GHz at via 0.5 and 1.2 mm** [run_20261010_002210] (8 modes, loose
+convergence). The modes split in two kinds. Those with Q of 1000-2100 do not
+move with the via lattice (15.13, 15.55, 16.94, 17.08 and 18.58 GHz): box
+modes. Those with Q of 450-580 do, and monotonically: one goes 15.88, 15.67,
+15.46 GHz for 0.5, 0.8, 1.2 mm, another 17.61, 17.41 GHz for 0.5, 0.8 mm: modes
+of the substrate between the via fences, which the lattice sets, with the lower Q
+of a lossy dielectric. None lies at 16.75 or 25.75 GHz, so those notches
+are not eigenmodes of the structure as modelled (the eigenmode model has no ports).
+
+**B7, lid relief depth** (`route_clearence`, entered in micrometres; the first
+attempt used 0.2 and 0.5 *um* by mistake, which shorts the trace: S21 -90 dB at
+2 GHz) at 200 and 500 um against the 40 um default [run_20261010_012304]. Clean
+fractions 62 / 75 / 17 / 0 % (200 um) and 62 / 75 / 8 / 0 % (500 um), against
+80 / 50 / 1 / 0 % for 40 um: a deeper relief lifts the 10-17 GHz band from 50 to
+75 % clean at the price of 18 points in 2-10 GHz. The notches at 16.75 and 25.25 GHz stay.
+
+**Summary of the levers so far** (bare 50 x 25 mm board, the share of each band that is
+clean; baseline 80 / 50 / 1 / 0 %):
+
+| Change | 2-10 | 10-17 | 17-20 | 20-26 GHz |
+|---|---|---|---|---|
+| via step 0.5 mm | 75 | 39 | 8 | 0 |
+| via step 1.2 mm | 72 | 32 | 50 | 0 |
+| lid relief 200 um | 62 | 75 | 17 | 0 |
+| lid relief 500 um | 62 | 75 | 8 | 0 |
+| board length 40 mm | 59 | 50 | 0 | 4 |
+| board width 35 mm | 75 | 36 | 8 | 0 |
+| with the chip (B1c) | 66 | 32 | 8 | 0 |
+
+No single change cleans 20-26 GHz: a deep notch between 24.5 and 25.75 GHz
+survives all of them, moving with the via step but never leaving the band. These
+are 0.25 GHz-step scans, so a narrow notch can be missed and the fractions are
+a guide to position, not a measurement of depth (perfect E exaggerates it).
+
+Next: the launch levers (the ground-via setback near the launch, the connector's
+distance from the wall), a combination of the helpful ones (via step 1.2 mm with a
+deeper relief), the 25 GHz notch (what it is: it survives a lumped port and every
+board change), a 35 mm board length, and the 30 mm degenerate solve.
 
 ## What to do next
 
