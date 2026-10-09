@@ -287,9 +287,17 @@ class Run:
         sweep_params: List[SweepParameter],
         analysis_settings: dict,
         parameter_defaults: Optional[Dict[str, float]] = None,
+        *,
+        part_of: Optional["Run"] = None,
+        role: Optional[str] = None,
     ) -> "Run":
+        """`part_of` makes a hidden part of another run (see companion.py):
+        it is stored like any run but is not listed on its own, and its id
+        carries `role` so the folder says what it is."""
         run_id = _dt.datetime.now().strftime("run_%Y%m%d_%H%M%S")
-        # Two runs made in the same second (a pair is) must not share a folder.
+        if part_of is not None:
+            run_id = f"{part_of.run_id}_{role or 'part'}"
+        # Two runs made in the same second must not share a folder.
         taken, suffix = run_id, 1
         while os.path.exists(os.path.join(str(paths.RUNS_ROOT), run_id)):
             suffix += 1
@@ -307,6 +315,9 @@ class Run:
             "analysis_settings": analysis_settings,
             "created_at": _dt.datetime.now().isoformat(timespec="seconds"),
         }
+        if part_of is not None:
+            run.config["part_of"] = part_of.run_id
+            run.config["part_role"] = role
         combos = combinations(sweep_params, parameter_defaults)
 
         # Each combination's full geometry -- the equations file's values
@@ -386,17 +397,28 @@ class Run:
                 config = cls._read_json(os.path.join(run_dir, "run_config.json"))
             except (OSError, json.JSONDecodeError):
                 config = {}
+            if config.get("part_of"):
+                continue  # a part of another run: shown on that run's page, not on its own
             swept = [
                 {"label": parameter_meta.label_for(p["name"]), "n": len(p.get("values", []))}
                 for p in config.get("sweep_params", [])
             ]
+            progress_state, shown_stage = state, state.get("stage")
+            if shown_stage == "eigenmodes" and config.get("eigen_run_id"):
+                # Its eigenmodes are being solved first: what the list shows
+                # is that part's progress, since this run has none yet.
+                try:
+                    progress_state = cls._read_json(
+                        os.path.join(runs_root, config["eigen_run_id"], "state.json"))
+                except (OSError, json.JSONDecodeError):
+                    pass
             summaries.append({
                 "run_id": run_id,
                 "label": (config.get("label") or "").strip(),
                 "created_at": config.get("created_at"),
-                "stage": state.get("stage"),
+                "stage": shown_stage,
                 "swept": swept,
-                **progress_of(state, config.get("analysis_settings")),
+                **progress_of(progress_state, config.get("analysis_settings")),
             })
         return summaries
 
@@ -554,6 +576,12 @@ class Run:
     @property
     def sweep_param_names(self) -> List[str]:
         return [p["name"] for p in self.config.get("sweep_params", [])]
+
+    @property
+    def parent_id(self) -> Optional[str]:
+        """The run this one is a hidden part of (its eigenmodes, or a
+        refinement of it), or None for a run in its own right."""
+        return self.config.get("part_of")
 
     @property
     def label(self) -> str:

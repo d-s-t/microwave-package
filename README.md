@@ -276,26 +276,34 @@ already built or queued is lost.
 
 ## Eigenmode and Driven together
 
-An HFSS design has one solution type, and a queue task names one project,
-one design and one solution type, so an Eigenmode design and a Driven
-Modal design cannot share a setup or a task. A combination is therefore
-solved as **a pair of ordinary runs over the same sweep**, linked on
-their status pages and in their configs (`eigen_run_id` / `driven_run_id`;
-see [`workflow/companion.py`](microwave_package/workflow/companion.py)).
-The queue schema is unchanged and the worker needs no change.
+A run can solve both questions for every combination on the same
+geometry, and it is **one run** in the web app: one entry in the run list,
+one status page, one results view with the eigenmodes marked on the S21
+plot and listed under it.
+
+Underneath, an HFSS design has one solution type, and a queue task names
+one project, one design and one solution type, so the two solves cannot
+share a setup or a task. The run therefore keeps its eigenmode part as a
+**hidden part** of itself (`part_of` in its config, a folder named
+`<run>_eigen` beside it; see
+[`workflow/companion.py`](microwave_package/workflow/companion.py)). The
+queue schema is unchanged and the worker needs no change. Hidden parts are
+not listed, their pages redirect to the run's, and deleting the run deletes
+them with it.
 
 - Tick **Both, on the same geometry** under *What to solve* (on by
   default; `--no-pair` on the command line turns it off). It needs
   `port_count = 2`, and is refused up front otherwise.
-- The **Eigenmode run goes first**. The **Driven run** then starts from its
-  geometry (the STEP files and copper, so Altium and SolidWorks are not
-  asked again) and reads its modes. Starting, stopping or resuming the
-  Driven run does the same to the Eigenmode run it waits for; resuming the
-  Eigenmode run alone works as before. If the Eigenmode run fails, the
-  Driven run still goes ahead with the coarse sweep alone and says so.
+- **Eigenmodes first.** The run's stage reads "Solving eigenmodes first
+  (step 1 of 2)" and its page and list row show that step's progress; then
+  the S-parameter step starts from the same geometry (the STEP files and
+  copper -- Altium and SolidWorks are not asked again) and reads the modes.
+  Stopping or resuming the run does the same to both steps. If the
+  eigenmode step fails, the S-parameter step still goes ahead with the
+  broad sweep alone and says so.
 - **Fine windows.** Box modes have Q of about 60-500, so they are 25-35 MHz
-  wide while the coarse sweep steps about 100 MHz, and a narrow dip is
-  under-sampled. Beside the coarse sweep, each eigenmode below the sweep
+  wide while the broad sweep steps about 100 MHz, and a narrow dip is
+  under-sampled. Beside the broad sweep, each eigenmode below the sweep
   stop gets a window of its own, as extra interpolating sweeps (`Fine_1`,
   `Fine_2`, ...) in the same setup:
   half-width = 0.5 x f/Q (that is f/(2Q)) plus a 1 % margin on f, step =
@@ -307,37 +315,39 @@ The queue schema is unchanged and the worker needs no change.
   half-width*, *Points per linewidth*, *Window margin*, *Q to assume when
   an eigenmode has none*, *Max fine-window points*), as are *Fine windows*
   (automatic or off) and *Extra fine windows*, a list of `lo:hi:step` in
-  GHz, for windows you pick yourself -- those work without an Eigenmode run
+  GHz, for windows you pick yourself -- those work without eigenmodes
   too. The fine points are folded into the run's results, in frequency
   order, with a `sweep` column saying which sweep each came from.
 - **Mesh frequency.** *Adapt the mesh at* is the top of the sweep by default
   (as before); the other choice is just above the highest eigenmode in
   the band.
-- **Plots.** The driven run's S-parameter plot against frequency shows the
-  paired run's eigenmodes as triangles along the foot of the curves; they
-  follow the combination filter. Hover for the mode's frequency and Q.
-- Each run is complete in itself, so the comparison page, results CSVs and
-  deleting a run work on each as before. Runs made before this exist
-  unpaired and are untouched.
+- **Results.** The S-parameter plot against frequency marks the eigenmodes
+  as triangles along its foot (they follow the combination filter; hover for
+  frequency and Q), and an *Eigenmodes* table under it lists them, with a
+  CSV. The chip-field heatmaps come from the eigenmode step too.
 
 ### Refining a frequency range afterwards
 
-On a finished Driven run's page, **Refine a frequency range** re-solves
-chosen combinations over narrower ranges, for as many ranges as you like
-(`lo:hi:step` in GHz, `;`-separated; `lo:hi` alone takes 100 steps; or
-*+ use the plot's zoom range* to take whatever the plot is zoomed to).
-It starts a new Driven run linked to the first: the same geometry (borrowed,
-not rebuilt), the same settings, only the chosen combinations, no broad
-sweep, and the mesh adapted at the frequency the original adapted at so
-the two line up. Refining again adds more.
+On a finished run's page, **Refine a frequency range** re-solves chosen
+combinations over narrower ranges. Any number of ranges, each
+`lo:hi:step` in GHz (`lo:hi` alone takes 100 steps), `;`-separated, typed
+in or added with:
 
-The original run's plot then has a **Data** selector: *Broad only*, *Fine
-ranges only* (each range its own piece, not one line across the gaps), or
-*Broad + fine, one trace* (the default), where a fine window's points
-replace the broad sweep's interpolated samples inside it. The fine windows
-placed around eigenmodes automatically are fine data too, so the same
-selector works on them. The refinement is a run in its own right, with its
-own page and results.
+- *+ plot's zoom range* -- whatever the plot above is zoomed to; or
+- *+ around the eigenmodes between [from] and [to]* -- a window around each
+  eigenmode in that range (blank = the whole band) for the ticked
+  combinations, sampled twice as densely as the automatic windows.
+
+The refinement is **part of the same run**, not a new entry: it is listed
+in that section with its state and Stop/Resume, it uses the run's
+geometry and settings (borrowed, not rebuilt), solves only the chosen
+ranges for the chosen combinations with no broad sweep, and adapts its mesh
+where the original did so the two line up. Its points join the run's
+results and CSV, and the plot's **Data** selector then switches between
+*Broad only*, *Fine ranges only* (each range its own piece, not one line
+across the gaps) and *Broad + fine, one trace* (the default), where a fine
+window's points replace the broad sweep's interpolated samples inside it.
+The automatic windows count as fine data too. Refining again adds more.
 
 Caveat: the refinement rebuilds the model and re-adapts the mesh rather than
 reusing the solved project, so with identical settings it should land on the

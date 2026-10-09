@@ -50,21 +50,36 @@ _GEOMETRY_FILES = ("dimensions.txt", "copper.txt", "bonds.txt")
 
 
 def create_pair(sweep_params, analysis_settings: dict, parameter_defaults=None) -> Tuple[Run, Run]:
-    """Create the Eigenmode run and the Driven run that follows it.
+    """Create the Driven run the user asked for, and the Eigenmode run behind it.
 
-    Returns `(eigenmode_run, driven_run)`. Both carry the same sweep and
-    the same settings except for the solution type; each is told about the
-    other.
+    Returns `(eigenmode_run, driven_run)`. The Driven run is the one that
+    is listed and has the page; the Eigenmode run is a hidden part of it
+    (`part_of`), whose progress and results are shown there. They carry the
+    same sweep and the same settings except for the solution type.
     """
-    eigen = Run.create(sweep_params, {**analysis_settings, "solution_type": EIGENMODE},
-                       parameter_defaults)
     driven = Run.create(sweep_params, {**analysis_settings, "solution_type": DRIVEN_MODAL},
                         parameter_defaults)
+    eigen = Run.create(sweep_params, {**analysis_settings, "solution_type": EIGENMODE},
+                       parameter_defaults, part_of=driven, role="eigen")
     eigen.config[DRIVEN_LINK] = driven.run_id
     driven.config[EIGEN_LINK] = eigen.run_id
     eigen.save_config()
     driven.save_config()
     return eigen, driven
+
+
+def parts_of(run: Run) -> List[Run]:
+    """The hidden runs that belong to this one: its eigenmode run and its
+    refinements. What deleting the run deletes along with it."""
+    found = []
+    for run_id in [run.config.get(EIGEN_LINK), *(run.config.get(REFINED_BY) or [])]:
+        if not run_id:
+            continue
+        try:
+            found.append(Run.load(run_id))
+        except (OSError, ValueError, KeyError):
+            continue
+    return found
 
 
 def prerequisite_of(run: Run) -> Optional[Run]:
@@ -155,11 +170,11 @@ def create_refinement(parent: Run, ranges_text: str, combo_ids: List[str],
     }
     sweep_params = [SweepParameter(name=p["name"], values=p["values"])
                     for p in parent.config.get("sweep_params", [])]
-    child = Run.create(sweep_params, child_settings, parent.parameter_defaults)
+    child = Run.create(sweep_params, child_settings, parent.parameter_defaults,
+                       part_of=parent, role=f"fine{len(parent.config.get(REFINED_BY) or []) + 1}")
     keep = set(wanted)
     child.state["combos"] = {c: v for c, v in child.state["combos"].items() if c in keep}
     child.config[REFINES_LINK] = parent.run_id
-    child.config["label"] = f"{parent.label or parent.run_id} (fine)"[:80]
     child.save()
     parent.config[REFINED_BY] = [*parent.config.get(REFINED_BY, []), child.run_id]
     parent.save_config()
@@ -294,3 +309,48 @@ def mode_markers(run: Run, combo_ids=None) -> List[Dict[str, object]]:
         for f, q in modes_of(other, combo_id):
             markers.append({"combo_id": combo_id, "freq_ghz": f, "q": q})
     return markers
+
+
+def mode_ranges(run: Run, combo_ids, lo_ghz: Optional[float] = None,
+                hi_ghz: Optional[float] = None) -> str:
+    """The `lo:hi:step; ...` text for refining around the eigenmodes of
+    `combo_ids` that fall between `lo_ghz` and `hi_ghz` (the whole band by
+    default), using the run's own window settings but sampling twice as
+    densely as the automatic windows do -- the point of refining.
+
+    Several combinations' windows are merged into one list: a refinement
+    solves one set of ranges for every combination it is given. Empty when
+    no mode falls in the range.
+    """
+    from ..hfss.driven import windows
+
+    settings = run.analysis_settings
+    f_start = float(settings.get("f_start_ghz", 0.0))
+    f_stop = float(settings.get("f_stop_ghz", 0.0))
+    found = []
+    for combo_id in combo_ids:
+        found += [(f, q) for f, q in eigenmodes_for(run, combo_id)
+                  if (lo_ghz is None or f >= lo_ghz) and (hi_ghz is None or f <= hi_ghz)]
+    if not found:
+        return ""
+    planned = windows.merge(windows.windows_from_modes(
+        found, f_start, f_stop,
+        halfwidth_linewidths=float(settings.get("fine_halfwidth_linewidths", 0.5)),
+        points_per_linewidth=2 * float(settings.get("fine_points_per_linewidth", 20.0)),
+        margin_percent=float(settings.get("fine_margin_percent", 1.0)),
+        fallback_q=float(settings.get("fine_q_fallback", 200.0)),
+    ))
+    return "; ".join(f"{w.lo:.4f}:{w.hi:.4f}:{w.step:.5f}" for w in planned)
+
+
+def eigenmode_table(run: Run) -> List[Dict[str, object]]:
+    """Every eigenmode of the paired Eigenmode run as `{combo_id, mode, freq_ghz, q}`,
+    for the run page's table. `[]` for a run with no eigenmode part."""
+    other = prerequisite_of(run)
+    if other is None:
+        return []
+    rows = []
+    for combo_id in other.state.get("combos", {}):
+        for index, (f, q) in enumerate(modes_of(other, combo_id), start=1):
+            rows.append({"combo_id": combo_id, "mode": index, "freq_ghz": f, "q": q})
+    return rows

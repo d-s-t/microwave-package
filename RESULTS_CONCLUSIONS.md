@@ -187,12 +187,15 @@ It says nothing about the board's transmission.
    page. The same pair, with *Perfect E on box/lid_inside* off, gives the
    dip depth a lossy wall would show.
 
-   **New (not yet run, and only unit-tested):** one run can now solve both
-   the eigenmodes and the S-parameters of each combination, with fine
-   windows around each mode and the modes drawn on the S21 plot. See the
-   README, "Eigenmode and Driven together". Nothing in this paragraph has
-   been tried on AEDT: the setup code, sweep merging and the finite-
-   conductivity boundary were tested against stand-ins for HFSS only.
+   **New:** one run now solves both the eigenmodes and the S-parameters of
+   each combination, with fine windows around each mode, the modes drawn on
+   the S21 plot, and a *Refine a frequency range* section on the run's page
+   for narrower re-solves (all part of the same run). See the README,
+   "Eigenmode and Driven together". Checked on AEDT with one combination:
+   20 modes, 12 fine windows, 2365 merged points; the fine windows resolved a
+   very sharp step near 15.8 GHz that the broad sweep only showed as a jump.
+   The refinement of the 16.6-17.1 GHz dip had not finished solving when this
+   was written.
 
 ## Defaults changed
 

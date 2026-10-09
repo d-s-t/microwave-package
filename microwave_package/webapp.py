@@ -62,6 +62,7 @@ app = Flask(__name__)
 # colour kind ("ok"/"busy"/"bad"/"muted") the .pill class understands.
 _STAGE_DISPLAY = {
     "created": ("Created", "muted"),
+    "eigenmodes": ("Solving eigenmodes first (step 1 of 2)", "busy"),
     "generating_and_queuing": ("Building geometry", "busy"),
     "geometry_ready": ("Waiting for the queue", "busy"),
     "monitoring": ("Analysing", "busy"),
@@ -71,6 +72,19 @@ _STAGE_DISPLAY = {
     "stopped": ("Stopped", "muted"),
     "error": ("Error", "bad"),
 }
+
+
+def _shown_run(run):
+    """The part of a run whose progress the page shows right now.
+
+    A run that asks for eigenmodes AND S-parameters is solved in two
+    steps, eigenmodes first, and is one run to the person looking: while
+    the first step is going the page shows that step's phases, and then
+    its own.
+    """
+    if run.state.get("stage") == "eigenmodes":
+        return companion.prerequisite_of(run) or run
+    return run
 
 
 def _stage_display(stage: Optional[str], failed: int = 0) -> dict:
@@ -624,18 +638,12 @@ def new_run():
     except ValueError as complaint:
         return redirect(url_for("index", error=str(complaint)))
     label = request.form.get("label", "").strip()[:80]
-    partner = companion.prerequisite_of(run)
     if notes or label:
-        # A pair is two runs, and both are told what the user said of it.
-        targets = [(run, " (driven)" if partner else "")]
-        if partner:
-            targets.append((partner, " (eigenmodes)"))
-        for each, suffix in targets:
-            if notes:
-                each.config["notes"] = notes
-            if label:
-                each.config["label"] = label[:80 - len(suffix)] + suffix
-            each.save()
+        if notes:
+            run.config["notes"] = notes
+        if label:
+            run.config["label"] = label
+        run.save()
     _start_pipeline_thread(run)
     return redirect(url_for("run_status", run_id=run.run_id))
 
@@ -743,6 +751,10 @@ def _combo_rows(run) -> dict:
 @app.route("/runs/<run_id>")
 def run_status(run_id):
     run = Run.load(run_id)
+    if run.parent_id:
+        # A hidden part (its eigenmodes, or a refinement): shown on its run's page.
+        return redirect(url_for("run_status", run_id=run.parent_id))
+    shown = _shown_run(run)
     plot_exists = os.path.exists(os.path.join(run.plots_dir, plotting.PLOT_FILENAME))
     df = _results_frame(run)
     options = plotting.axis_options(df, run.sweep_param_names) if df is not None else []
@@ -756,7 +768,7 @@ def run_status(run_id):
     )
 
     stage = run.state.get("stage")
-    progress = run.progress
+    progress = shown.progress
     started = _run_started(run)
     try:
         updated = _dt.datetime.fromtimestamp(os.path.getmtime(run.state_path))
@@ -771,11 +783,12 @@ def run_status(run_id):
         "run_status.html",
         run=run,
         run_name=_run_name(run),
-        pair_link=_pair_link(run),
+        pair_note=_pair_note(run),
+        eigenmodes=companion.eigenmode_table(run),
         has_fine=df is not None and plotting.has_fine_data(df),
         views=plotting.VIEWS,
         refine=_refine_panel(run),
-        rows=_combo_rows(run),
+        rows=_combo_rows(shown),
         phases=_phase_meta(),
         is_running=_is_running(run_id) or bool(elsewhere),
         is_stopping=_is_stopping(run_id),
@@ -793,7 +806,7 @@ def run_status(run_id):
         default_y=axes["y"],
         default_color=axes["color"] or "",
         disk_usage_mb=_run_disk_usage(run) / (1024 * 1024),
-        heatmap_combos=_chip_field_combos(run),
+        heatmap_combos=_chip_field_combos(companion.prerequisite_of(run) or run),
         step_viewer_available=_step_viewer_available(),
         filter_options=filters,
         # A finished run's combination table is a record rather than
@@ -803,32 +816,37 @@ def run_status(run_id):
     )
 
 
-def _pair_link(run) -> Optional[dict]:
-    """What to say, and where to link, for a run that is half of a pair."""
-    if run.config.get(companion.EIGEN_LINK):
-        return {"run_id": run.config[companion.EIGEN_LINK],
-                "text": "Driven run paired with the Eigenmode run"
-                        " whose modes its fine frequency windows are centred on:"}
-    if run.config.get(companion.DRIVEN_LINK):
-        return {"run_id": run.config[companion.DRIVEN_LINK],
-                "text": "Eigenmode run paired with the Driven run that follows it, on the same geometry:"}
-    return None
+def _pair_note(run) -> Optional[str]:
+    """One line saying what a run that solves both is doing, or None."""
+    if not run.config.get(companion.EIGEN_LINK):
+        return None
+    return ("Solves the eigenmodes and the S-parameters of every combination on the same "
+            "geometry: eigenmodes first, then the S-parameter sweep with fine frequency "
+            "windows around each mode. The modes are marked on the S21 plot and listed "
+            "under the results.")
 
 
 def _refine_panel(run) -> Optional[dict]:
     """What the run page's refine panel needs, or None when the run has
     nothing to refine: it must be a driven run with some finished
-    combinations. Also lists the refinements already made from it."""
+    combinations. Also lists the refinements already made from it -- they
+    belong to this run, so they are listed here, not in the run list."""
     if registry.solution_type_of(run.analysis_settings) != "DrivenModal":
         return None
-    parent = companion.refined_parent(run)
+    children = []
+    for child in companion.refinements_of(run):
+        shown = _stage_display(child.state.get("stage"), child.progress["failed"])
+        children.append({
+            "run_id": child.run_id, "stage": shown["label"], "kind": shown["kind"],
+            "ranges": child.analysis_settings.get("fine_windows_manual", ""),
+            "combos": list(child.state["combos"]),
+            "running": _is_running(child.run_id),
+            "error": child.state.get("error"),
+        })
     return {
         "combos": companion.refinable_combos(run),
-        "children": [{"run_id": c.run_id, "name": _run_name(c), "stage": c.state.get("stage"),
-                      "ranges": c.analysis_settings.get("fine_windows_manual", ""),
-                      "combos": list(c.state["combos"])}
-                     for c in companion.refinements_of(run)],
-        "refines": parent.run_id if parent else None,
+        "children": children,
+        "has_modes": bool(companion.eigenmode_table(run)),
     }
 
 
@@ -843,7 +861,23 @@ def refine_run(run_id):
     except ValueError as complaint:
         return redirect(url_for("run_status", run_id=run_id, error=str(complaint)))
     _start_pipeline_thread(child)
-    return redirect(url_for("run_status", run_id=child.run_id))
+    return redirect(url_for("run_status", run_id=run_id) + "#refine")
+
+
+@app.route("/runs/<run_id>/mode-ranges.json")
+def mode_ranges_json(run_id):
+    """The refine ranges for the eigenmodes between `lo` and `hi` GHz of the
+    chosen combinations, to fill the form's ranges box."""
+    run = Run.load(run_id)
+
+    def number(name):
+        try:
+            return float(request.args[name])
+        except (KeyError, ValueError):
+            return None
+
+    combos = request.args.getlist("combo") or companion.refinable_combos(run)
+    return jsonify({"ranges": companion.mode_ranges(run, combos, number("lo"), number("hi"))})
 
 
 def _run_disk_usage(run) -> int:
@@ -962,16 +996,17 @@ def delete_run(run_id):
     # Lazily, so deleting a run still works with the share down: the
     # per-task removals below already tolerate failing individually.
     queue = resilient_io.queue_from_env("ANSYS_ANALYZE_QUEUE_PATH")
-    for combo in run.state.get("combos", {}).values():
-        task_id = combo.get("task_id")
-        if not task_id:
-            continue
-        try:
-            _clear_queued_task(queue, task_id)
-        except OSError as exc:
-            logger.warning("Could not clear queue files for task %s: %s", task_id, exc)
-
-    shutil.rmtree(run.run_dir, ignore_errors=True)
+    # Its eigenmode run and refinements are parts of it and go with it.
+    for each in [*companion.parts_of(run), run]:
+        for combo in each.state.get("combos", {}).values():
+            task_id = combo.get("task_id")
+            if not task_id:
+                continue
+            try:
+                _clear_queued_task(queue, task_id)
+            except OSError as exc:
+                logger.warning("Could not clear queue files for task %s: %s", task_id, exc)
+        shutil.rmtree(each.run_dir, ignore_errors=True)
     logger.info("Deleted run %s", run_id)
     return redirect(url_for("index"))
 
@@ -993,7 +1028,11 @@ def run_status_json(run_id):
     re-sent megabytes on every poll.
     """
     run = Run.load(run_id)
-    prog = run.progress
+    if run.parent_id:
+        run = Run.load(run.parent_id)
+        run_id = run.run_id
+    shown = _shown_run(run)
+    prog = shown.progress
     elsewhere = _driven_elsewhere(run_id)
     return jsonify({
         "run_id": run.run_id,
@@ -1007,8 +1046,8 @@ def run_status_json(run_id):
         # so the page can reload itself once, when the plot first appears
         "plot_ready": os.path.exists(os.path.join(run.plots_dir, plotting.PLOT_FILENAME)),
         "combos": {
-            combo_id: _phase_csv(run, combo)
-            for combo_id, combo in run.state["combos"].items()
+            combo_id: _phase_csv(shown, combo)
+            for combo_id, combo in shown.state["combos"].items()
             if not combo.get("skip_reason")
         },
     })
@@ -1159,6 +1198,7 @@ def _chip_field_entries(run, combo_ids) -> list:
 def run_heatmap(run_id):
     """Chip top-face |E|, for one combination or all of them at once."""
     run = Run.load(run_id)
+    run = companion.prerequisite_of(run) or run   # the fields are the eigenmode part's
     wanted = request.args.get("combo") or "all"
     available = _chip_field_combos(run)
     combos = available if wanted == "all" else [c for c in available if c == wanted]
@@ -1323,8 +1363,21 @@ def combo_details(run_id, combo_id):
 
 @app.route("/runs/<run_id>/results.csv")
 def run_results_csv(run_id):
+    """The results table as the plot has it: for a run that was refined, the
+    refinements' rows are in it too, told apart by the `sweep` column."""
     run = Run.load(run_id)
-    return send_from_directory(run.plots_dir, plotting.RESULTS_FILENAME, as_attachment=True)
+    df = _results_frame(run)
+    if df is None:
+        return send_from_directory(run.plots_dir, plotting.RESULTS_FILENAME, as_attachment=True)
+    return Response(df.to_csv(index=False), mimetype="text/csv", headers={
+        "Content-Disposition": f"attachment; filename={plotting.RESULTS_FILENAME}"})
+
+
+@app.route("/runs/<run_id>/eigenmodes.csv")
+def run_eigenmodes_csv(run_id):
+    rows = companion.eigenmode_table(Run.load(run_id))
+    return Response(pd.DataFrame(rows).to_csv(index=False), mimetype="text/csv", headers={
+        "Content-Disposition": "attachment; filename=eigenmodes.csv"})
 
 
 # -- comparing runs ----------------------------------------------------------

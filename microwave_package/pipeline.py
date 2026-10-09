@@ -199,6 +199,7 @@ def _finish_prerequisite(run: Run, queue, log=logger.info, stop_event=None) -> b
     if _being_driven(eigen.run_id):
         # Something else in this process is already finishing it. Wait for
         # that rather than starting a second driver on the same run.
+        run.set_stage("eigenmodes")
         log(f"Eigenmode run {eigen.run_id} is being driven by another thread -- waiting for it "
             "to finish before building this run's models.")
         while _being_driven(eigen.run_id):
@@ -208,8 +209,9 @@ def _finish_prerequisite(run: Run, queue, log=logger.info, stop_event=None) -> b
             time.sleep(1.0)
         eigen = Run.load(eigen.run_id)
     if eigen.state.get("stage") != "complete":
-        log(f"This run is paired with Eigenmode run {eigen.run_id}, whose modes its fine "
-            "frequency windows are centred on -- finishing that one first.")
+        log(f"This run's eigenmodes ({eigen.run_id}) are solved first: its fine frequency "
+            "windows are centred on them.")
+        run.set_stage("eigenmodes")
         try:
             run_pipeline(eigen, queue, log=log, stop_event=stop_event)
         except Exception as exc:

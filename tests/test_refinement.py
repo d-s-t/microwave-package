@@ -258,7 +258,9 @@ class TestTheParentsPlotCarriesItsRefinements(RunsRoot):
                                data={"ranges": "12:13:0.01", "combo": combo})
         self.assertEqual(start.call_count, 1)
         child = start.call_args[0][0]
-        self.assertIn(child.run_id, good.headers["Location"])
+        # the refinement belongs to the run: back to its page, not a new one
+        self.assertTrue(good.headers["Location"].startswith("/runs/" + parent.run_id))
+        self.assertEqual(child.parent_id, parent.run_id)
 
 
 def expected_x(view):
