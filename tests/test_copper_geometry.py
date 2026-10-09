@@ -601,6 +601,8 @@ class TestAgainstRealExport(unittest.TestCase):
         if not os.path.isfile(self.PATH):
             self.skipTest("copper.txt not present -- run the Altium generator first")
         boards = cg.read_file(self.PATH)
+        if "chip" not in boards:
+            self.skipTest("the generated copper.txt is a bare board (no_chip) -- generate a full one")
         self.assertIn("package", boards)
         self.assertIn("chip", boards)
         self.assertGreater(len(boards["package"].vias), 0)
@@ -1073,6 +1075,8 @@ class TestExportedLayoutIsSane(unittest.TestCase):
         self.smp = smp
         self.v = eq.get_numeric_parameters(eq.read_file(str(paths.DEFAULT_EQUATIONS_FILE)))
         boards = cg.read_file(self.PATH)
+        if "chip" not in boards:
+            self.skipTest("the generated copper.txt is a bare board (no_chip) -- generate a full one")
         self.pkg = boards["package"]
         self.chip = boards.get("chip")
         self.trace = self.v["cpw_trace_width"]

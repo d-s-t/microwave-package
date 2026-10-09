@@ -253,7 +253,7 @@
     wire bonds. It separates what the board and connectors do from what the chip does. Applies to the
     whole run. The bond-finger and chip reference planes do not exist without a chip.</p>
   <label><input type="checkbox" name="no_chip" value="1"
-    {% if values.get('no_chip') == '1' %}checked{% endif %}> Bare board (no chip)</label>
+    {% if no_chip_ticked %}checked{% endif %}> Bare board (no chip)</label>
   {% endif %}
 
   {% if has_screws_param %}
@@ -263,7 +263,7 @@
     posts in the corners of the cavity, so this changes the box modes; build a run with and without to
     see by how much. Their dimensions are in the &ldquo;Corner screws&rdquo; group above.</p>
   <label><input type="checkbox" name="screws_on" value="1"
-    {% if values.get('screws_on') == '1' %}checked{% endif %}> Corner screws (M2)</label>
+    {% if screws_ticked %}checked{% endif %}> Corner screws (M2)</label>
   {% endif %}
 
   {% if has_distortion_param %}
