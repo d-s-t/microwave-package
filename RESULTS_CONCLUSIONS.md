@@ -152,6 +152,35 @@ at every frequency from 0.1 to 20 GHz (-8.2 dB at 1 GHz, -4.7 dB at 15 GHz).
 A gap port taps the line, so that floor comes from the port, not the board.
 It says nothing about the board's transmission.
 
+## Box walls: perfect E against finite conductivity
+
+Written 2026-10-09 from the post-merge check of the tools, one combination
+each, default board with chip and corner screws, 3 eigenmodes, run on the
+worker with loose convergence (4 passes, 5 % delta f). Perfect E is the
+default for the box; the other run gives the box and lid a finite-
+conductivity boundary of 1e8 S/m (6061 aluminium at helium temperature is
+of that order).
+
+| Mode | Perfect E: f (GHz), Q | 1e8 S/m: f (GHz), Q |
+|---|---|---|
+| 1 | 2.387, 221 | 2.355, 125 |
+| 2 | 3.728, 275 | 3.701, 217 |
+| 3 | 6.304, 631 | 6.222, 254 |
+
+- **Positions move by about 1 %** (the lowest by 1.3 %, the third by 1.3 %), so
+  perfect E is good enough for placing modes and dips, as assumed.
+- **Q drops by a factor of 1.3-2.5**, more for the higher modes, so perfect E does
+  exaggerate how deep and how narrow a dip is. Read depth from a finite-
+  conductivity run, and only to within a factor of a few.
+- Sweeping `pedestal_depth` over 0.25, 0.5 and 0.75 mm on the same board moved the
+  three modes by less than 0.5 % (2.352-2.355, 3.700-3.715, 6.212-6.222 GHz),
+  with Q unchanged within 3 %. It does not move the low modes, as before.
+
+Side findings of the same check, now fixed: a bare board failed validation
+because the SolidWorks parts read the equations file of another worktree
+(see the README, "The SolidWorks parts' equation link"), and the form's
+"Corner screws" box did nothing when unticked.
+
 ## What to do next
 
 0. Run the bare board (`no_chip`, the "Bare board" tick on the form). It
