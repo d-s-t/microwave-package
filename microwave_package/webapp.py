@@ -342,6 +342,16 @@ def _distortion_limits(parameters, values) -> dict:
     }
 
 
+def _ticked(name: str, values: dict, parameters: dict) -> bool:
+    """Whether a yes/no parameter's tick starts ticked: what the run the
+    form starts from pinned for it, else what the equation file says -- so
+    the form opens on the same board the equation file would build."""
+    pinned = values.get(name)
+    if pinned is not None:
+        return float(pinned) > 0.5
+    return float(parameters.get(name, 0)) > 0.5
+
+
 def _form_starting_point(from_run: Optional[str], combo_id: Optional[str]):
     """The analysis settings and per-parameter values to open the form with.
 
@@ -516,6 +526,8 @@ def index():
         loaded_combo=request.args.get("combo"),
         has_distortion_param=parameter_meta.DISTORTION_PARAM in parameters,
         has_no_chip_param=parameter_meta.NO_CHIP_PARAM in parameters,
+        no_chip_ticked=_ticked("no_chip", values, parameters),
+        screws_ticked=_ticked("screws_on", values, parameters),
         has_screws_param=parameter_meta.SCREWS_PARAM in parameters,
         distortion_mode=distortion_mode,
         distortion_group=_distortion_group(parameters),
@@ -594,10 +606,13 @@ def new_run():
                 p.name == "pedestal_depth" for p in requested):
             requested.append(SweepParameter(name="pedestal_depth", values=[0.0]))
 
-    # The "Corner screws" tick pins screws_on the same way; unticked it
-    # adds nothing and the equation file's own 0 applies.
-    if parameter_meta.SCREWS_PARAM in available and "screws_on" in request.form:
-        requested.append(SweepParameter(name=parameter_meta.SCREWS_PARAM, values=[1.0]))
+    # The "Corner screws" tick pins screws_on for the run, both ways: the
+    # equation file's own value is 1 now, so an unticked box has to say 0
+    # or the run quietly gets screws it was not asked for.
+    if parameter_meta.SCREWS_PARAM in available:
+        requested.append(SweepParameter(
+            name=parameter_meta.SCREWS_PARAM,
+            values=[1.0 if "screws_on" in request.form else 0.0]))
 
     sweep_params, parameter_defaults = split_swept_and_fixed(requested)
     if not sweep_params and not parameter_defaults:
