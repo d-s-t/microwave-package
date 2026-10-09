@@ -191,8 +191,15 @@ the corners is as thick as the thread is long; `lid_width` sets the lid and
 the cavity depth, so the lid ends flush with the box top. Set `screws_on = 0`
 to build without screws: both hole features are suppressed by an equation,
 `floor_width` falls back to `wall_width`, and the Altium holes and the HFSS
-screws are not made. (The box's tap-drill diameter is the standard's 1.6 mm,
-not linked to `screw_tap_diameter`.)
+screws are not made. The box's tap-drill diameter follows
+`screw_tap_diameter`.
+
+Reading fields back from a solved project is limited by the student licence:
+a project whose solved mesh is over its element limit (the default 50 x 25 mm
+board with screws is about a million elements) cannot have its field
+statistics or plots exported on this machine, and the frequencies and Q come
+out regardless. Each affected row is marked skipped with that reason, instead
+of a list of unrelated AEDT errors.
 
 **Stop this run** stops a run without losing anything. It is cooperative
 rather than a kill -- none of the three programs can be interrupted
