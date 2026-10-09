@@ -24,6 +24,12 @@ target is the band above 20 GHz (17 GHz and up is where it starts to matter).
    without bonds to 16.12 GHz with them. The lowest mode moves only 1.4 %.
 6. **Nothing tried so far puts a clean S21 above 20 GHz.** The best run
    still has dips at 15.6-18 GHz and 19-20 GHz.
+7. **The deepest notches above 16 GHz are not box modes** (box study, 2026-10-10).
+   On the 50 x 25 mm bare board S21 is clean for 80 % of 2-10 GHz, 50 % of
+   10-17 GHz and about none above 17 GHz. The notches at 16.75, 18.0 and 25.75
+   GHz stay when the board's length or width changes and shrink when the SMP
+   connector is taken out of the model, so they belong to the connector and its
+   launch. The chip makes every band worse (66 / 32 / 8 / 0 % clean).
 
 ## How much to trust it
 
@@ -180,6 +186,65 @@ Side findings of the same check, now fixed: a bare board failed validation
 because the SolidWorks parts read the equations file of another worktree
 (see the README, "The SolidWorks parts' equation link"), and the form's
 "Corner screws" box did nothing when unticked.
+
+## Box study, 2026-10-09 to 10: where the S21 notches come from (up to 26 GHz)
+
+How it was run: one combination per run unless noted, perfect-E box, corner
+screws on, 2-26 GHz, 97 broad points (0.25 GHz step), loose convergence (4
+adaptive passes, max delta S 0.05), driven runs only except B1. Solve time on
+the worker: a 20-mode eigenmode run 48 minutes; a driven 2-26 GHz run about 30
+minutes (the mesh at 26 GHz is not much dearer than at 12 GHz). "Clean" below
+means S21 above -3 dB. Runs are in `runs/`; ids in brackets.
+
+**B1, bare board (no_chip), 50 x 25 mm, eigenmodes + S21** [run_20261009_191045].
+S21 is clean for 80 % of 2-10 GHz, 50 % of 10-17 GHz, 1 % of 17-20 GHz and 0 %
+of 20-26 GHz. The 20 modes found run from 2.38 to 18.58 GHz. Notches at 3.73,
+9.96, 13.165, 15.55, 17.155 and 18.577 GHz each have an eigenmode within
+0.03 GHz (17.155 is 0.07 GHz from its mode at 17.084): these are box modes.
+Notches at 10.75, 16.75 (-38 dB), 18.0 and 20.25 GHz have no mode near them;
+above 18.6 GHz the eigenmode run does not reach (20 modes), so the notches at
+22.0, 25.25 and 25.75 GHz (-58 and -68 dB) are unexplained for now.
+
+**B1c, same board with the chip, driven only** [run_20261009_204719]. Worse
+everywhere: clean for 66 / 32 / 8 / 0 % of the four bands. The deep notches at
+16.75 (-39 dB) and 25.25 GHz (-75 dB) are the same as without the chip, so they
+do not come from the chip. The chip adds notches (14.25, 19.0, 19.75, 21.25,
+23.75 GHz).
+
+**B2, length of the bare board** [run_20261009_211800]. At 40 mm the notch set
+changes (4.75, 13.75, 21.75, 22.75 GHz...), as box modes should, but notches
+near 17.0, 18.0 and about 25.75 GHz stay. At 30 mm the solve is degenerate:
+S11 = -0.18 dB and S21 = -49.9 dB at every one of the 97 frequencies, to the
+last digit, phase included. That is a failed solve, not a reflecting line: the
+copper and the connector positions in the saved model are consistent with
+the 40 mm board (pads at +-3.5 mm, pins landing on them). Not understood yet;
+30 mm is not a usable result and 35 mm should be tried.
+
+**B3, width of the bare board** [run_20261009_220431]. At 35 mm wide (against
+25 mm) the same fixed notches appear at 17.0 (-66 dB), 18.0, 20.25 and 25.75
+GHz (-60 dB). A 15 mm side is refused by the Altium stage: the copper the plane
+gives up round a screw reaches 2 mm from the centre line but the SMP launch is
+2.6 mm either side.
+
+**B4, no connector** (`launch` reference plane, a lumped port under the trace)
+[run_20261009_230504]. S21 is poor everywhere because that port is a tap, so
+the clean fractions cannot be compared, but the depths can: the notches at
+16.75 and 17.15 GHz fall from -38 and -52 dB to -4 dB, and 25.75 GHz from -68 to
+-40 dB. So the deepest notches are tied to the SMP connector and its launch;
+the box modes alone (B1) have none within 0.2 GHz of 16.75 GHz.
+
+**What this says for the design.** (1) The deepest notches above 16 GHz do not
+move with the board's length or width, are absent as eigenmodes, and shrink
+when the connector is removed: look at the connector and its launch (the
+capped bore and the pin in the model, the ground fence and `route_clearence`
+at the launch), not at the box. (2) The chip makes S21 worse in every band, so
+for the clean-band target a smaller chip opening and fewer chip features are
+worth more than anything done to the box. (3) The box modes still sit at
+the places the earlier runs found; board size remains the lever that moves
+them.
+
+Next: the lid channel and the via lattice (one dimension at a time), a 35 mm
+board length, and eigenmodes above 18.6 GHz (start the search at about 18 GHz).
 
 ## What to do next
 
