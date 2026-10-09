@@ -256,6 +256,16 @@
     {% if values.get('no_chip') == '1' %}checked{% endif %}> Bare board (no chip)</label>
   {% endif %}
 
+  {% if has_screws_param %}
+  <h4>Corner screws</h4>
+  <p class="muted">Tick to hold the lid, PCB and box together with four M2 countersunk screws at the
+    PCB corners (<code>screws_on = 1</code>), with their holes in all three parts. They stand as metal
+    posts in the corners of the cavity, so this changes the box modes; build a run with and without to
+    see by how much. Their dimensions are in the &ldquo;Corner screws&rdquo; group above.</p>
+  <label><input type="checkbox" name="screws_on" value="1"
+    {% if values.get('screws_on') == '1' %}checked{% endif %}> Corner screws (M2)</label>
+  {% endif %}
+
   {% if has_distortion_param %}
   <h4>Distortions</h4>
   <p class="muted">The clean geometry has no distortions (<code>no_distortion = 1</code>); the

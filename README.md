@@ -161,6 +161,39 @@ into the form still wins. Started any other way, set it by hand. Eigenmode
 runs solve normally, but the chip-field columns come back flagged
 "object 'chip' not found", since there is no chip to measure.
 
+**Corner screws.** The "Corner screws" tick (`screws_on = 1`) holds the lid,
+PCB and box together with four M2 ISO 10642 countersunk screws, `screw_inset`
+in from the PCB edge on both axes, with holes in all three parts: a clearance
+hole in the lid with a 90 degree countersink the head sits flush in, a
+clearance hole and copper keep-out in the PCB, and a tap-drill hole in the box
+through the floor under each corner (the board rests on the floor there; the
+pedestal is a recess cut under the chip). They sit inside the
+PCB corners, not in the box wall, which is `wall_width` = 1 mm thick and
+cannot hold an M2 thread.
+
+The screws are the vendor's STEP models in `base_parts/screws/`, imported,
+cut to the exact length the stack needs (from the shortest model at least that
+long; screws can be shortened) and moved onto the corners. They take the box's
+material and perfect-E setting. The generator keeps its ground vias out of the
+keep-out; HFSS cuts the holes in `box`, `lid_inside`, the board and its
+copper. Altium draws the four holes as round board cutouts; the copper void
+round them is cut by HFSS, because the ground planes are single-contour
+regions that cannot carry an interior hole. The layout check refuses a board
+where the keep-out would reach the CPW, the SMP launch or the die and its bond
+fingers, or a lid too thin for the head (`lid_width` against the 1.14 mm head
+plus 0.3 mm of seat).
+
+On by default. In SolidWorks the lid has a Hole Wizard countersunk hole and the
+box a through-tapped M2 hole at each corner, both before the final mirror and
+positioned by `screw_inset` from the outer edges. `floor_width` is a formula
+(`screw_engagement - pedestal_depth`, never under `wall_width`), so the floor at
+the corners is as thick as the thread is long; `lid_width` sets the lid and
+the cavity depth, so the lid ends flush with the box top. Set `screws_on = 0`
+to build without screws: both hole features are suppressed by an equation,
+`floor_width` falls back to `wall_width`, and the Altium holes and the HFSS
+screws are not made. (The box's tap-drill diameter is the standard's 1.6 mm,
+not linked to `screw_tap_diameter`.)
+
 **Stop this run** stops a run without losing anything. It is cooperative
 rather than a kill -- none of the three programs can be interrupted
 mid-call -- so each finishes the combination it is in the middle of,

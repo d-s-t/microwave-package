@@ -162,6 +162,10 @@ It says nothing about the board's transmission.
    run. If it is still there with no chip, it comes from the board, the box
    or the connectors, not from the die or its bonds. Use the `connector`
    reference plane; the `bonds` and `chip` planes need a die.
+0b. The corner screws (`screws_on`, on by default) put a metal post in each
+   corner of the cavity, so they should move the box modes. If the 2.1 GHz dip
+   or the box modes matter, run once with `screws_on = 0` for the same board to
+   see by how much.
 1. Simulate a smaller board, for example 26 x 10 mm. Every run here used
    50 x 25 mm or larger, and size is the strongest lever found.
 2. Repeat the via-spacing sweep on the symmetric lattice, 0.1-20 GHz, and

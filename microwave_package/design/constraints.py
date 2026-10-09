@@ -323,6 +323,100 @@ def finger_offset(bonding_clearence: float, cavity_clearance: float) -> float:
     return (cavity_clearance + bonding_clearence) / 2.0
 
 
+def _circle_hits_rect(u: float, v: float, radius: float,
+                      u0: float, u1: float, v0: float, v1: float) -> bool:
+    """Whether a circle centred (u, v) overlaps the rectangle [u0,u1] x [v0,v1]."""
+    nearest_u = min(max(u, u0), u1)
+    nearest_v = min(max(v, v0), v1)
+    return (u - nearest_u) ** 2 + (v - nearest_v) ** 2 < radius ** 2
+
+
+def check_screws(values: Dict[str, float], gap: float) -> Optional[str]:
+    """Why the four corner screws do not fit this board, or None if they do
+    (or if `screws_on` is off).
+
+    Each screw is a hole in the PCB with a copper keep-out round it, so
+    nothing on the board may come within that circle. The vias are not on
+    this list: the generator keeps them out of the circle by itself. What
+    cannot move is the CPW, the connector's launch and, on a board with a
+    die, the die and the bond fingers round it.
+    """
+    from . import screws as screw_plan, smp
+
+    screws = screw_plan.plan(values)
+    if screws is None:
+        return None
+
+    def get(name: str, default: float = 0.0) -> float:
+        return values.get(name, default)
+
+    inset = get("screw_inset", 2.5)
+    clear = screws.clearance_diameter
+    sink = screw_plan.COUNTERSINK_DIAMETER
+    if clear < screw_plan.SCREW_DIAMETER + 0.1:
+        return (f"screw_clearance_diameter {_fmt(clear)} mm leaves no room for an "
+                f"{_fmt(screw_plan.SCREW_DIAMETER)} mm screw -- increase it")
+    if clear >= sink:
+        return (f"screw_clearance_diameter {_fmt(clear)} mm is as wide as the {_fmt(sink)} mm "
+                f"countersink, so the head would have nothing to sit on -- reduce it")
+    if screws.tap_diameter >= screw_plan.SCREW_DIAMETER:
+        return (f"screw_tap_diameter {_fmt(screws.tap_diameter)} mm is not smaller than the "
+                f"{_fmt(screw_plan.SCREW_DIAMETER)} mm screw, so there would be no thread to cut")
+    if screws.keepout_diameter < clear:
+        return (f"screw_keepout_diameter {_fmt(screws.keepout_diameter)} mm is smaller than the "
+                f"{_fmt(clear)} mm hole it is meant to keep copper out of")
+    if screws.engagement < screw_plan.MIN_ENGAGEMENT:
+        return (f"screw_engagement {_fmt(screws.engagement)} mm is under the "
+                f"{_fmt(screw_plan.MIN_ENGAGEMENT)} mm a thread needs to hold anything")
+    if inset - clear / 2.0 < screw_plan.EDGE_MARGIN:
+        return (f"screw_inset {_fmt(inset)} mm leaves only {_fmt(inset - clear / 2.0)} mm between "
+                f"the PCB hole and the board edge, under the {_fmt(screw_plan.EDGE_MARGIN)} mm "
+                f"a router needs -- increase screw_inset or reduce screw_clearance_diameter")
+    if inset - sink / 2.0 < 0.2:
+        return (f"screw_inset {_fmt(inset)} mm puts the {_fmt(sink)} mm countersink within "
+                f"{_fmt(inset - sink / 2.0)} mm of the lid's edge -- increase screw_inset "
+                f"to at least {_fmt(sink / 2.0 + 0.2)} mm")
+
+    # the stack: lid on top, floor below
+    lid = get("lid_width", 1.0)
+    if lid < screws.min_lid_thickness:
+        return (f"lid_width {_fmt(lid)} mm is under the {_fmt(screws.min_lid_thickness)} mm the "
+                f"countersunk head needs ({_fmt(screw_plan.HEAD_HEIGHT)} mm of head plus "
+                f"{_fmt(screw_plan.MIN_LID_SEAT)} mm of lid under it) -- increase lid_width")
+    half_length = get("pcb_length") / 2.0
+    half_side = get("pcb_side") / 2.0
+    u, v = half_length - inset, half_side - inset
+    if u <= 0 or v <= 0:
+        return (f"screw_inset {_fmt(inset)} mm is more than half the board -- the screws "
+                f"would cross over. Reduce screw_inset or enlarge pcb_length/pcb_side")
+    r = screws.keepout_diameter / 2.0
+
+    # the CPW and its gaps run down the middle
+    corridor = get("cpw_trace_width") / 2.0 + gap
+    if v - r < corridor:
+        return (f"the screw keep-out reaches {_fmt(v - r)} mm from the centre line but the CPW "
+                f"gap extends to {_fmt(corridor)} mm -- widen pcb_side or increase "
+                f"screw_inset / reduce screw_keepout_diameter")
+
+    # the connector's launch at each end
+    launch_inner = smp.launch_inner_edge(half_length, get("port_space"))
+    if _circle_hits_rect(u, v, r, launch_inner, half_length,
+                         -smp.GROUND_LAND_HALF, smp.GROUND_LAND_HALF):
+        return (f"the screw keep-out runs into the SMP launch (it spans {_fmt(launch_inner)} to "
+                f"{_fmt(half_length)} mm along the board and {_fmt(smp.GROUND_LAND_HALF)} mm "
+                f"either side) -- widen pcb_side, or reduce screw_inset or screw_keepout_diameter")
+
+    # the die and the bond fingers round it
+    if not parameter_meta.is_bare_board(values):
+        reach_u = get("chip_length") / 2.0 + get("bonding_clearence")
+        reach_v = get("chip_side") / 2.0 + get("bonding_clearence")
+        if _circle_hits_rect(u, v, r, -reach_u, reach_u, -reach_v, reach_v):
+            return (f"the screw keep-out runs into the die and its bond fingers (out to "
+                    f"{_fmt(reach_u)} x {_fmt(reach_v)} mm from the centre) -- enlarge the "
+                    f"board, or reduce chip size or bonding_clearence")
+    return None
+
+
 def check_layout(values: Dict[str, float]) -> Optional[str]:
     """Why this combination's layout cannot be built, or None if it can.
 
@@ -378,6 +472,13 @@ def check_layout(values: Dict[str, float]) -> Optional[str]:
             f"cpw_trace_width, or widen pcb_side"
         )
 
+    # Checked once the board's own gap is known, ahead of the die's rules:
+    # a screw that cannot fit is a plainer thing to be told than the
+    # die-and-bonds arithmetic after it.
+    reason = check_screws(values, gap) if not parameter_meta.is_bare_board(values) else None
+    if reason:
+        return reason
+
     # A bare board has no die: no opening, no bond fingers and nothing
     # to keep clear of them, so the room a die would need is not asked
     # for. The connector launch still has to fit on the board.
@@ -389,7 +490,7 @@ def check_layout(values: Dict[str, float]) -> Optional[str]:
                 "the SMP launch reaches past the middle of the board -- lengthen "
                 "pcb_length, or move the connectors out with port_space"
             )
-        return None
+        return check_screws(values, gap)
 
     # The die's opening, which everything below has to keep out of. It
     # is cut larger than the die by cavity_clearance, so "clears the

@@ -482,6 +482,7 @@ def index():
         loaded_combo=request.args.get("combo"),
         has_distortion_param=parameter_meta.DISTORTION_PARAM in parameters,
         has_no_chip_param=parameter_meta.NO_CHIP_PARAM in parameters,
+        has_screws_param=parameter_meta.SCREWS_PARAM in parameters,
         distortion_mode=distortion_mode,
         distortion_group=_distortion_group(parameters),
         distortion_limits=_distortion_limits(parameters, values),
@@ -557,6 +558,11 @@ def new_run():
         if "pedestal_depth" in available and not any(
                 p.name == "pedestal_depth" for p in requested):
             requested.append(SweepParameter(name="pedestal_depth", values=[0.0]))
+
+    # The "Corner screws" tick pins screws_on the same way; unticked it
+    # adds nothing and the equation file's own 0 applies.
+    if parameter_meta.SCREWS_PARAM in available and "screws_on" in request.form:
+        requested.append(SweepParameter(name=parameter_meta.SCREWS_PARAM, values=[1.0]))
 
     sweep_params, parameter_defaults = split_swept_and_fixed(requested)
     if not sweep_params and not parameter_defaults:
