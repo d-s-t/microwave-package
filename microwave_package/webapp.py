@@ -1207,10 +1207,10 @@ def run_heatmap(run_id):
     # surface, so a sweep with hundreds of them would be tens of
     # megabytes and unreadable. Pick one from the list to see it alone.
     note = None
-    if len(combos) > plotting.MAX_HEATMAP_PANELS:
-        note = (f"Showing {plotting.MAX_HEATMAP_PANELS} of {len(combos)} variants -- "
+    if len(combos) > eigenmode_fields.MAX_HEATMAP_PANELS:
+        note = (f"Showing {eigenmode_fields.MAX_HEATMAP_PANELS} of {len(combos)} variants -- "
                 f"pick one from the list above to see it on its own.")
-        combos = combos[:plotting.MAX_HEATMAP_PANELS]
+        combos = combos[:eigenmode_fields.MAX_HEATMAP_PANELS]
 
     html = eigenmode_fields.chip_heatmap_html(
         _chip_field_entries(run, combos),
