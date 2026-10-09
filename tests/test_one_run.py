@@ -207,5 +207,95 @@ class TestDeletingTakesTheParts(OneRun):
             self.assertFalse(os.path.exists(gone.run_dir), gone.run_id)
 
 
+
+class TestRunsMadeBeforeThisWasOneRun(OneRun):
+    """A pair used to be two listed runs and a refinement a third, joined
+    only by links in their configs. Those runs stay on disk as they were and
+    now read as one: the extra ones are parts of the run they were made for."""
+
+    def setUp(self):
+        super().setUp()
+        for run in (self.run, self.eigen):
+            run.config.pop("part_of", None)
+            run.config.pop("part_role", None)
+            run.save_config()
+        self.finish(self.run)
+        self.child = companion.create_refinement(Run.load(self.run.run_id), "12:13", [self.combo])
+        self.child.config.pop("part_of", None)
+        self.child.save_config()
+
+    def test_they_are_one_entry_in_the_list(self):
+        self.assertEqual([r["run_id"] for r in Run.list_runs()], [self.run.run_id])
+
+    def test_their_pages_lead_to_the_run(self):
+        for part in (self.eigen, self.child):
+            reply = self.client.get(f"/runs/{part.run_id}")
+            self.assertEqual(reply.status_code, 302, part.run_id)
+            self.assertTrue(reply.headers["Location"].endswith(self.run.run_id))
+
+    def test_the_run_shows_what_they_found(self):
+        self.finish(self.eigen)
+        self.write_modes([(5.0, 150.0)])
+        os.makedirs(self.run.plots_dir, exist_ok=True)
+        pd.DataFrame([{"combo_id": self.combo, "freq_ghz": 4.0, "s21_db": -1.0, "sweep": "coarse"},
+                      {"combo_id": self.combo, "freq_ghz": 6.0, "s21_db": -1.0, "sweep": "coarse"}]).to_csv(
+            os.path.join(self.run.plots_dir, plotting.RESULTS_FILENAME), index=False)
+        open(os.path.join(self.run.plots_dir, plotting.PLOT_FILENAME), "w").close()
+        page = self.client.get(f"/runs/{self.run.run_id}").get_data(as_text=True)
+        self.assertIn("<h2>Eigenmodes</h2>", page)
+        self.assertIn('class="refinements"', page)
+        plot = self.client.get(f"/runs/{self.run.run_id}/plot?x=freq_ghz&y=s21_db").get_data(as_text=True)
+        self.assertIn("Eigenmodes", plot)
+
+
+class TestStoppedPartWay(OneRun):
+    """The server can be stopped at any time. The run, which only exists as
+    records on disk, must be resumable from whatever they say."""
+
+    def test_stopped_while_the_eigenmodes_were_being_solved(self):
+        self.run.set_stage("eigenmodes")
+        page = self.client.get(f"/runs/{self.run.run_id}").get_data(as_text=True)
+        self.assertRegex(page, r'id="resume-form"(?![^>]*hidden)')
+        with mock.patch.object(webapp, "_start_pipeline_thread") as start:
+            self.client.post(f"/runs/{self.run.run_id}/resume")
+        self.assertEqual(start.call_args[0][0].run_id, self.run.run_id)
+
+    def test_resuming_picks_the_eigenmode_step_up_where_it_stopped_then_continues(self):
+        self.run.set_stage("eigenmodes")
+        self.eigen.set_stage("monitoring")
+        calls = []
+
+        def finish(run, *_a, **_k):
+            calls.append(run.run_id)
+            run.set_stage("complete")
+
+        with mock.patch.object(pipeline, "run_pipeline", finish):
+            self.assertTrue(pipeline._finish_prerequisite(
+                Run.load(self.run.run_id), None, log=lambda _m: None))
+        self.assertEqual(calls, [self.eigen.run_id])
+
+    def test_stopped_after_the_eigenmodes_finished_does_not_redo_them(self):
+        self.eigen.set_stage("complete")
+        self.run.set_stage("monitoring")
+        with mock.patch.object(pipeline, "run_pipeline") as run_pipeline:
+            self.assertTrue(pipeline._finish_prerequisite(
+                Run.load(self.run.run_id), None, log=lambda _m: None))
+        run_pipeline.assert_not_called()
+
+    def test_a_refinement_can_be_resumed_from_the_runs_page(self):
+        self.finish(self.run)
+        os.makedirs(self.run.plots_dir, exist_ok=True)
+        pd.DataFrame([{"combo_id": self.combo, "freq_ghz": 4.0, "s21_db": -1.0, "sweep": "coarse"}]).to_csv(
+            os.path.join(self.run.plots_dir, plotting.RESULTS_FILENAME), index=False)
+        open(os.path.join(self.run.plots_dir, plotting.PLOT_FILENAME), "w").close()
+        child = companion.create_refinement(Run.load(self.run.run_id), "12:13", [self.combo])
+        page = self.client.get(f"/runs/{self.run.run_id}").get_data(as_text=True)
+        self.assertIn(f'/runs/{child.run_id}/resume', page)
+        with mock.patch.object(webapp, "_start_pipeline_thread") as start:
+            reply = self.client.post(f"/runs/{child.run_id}/resume")
+        self.assertEqual(start.call_args[0][0].run_id, child.run_id)
+        self.assertEqual(self.client.get(reply.headers["Location"]).status_code, 302)   # on to the run
+
+
 if __name__ == "__main__":
     unittest.main()

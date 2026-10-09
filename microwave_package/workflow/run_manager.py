@@ -262,6 +262,18 @@ def parameter_values_for(name: str, sweep_params, parameter_defaults) -> List[fl
     return [base[name]] if name in base else []
 
 
+def parent_of(config: dict) -> Optional[str]:
+    """The run a run's config says it belongs to, or None.
+
+    `part_of` is what runs made now carry. Runs made before a pair was one
+    run have only the links they used to be joined by -- an eigenmode run
+    that names its driven run, a refinement that names the run it refines
+    -- and are the same thing: parts of that run, with their data on its
+    page. They stay on disk exactly as they were.
+    """
+    return config.get("part_of") or config.get("refines_run_id") or config.get("driven_run_id")
+
+
 class Run:
     # When the atomic replace is being blocked by something outside this
     # process, this holds the time until which to assume it still is.
@@ -397,7 +409,7 @@ class Run:
                 config = cls._read_json(os.path.join(run_dir, "run_config.json"))
             except (OSError, json.JSONDecodeError):
                 config = {}
-            if config.get("part_of"):
+            if parent_of(config):
                 continue  # a part of another run: shown on that run's page, not on its own
             swept = [
                 {"label": parameter_meta.label_for(p["name"]), "n": len(p.get("values", []))}
@@ -581,7 +593,7 @@ class Run:
     def parent_id(self) -> Optional[str]:
         """The run this one is a hidden part of (its eigenmodes, or a
         refinement of it), or None for a run in its own right."""
-        return self.config.get("part_of")
+        return parent_of(self.config)
 
     @property
     def label(self) -> str:
