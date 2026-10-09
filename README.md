@@ -349,9 +349,14 @@ across the gaps) and *Broad + fine, one trace* (the default), where a fine
 window's points replace the broad sweep's interpolated samples inside it.
 The automatic windows count as fine data too. Refining again adds more.
 
-Caveat: the refinement rebuilds the model and re-adapts the mesh rather than
-reusing the solved project, so with identical settings it should land on the
-same mesh, but a slight offset between broad and fine data is possible.
+Caveat: the refinement rebuilds the model and re-adapts the mesh (at the
+frequency the run adapted at) rather than reusing the solved project, and
+a very sharp, high-Q feature is sensitive to the mesh. Measured on one
+combination: a broad dip at 16.87 GHz reproduced to 5 MHz and 2 dB, but a
+sharp step near 15.8 GHz sat about 50 MHz away in the refinement from where
+the run's own fine window had it. So read broad and fine data as two
+independent solves where a feature is that sharp, and treat a feature that
+moves between them as mesh-limited, not as a measurement.
 
 ### The box's conductor model
 

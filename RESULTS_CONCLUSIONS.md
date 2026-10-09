@@ -194,8 +194,12 @@ It says nothing about the board's transmission.
    "Eigenmode and Driven together". Checked on AEDT with one combination:
    20 modes, 12 fine windows, 2365 merged points; the fine windows resolved a
    very sharp step near 15.8 GHz that the broad sweep only showed as a jump.
-   The refinement of the 16.6-17.1 GHz dip had not finished solving when this
-   was written.
+   Refining 16.6-17.1 GHz and 15.75-15.9 GHz afterwards (151 and 251
+   points): the 16.87 GHz dip came back at the same place (5 MHz) and depth
+   (-90.6 vs -92.8 dB), while the sharp step near 15.8 GHz moved by about 50 MHz
+   against the run's own fine window -- a mesh-sensitive feature, so dip depth
+   and position of the very sharp ones are still not something to compare
+   across solves.
 
 ## Defaults changed
 
