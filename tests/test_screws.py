@@ -200,6 +200,13 @@ class TestConstraints(unittest.TestCase):
     def test_a_keepout_that_reaches_the_cpw_gap_is_caught(self):
         self.assertIn("CPW", constraints.check_layout(fit(pcb_side=7.0, screw_inset=2.5)))
 
+    def test_the_square_the_plane_gives_up_is_what_has_to_clear_the_cpw(self):
+        """The square is the keep-out's radius plus half a millimetre, and a
+        board too narrow for it is refused naming the CPW."""
+        plan = screws.plan(fit(pcb_side=7.0, screw_inset=2.5))
+        self.assertAlmostEqual(screws.block_half(plan), 1.5 + screws.KEEPOUT_BLOCK_MARGIN)
+        self.assertIn("CPW", constraints.check_layout(fit(pcb_side=7.0, screw_inset=2.5)))
+
     def test_a_keepout_that_reaches_the_connector_is_caught(self):
         """A narrow board puts the corner screw alongside the launch."""
         reason = constraints.check_layout(fit(pcb_side=10.0, port_space=2.0, screw_inset=2.5))
@@ -232,6 +239,19 @@ class TestTheAltiumBoardHasItsHoles(unittest.TestCase):
         self.assertIn("never reported on", ag._missing_features(on))
         self.assertIn("failed", ag._missing_features(dict(on, package_screw_holes="FAIL")))
         self.assertEqual(ag._missing_features(dict(on, package_screw_holes="4")), "")
+
+    def test_the_generator_draws_the_copper_round_the_holes_not_a_void(self):
+        """A region cannot carry an interior hole, so the plane gives up a
+        square and four pieces with the keep-out bitten out are drawn back."""
+        script = paths.ALTIUM_GENERATOR.read_text(encoding="utf-8", errors="replace")
+        for name in ("AddScrewBlocks", "AddScrewBlock", "AddPlaneCorner", "IsScrewCorner"):
+            self.assertIn(name, script)
+        self.assertIn("ScrewBlockS := ScrewKeepR + %g;" % screws.KEEPOUT_BLOCK_MARGIN, script)
+
+    def test_the_die_board_is_drawn_without_the_notches(self):
+        script = paths.ALTIUM_GENERATOR.read_text(encoding="utf-8", errors="replace")
+        reset = script.index("ScrewBlockS := 0.0;", script.index("AddScrewBlocks(Board);"))
+        self.assertLess(reset, script.index("OpenNewDocument('PCB', 'chip'"))
 
     def test_the_generator_reads_the_hole_size_from_the_parameters(self):
         script = (paths.ALTIUM_GENERATOR).read_text(encoding="utf-8", errors="replace")
@@ -315,7 +335,7 @@ BOX = (0, 0.0, 0, 52, 6.0, 27)
 def build(values=None, lid=LID, box=BOX):
     hfss = FakeHfss(lid, box)
     names = screw_builder.build_screws(
-        hfss, FRAME, STACK, values or fit(), ["pcb_copper_top"], log=lambda _m: None)
+        hfss, FRAME, STACK, values or fit(), log=lambda _m: None)
     return hfss, names
 
 
@@ -323,7 +343,7 @@ class TestTheBuilder(unittest.TestCase):
     def test_nothing_is_built_when_the_screws_are_off(self):
         hfss = FakeHfss(LID, BOX)
         self.assertIsNone(screw_builder.build_screws(
-            hfss, FRAME, STACK, dict(defaults(), screws_on=0), ["pcb_copper_top"],
+            hfss, FRAME, STACK, dict(defaults(), screws_on=0),
             log=lambda _m: None))
         self.assertEqual(hfss.modeler.imports, [])
         self.assertEqual(hfss.modeler.subtractions, [])
@@ -372,7 +392,6 @@ class TestTheBuilder(unittest.TestCase):
         targets = [t for t, _, _ in hfss.modeler.subtractions]
         for part in ("box", "pcb_substrate", "lid_inside"):
             self.assertEqual(targets.count(part), 4, part)
-        self.assertEqual(targets.count(["pcb_copper_top"]), 4)
 
     def test_the_box_is_cut_to_the_screws_own_diameter(self):
         """The tap drill is for the drawing; the model must not overlap."""

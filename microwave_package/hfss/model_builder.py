@@ -710,7 +710,6 @@ def build_layout(hfss, combo_dir: str, dimensions_txt_content: str,
                 f"{SHEET_BELOW_MM * 1000:g} um, so drawn as a sheet -- its thickness "
                 "does not enter the model.")
 
-    pcb_bodies: List[str] = []   # the board's copper, for the screws' keep-out
     _drop_superseded_solids(hfss, log)
     build_vacuum(
         hfss, frame, stack,
@@ -755,7 +754,6 @@ def build_layout(hfss, combo_dir: str, dimensions_txt_content: str,
             thickness=stack.copper_thickness, prefix="pcb", log=log,
         )
         remember_sheets(made, stack.copper_thickness, copper)
-        pcb_bodies = [name for names in made.values() for name in names]
         # The generator already draws the copper round the opening, so
         # this normally cuts nothing. It is here for the copper.txt an
         # older generator wrote, where it is the difference between a
@@ -825,7 +823,7 @@ def build_layout(hfss, combo_dir: str, dimensions_txt_content: str,
     from . import screws as screw_builder
 
     try:
-        screw_builder.build_screws(hfss, frame, stack, v, pcb_bodies, log=log)
+        screw_builder.build_screws(hfss, frame, stack, v, log=log)
     except ValueError as exc:
         raise RuntimeError(f"Corner screws: {exc}") from exc
 

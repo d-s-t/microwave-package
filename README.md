@@ -175,10 +175,13 @@ The screws are the vendor's STEP models in `base_parts/screws/`, imported,
 cut to the exact length the stack needs (from the shortest model at least that
 long; screws can be shortened) and moved onto the corners. They take the box's
 material and perfect-E setting. The generator keeps its ground vias out of the
-keep-out; HFSS cuts the holes in `box`, `lid_inside`, the board and its
-copper. Altium draws the four holes as round board cutouts; the copper void
-round them is cut by HFSS, because the ground planes are single-contour
-regions that cannot carry an interior hole. The layout check refuses a board
+keep-out; HFSS cuts the holes in `box`, `lid_inside` and the board's
+substrate. Altium draws the four holes as round board cutouts, and the copper
+keep-out round each one is in the copper itself, the way the die's opening and
+the connector's anti-pad are: a region cannot carry an interior hole, so each
+ground plane gives up a square round the screw out to the board's corner
+(`screw_keepout_diameter` plus half a millimetre) and four pieces with the
+keep-out bitten out are drawn back. `copper.txt` carries it into HFSS. The layout check refuses a board
 where the keep-out would reach the CPW, the SMP launch or the die and its bond
 fingers, or a lid too thin for the head (`lid_width` against the 1.14 mm head
 plus 0.3 mm of seat).

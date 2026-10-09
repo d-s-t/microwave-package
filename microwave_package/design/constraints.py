@@ -323,13 +323,6 @@ def finger_offset(bonding_clearence: float, cavity_clearance: float) -> float:
     return (cavity_clearance + bonding_clearence) / 2.0
 
 
-def _circle_hits_rect(u: float, v: float, radius: float,
-                      u0: float, u1: float, v0: float, v1: float) -> bool:
-    """Whether a circle centred (u, v) overlaps the rectangle [u0,u1] x [v0,v1]."""
-    nearest_u = min(max(u, u0), u1)
-    nearest_v = min(max(v, v0), v1)
-    return (u - nearest_u) ** 2 + (v - nearest_v) ** 2 < radius ** 2
-
 
 def check_screws(values: Dict[str, float], gap: float) -> Optional[str]:
     """Why the four corner screws do not fit this board, or None if they do
@@ -389,31 +382,37 @@ def check_screws(values: Dict[str, float], gap: float) -> Optional[str]:
     if u <= 0 or v <= 0:
         return (f"screw_inset {_fmt(inset)} mm is more than half the board -- the screws "
                 f"would cross over. Reduce screw_inset or enlarge pcb_length/pcb_side")
-    r = screws.keepout_diameter / 2.0
+    # The ground plane gives up a square round each screw, out to the
+    # board's corner (see screws.block_half), and the keep-out sits inside
+    # it. That square is what has to stay clear of everything else on the
+    # board, so it is what is tested -- not just the circle.
+    s = screw_plan.block_half(screws)
+    x_in, y_in = u - s, v - s       # the square's inner edges, from the centre
 
     # the CPW and its gaps run down the middle
     corridor = get("cpw_trace_width") / 2.0 + gap
-    if v - r < corridor:
-        return (f"the screw keep-out reaches {_fmt(v - r)} mm from the centre line but the CPW "
-                f"gap extends to {_fmt(corridor)} mm -- widen pcb_side or increase "
-                f"screw_inset / reduce screw_keepout_diameter")
+    if y_in < corridor:
+        return (f"the copper the plane gives up round a screw reaches {_fmt(y_in)} mm from the "
+                f"centre line but the CPW gap extends to {_fmt(corridor)} mm -- widen pcb_side or "
+                f"increase screw_inset / reduce screw_keepout_diameter")
 
-    # the connector's launch at each end
+    # the connector's launch at each end. Both it and the square run out
+    # to the board's end, so only the way across matters.
     launch_inner = smp.launch_inner_edge(half_length, get("port_space"))
-    if _circle_hits_rect(u, v, r, launch_inner, half_length,
-                         -smp.GROUND_LAND_HALF, smp.GROUND_LAND_HALF):
-        return (f"the screw keep-out runs into the SMP launch (it spans {_fmt(launch_inner)} to "
-                f"{_fmt(half_length)} mm along the board and {_fmt(smp.GROUND_LAND_HALF)} mm "
-                f"either side) -- widen pcb_side, or reduce screw_inset or screw_keepout_diameter")
+    if y_in < smp.GROUND_LAND_HALF:
+        return (f"the copper the plane gives up round a screw reaches {_fmt(y_in)} mm from the "
+                f"centre line but the SMP launch (from {_fmt(launch_inner)} mm to the board's end) "
+                f"is {_fmt(smp.GROUND_LAND_HALF)} mm either side -- widen pcb_side, or increase "
+                f"screw_inset / reduce screw_keepout_diameter")
 
     # the die and the bond fingers round it
     if not parameter_meta.is_bare_board(values):
         reach_u = get("chip_length") / 2.0 + get("bonding_clearence")
         reach_v = get("chip_side") / 2.0 + get("bonding_clearence")
-        if _circle_hits_rect(u, v, r, -reach_u, reach_u, -reach_v, reach_v):
-            return (f"the screw keep-out runs into the die and its bond fingers (out to "
-                    f"{_fmt(reach_u)} x {_fmt(reach_v)} mm from the centre) -- enlarge the "
-                    f"board, or reduce chip size or bonding_clearence")
+        if x_in < reach_u and y_in < reach_v:
+            return (f"the copper the plane gives up round a screw runs into the die and its bond "
+                    f"fingers (out to {_fmt(reach_u)} x {_fmt(reach_v)} mm from the centre) -- "
+                    f"enlarge the board, or reduce chip size or bonding_clearence")
     return None
 
 

@@ -141,6 +141,15 @@ Var
       numbers each. }
     ScrewU, ScrewV, ScrewKeepR : Double;
 
+    { The copper round each screw hole is drawn as pieces, not as a plane
+      with a hole in it (see AddScrewBlocks). ScrewBlockS is the half-size
+      of the square, centred on the screw and running out to the board's
+      corner, that the plane gives up to those pieces; it is zero when
+      there are no screws AND while the die's board is being drawn, which
+      is how the die's planes stay plain. PkgHalfL/PkgHalfS are the
+      package's outline, the corner the notch is cut at. }
+    ScrewBlockS, PkgHalfL, PkgHalfS : Double;
+
     { The connector library, held open across both launches.
 
       Globals rather than passed around because the footprint is a LIVE
@@ -213,9 +222,53 @@ Begin
     Announce(Board, T);
 End;
 
+{ Whether (CX, CY) is one of the package's four outer corners while the
+  screws' copper voids are being drawn -- the corners a plane gives up a
+  notch at. }
+Function IsScrewCorner(CX, CY : Double) : Boolean;
+Begin
+    Result := (ScrewBlockS > 0.0)
+              And (Abs(Abs(CX) - PkgHalfL) < 0.0001)
+              And (Abs(Abs(CY) - PkgHalfS) < 0.0001);
+End;
+
+{ One corner of a plane's outline, as one point or, at a screw corner,
+  the three that step round the square the plane gives up there. The
+  order depends on whether the outline arrives at the corner along a
+  horizontal or a vertical edge. }
+Procedure AddPlaneCorner(C : IPCB_Contour; CX, CY : Double; ArriveHorizontal : Boolean);
+Var
+    XN, YN, SX, SY : Double;
+Begin
+    If Not IsScrewCorner(CX, CY) Then
+    Begin
+        C.AddPoint(MMsToCoord(CX), MMsToCoord(CY));
+        Exit;
+    End;
+    If CX > 0.0 Then SX := 1.0 Else SX := -1.0;
+    If CY > 0.0 Then SY := 1.0 Else SY := -1.0;
+    XN := SX * (Abs(ScrewU) - ScrewBlockS);
+    YN := SY * (Abs(ScrewV) - ScrewBlockS);
+    If ArriveHorizontal Then
+    Begin
+        C.AddPoint(MMsToCoord(XN), MMsToCoord(CY));
+        C.AddPoint(MMsToCoord(XN), MMsToCoord(YN));
+        C.AddPoint(MMsToCoord(CX), MMsToCoord(YN));
+    End
+    Else
+    Begin
+        C.AddPoint(MMsToCoord(CX), MMsToCoord(YN));
+        C.AddPoint(MMsToCoord(XN), MMsToCoord(YN));
+        C.AddPoint(MMsToCoord(XN), MMsToCoord(CY));
+    End;
+End;
+
 { A filled rectangle of copper. Ground planes are drawn as plain regions
   rather than polygon pours: a pour needs a net and a repour pass, and
-  for a shape this simple the region is both exact and cheaper. }
+  for a shape this simple the region is both exact and cheaper.
+
+  A corner that is one of the package's outer corners gives up the
+  square round a screw hole (see AddScrewBlocks). }
 Procedure AddRect(Board : IPCB_Board; X1, Y1, X2, Y2 : Double; Lay : TLayer);
 Var
     R : IPCB_Region;
@@ -223,10 +276,10 @@ Var
 Begin
     R := PCBServer.PCBObjectFactory(eRegionObject, eNoDimension, eCreate_Default);
     C := PCBServer.PCBContourFactory;
-    C.AddPoint(MMsToCoord(X1), MMsToCoord(Y1));
-    C.AddPoint(MMsToCoord(X2), MMsToCoord(Y1));
-    C.AddPoint(MMsToCoord(X2), MMsToCoord(Y2));
-    C.AddPoint(MMsToCoord(X1), MMsToCoord(Y2));
+    AddPlaneCorner(C, X1, Y1, False);
+    AddPlaneCorner(C, X2, Y1, True);
+    AddPlaneCorner(C, X2, Y2, False);
+    AddPlaneCorner(C, X1, Y2, True);
     R.SetOutlineContour(C);
     R.Layer := Lay;
     Board.AddPCBObject(R);
@@ -352,8 +405,8 @@ Begin
     End;
 
     C.AddPoint(MMsToCoord( CopperHalfL), MMsToCoord(Side * GndInner));
-    C.AddPoint(MMsToCoord( CopperHalfL), MMsToCoord(Side * CopperHalfS));
-    C.AddPoint(MMsToCoord(-CopperHalfL), MMsToCoord(Side * CopperHalfS));
+    AddPlaneCorner(C,  CopperHalfL, Side * CopperHalfS, False);
+    AddPlaneCorner(C, -CopperHalfL, Side * CopperHalfS, True);
 
     Rgn.SetOutlineContour(C);
     Rgn.Layer := eTopLayer;
@@ -508,6 +561,80 @@ Begin
     Except
         Say('cavity_kind_readback=unreadable');
     End;
+End;
+
+{ The copper that stands round one screw hole, on one layer.
+
+  The hole is a void in the ground plane, and a void inside a region is
+  not something this script can draw: a region has one contour, and
+  ExportCopper reads only that. So it is built the way the die's opening
+  and the connector's anti-pad are -- by never drawing the metal that
+  would be in it. The plane gives up a square round the screw, out to the
+  board's corner (AddPlaneCorner); this puts the square back as four
+  pieces, one per quadrant about the screw centre, each with the quarter
+  circle of the keep-out bitten out of the corner at the centre. Each
+  piece is a single contour, the four meet along the lines through the
+  centre, and the plane and the pieces are united on export, so the
+  copper is whole and the keep-out is empty.
+
+  (CX, CY) is the screw centre, R the keep-out's radius, S the square's
+  half-size on the side facing the board's middle, and EA, EB how far
+  the square runs out toward the edge in x and y. SX, SY (+-1) say which
+  corner of the board it is. }
+Procedure AddScrewBlock(Board : IPCB_Board; Lay : TLayer;
+                        CX, CY, SX, SY, R, S, EA, EB : Double);
+Var
+    Rgn : IPCB_Region;
+    C   : IPCB_Contour;
+    QA, QB, LA, LB, Phi, A, B : Double;
+    Q, K : Integer;
+Begin
+    For Q := 0 To 3 Do
+    Begin
+        If (Q = 0) Or (Q = 2) Then QA := -1.0 Else QA := 1.0;
+        If Q < 2 Then QB := -1.0 Else QB := 1.0;
+        If QA < 0.0 Then LA := S Else LA := EA;
+        If QB < 0.0 Then LB := S Else LB := EB;
+
+        Rgn := PCBServer.PCBObjectFactory(eRegionObject, eNoDimension, eCreate_Default);
+        C := PCBServer.PCBContourFactory;
+
+        { the arc, from the point on the b axis round to the point on
+          the a axis }
+        For K := 0 To 8 Do
+        Begin
+            Phi := (PiVal / 2.0) * K / 8.0;
+            A := QA * R * Sin(Phi);
+            B := QB * R * Cos(Phi);
+            C.AddPoint(MMsToCoord(CX + SX * A), MMsToCoord(CY + SY * B));
+        End;
+        C.AddPoint(MMsToCoord(CX + SX * QA * LA), MMsToCoord(CY));
+        C.AddPoint(MMsToCoord(CX + SX * QA * LA), MMsToCoord(CY + SY * QB * LB));
+        C.AddPoint(MMsToCoord(CX),                MMsToCoord(CY + SY * QB * LB));
+
+        Rgn.SetOutlineContour(C);
+        Rgn.Layer := Lay;
+        Board.AddPCBObject(Rgn);
+        Announce(Board, Rgn);
+    End;
+End;
+
+{ All four screws, on both copper layers. }
+Procedure AddScrewBlocks(Board : IPCB_Board);
+Var
+    SX, SY : Double;
+    I, J   : Integer;
+Begin
+    For I := 0 To 1 Do
+        For J := 0 To 1 Do
+        Begin
+            If I = 0 Then SX := -1.0 Else SX := 1.0;
+            If J = 0 Then SY := -1.0 Else SY := 1.0;
+            AddScrewBlock(Board, eTopLayer, SX * ScrewU, SY * ScrewV, SX, SY,
+                          ScrewKeepR, ScrewBlockS, PkgHalfL - ScrewU, PkgHalfS - ScrewV);
+            AddScrewBlock(Board, eBottomLayer, SX * ScrewU, SY * ScrewV, SX, SY,
+                          ScrewKeepR, ScrewBlockS, PkgHalfL - ScrewU, PkgHalfS - ScrewV);
+        End;
 End;
 
 { One corner screw's clearance hole: a round Board Cutout, drawn the same
@@ -1540,11 +1667,17 @@ Begin
       board edge on both axes -- the same arithmetic screws.plan does in
       Python, so the two cannot place a screw differently. }
     ScrewKeepR := 0.0;
+    ScrewBlockS := 0.0;
     If ParamOf(P, 'screws_on', 0.0) > 0.5 Then
     Begin
         ScrewU := HalfL - ParamOf(P, 'screw_inset', 3.5);
         ScrewV := HalfS - ParamOf(P, 'screw_inset', 3.5);
         ScrewKeepR := ParamOf(P, 'screw_keepout_diameter', 3.0) / 2.0;
+        { The square the plane gives up round each screw: the keep-out plus
+          half a millimetre each way (screws.KEEPOUT_BLOCK_MARGIN). }
+        ScrewBlockS := ScrewKeepR + 0.5;
+        PkgHalfL := HalfL;
+        PkgHalfS := HalfS;
         Say('screws_on=1');
         Say('screw_keepout_r_mm=' + FloatToStr(ScrewKeepR));
     End;
@@ -1622,6 +1755,20 @@ Begin
         Say('package_body=FAIL');
     End;
     PCBServer.PostProcess;
+
+    { The copper that stands round the screw holes, to go with the notches
+      the planes above gave up for it. }
+    If ScrewKeepR > 0.0 Then
+    Begin
+        PCBServer.PreProcess;
+        Try
+            AddScrewBlocks(Board);
+            Say('package_screw_copper=ok');
+        Except
+            Say('package_screw_copper=FAIL');
+        End;
+        PCBServer.PostProcess;
+    End;
 
     { The opening itself, after the copper: the copper is what has to
       make room for it, so a failure here leaves a board whose planes
@@ -1758,6 +1905,9 @@ Begin
             Say('saved_package=FAIL');
         End;
     End;
+
+    { The die's board has no screws, and its planes must stay plain. }
+    ScrewBlockS := 0.0;
 
     If NoChip Then
     Begin

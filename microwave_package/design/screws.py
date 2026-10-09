@@ -72,6 +72,12 @@ MODEL_LENGTHS = (3, 4, 5, 6, 8, 10, 12, 16, 20)
 MIN_LID_SEAT = 0.3       # lid material left under the countersink
 MIN_ENGAGEMENT = 1.0     # a thread that bites less than this is not holding anything
 
+# The ground plane gives up a square round each screw, out to the board's
+# corner, and the keep-out circle sits inside it. This is how much bigger
+# than the circle the square is, on the side facing the middle -- MUST
+# MATCH ScrewBlockS in base_parts/altium/GenerateFromParams.pas.
+KEEPOUT_BLOCK_MARGIN = 0.5
+
 # What must stay between the PCB hole and the board's edge, and between
 # the countersink and lid_inside's outline.
 EDGE_MARGIN = 0.5
@@ -117,6 +123,11 @@ def floor_width(values: Dict[str, float]) -> float:
         return wall
     needed = values.get("screw_engagement", 3.0) - values.get("pedestal_depth", 0.0)
     return max(wall, needed)
+
+
+def block_half(screws: "Screws") -> float:
+    """Half-size of the square the ground plane gives up round each screw."""
+    return screws.keepout_diameter / 2.0 + KEEPOUT_BLOCK_MARGIN
 
 
 def enabled(values: Dict[str, float]) -> bool:
