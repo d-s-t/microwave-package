@@ -256,8 +256,9 @@ move with the via lattice (15.13, 15.55, 16.94, 17.08 and 18.58 GHz): box
 modes. Those with Q of 450-580 do, and monotonically: one goes 15.88, 15.67,
 15.46 GHz for 0.5, 0.8, 1.2 mm, another 17.61, 17.41 GHz for 0.5, 0.8 mm: modes
 of the substrate between the via fences, which the lattice sets, with the lower Q
-of a lossy dielectric. None lies at 16.75 or 25.75 GHz, so those notches
-are not eigenmodes of the structure as modelled (the eigenmode model has no ports).
+of a lossy dielectric. None lies at 16.75 GHz (within 0.15 GHz), so that notch
+is not an eigenmode of the structure as modelled (the eigenmode model has no
+ports); these runs only reach 19 GHz, so 25.75 GHz is not covered.
 
 **B7, lid relief depth** (`route_clearence`, entered in micrometres; the first
 attempt used 0.2 and 0.5 *um* by mistake, which shorts the trace: S21 -90 dB at
