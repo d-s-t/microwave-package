@@ -108,6 +108,13 @@ class TestBadInput(unittest.TestCase):
 class TestTheFormItself(unittest.TestCase):
     def setUp(self):
         self.client = webapp.app.test_client()
+        # The form opens on the latest run's settings, so what is in the
+        # real runs folder would otherwise decide what these tests see.
+        import tempfile
+        from microwave_package import paths
+        saved = paths.RUNS_ROOT
+        paths.RUNS_ROOT = tempfile.mkdtemp(prefix="runs_")
+        self.addCleanup(setattr, paths, "RUNS_ROOT", saved)
 
     def test_both_panels_render_and_only_one_is_shown(self):
         html = self.client.get("/").get_data(as_text=True)

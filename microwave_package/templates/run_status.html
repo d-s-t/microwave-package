@@ -135,6 +135,9 @@
     </form>
   </span>
 </p>
+{% if pair_note %}
+<p class="muted" style="margin-top:-.4rem">{{ pair_note }}</p>
+{% endif %}
 
 {# One row per phase, filled in by renderPhases() -- the widths and the
    counts are patched on every poll anyway, so they are not also
@@ -351,6 +354,14 @@
     {% endfor %}
   </select>
   <button type="button" id="swap-axes" title="Swap the X and Y axes">&#8646; swap</button>
+  {% if has_fine %}
+  <label for="data-view" title="This run has fine frequency ranges as well as its broad sweep">Data</label>
+  <select id="data-view">
+    {% for view in views %}
+    <option value="{{ view.value }}">{{ view.label }}</option>
+    {% endfor %}
+  </select>
+  {% endif %}
 </div>
 {% endif %}
 {% if filter_options %}
@@ -381,6 +392,75 @@
 <p><a class="button" href="{{ url_for('run_results_csv', run_id=run.run_id) }}">Download CSV</a>
    <span class="muted">-- click any point for that combination's details</span></p>
 <iframe id="plot-frame" src="{{ url_for('run_plot', run_id=run.run_id) }}"></iframe>
+{% endif %}
+
+{% if eigenmodes %}
+<h2>Eigenmodes</h2>
+<p class="muted">The cavity's resonances, from the eigenmode step of this run -- marked on the
+  S21 plot above. <a href="{{ url_for('run_eigenmodes_csv', run_id=run.run_id) }}">Download CSV</a></p>
+<details class="collapsible">
+  <summary>{{ eigenmodes|length }} mode(s)</summary>
+  <table>
+    <thead><tr><th>Combination</th><th>Mode</th><th>Frequency (GHz)</th><th>Q</th></tr></thead>
+    <tbody>
+    {% for row in eigenmodes %}
+    <tr><td>{{ row.combo_id }}</td><td>{{ row.mode }}</td>
+        <td>{{ "%.4f"|format(row.freq_ghz) }}</td>
+        <td>{{ "%.0f"|format(row.q) if row.q is not none else "--" }}</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</details>
+{% endif %}
+
+{% if refine and plot_exists %}
+<h2 id="refine">Refine a frequency range</h2>
+{% if refine.children %}
+<ul class="refinements">
+  {% for child in refine.children %}
+  <li><span class="pill {{ child.kind }}">{{ child.stage }}</span>
+    {{ child.ranges }} GHz &mdash; {{ child.combos | join(', ') }}
+    {% if child.running %}
+    <form method="post" action="{{ url_for('stop_run', run_id=child.run_id) }}" style="display:inline">
+      <button type="submit" class="mini">Stop</button></form>
+    {% elif child.stage != 'Complete' %}
+    <form method="post" action="{{ url_for('resume_run', run_id=child.run_id) }}" style="display:inline">
+      <button type="submit" class="mini">Resume</button></form>
+    {% endif %}
+    {% if child.error %}<pre class="muted">{{ child.error }}</pre>{% endif %}
+  </li>
+  {% endfor %}
+</ul>
+{% endif %}
+{% if refine.combos %}
+<form method="post" action="{{ url_for('refine_run', run_id=run.run_id) }}" class="refine-form">
+  <p class="muted">Re-solve some combinations over narrower ranges, on the same geometry. The new data
+    is part of <em>this</em> run: it appears on the plot above and in its CSV, and the
+    <em>Data</em> selector switches between <em>Broad only</em>, <em>Fine ranges only</em> and
+    <em>Broad + fine, one trace</em>. Give any number of ranges as <code>lo:hi:step</code> in GHz
+    (or <code>lo:hi</code> for 100 steps), separated by <code>;</code>. Refining again adds more.</p>
+  <label>Ranges (GHz)
+    <input type="text" name="ranges" id="refine-ranges" size="60" placeholder="12.1:12.4:0.002; 15.0:15.2"></label>
+  <div class="refine-fill">
+    <button type="button" class="mini" id="refine-from-plot"
+            title="Add the frequency range currently zoomed to on the plot above">+ plot's zoom range</button>
+    {% if refine.has_modes %}
+    <button type="button" class="mini" id="refine-around-modes"
+            title="Add a window around every eigenmode between the From and To frequencies, sampled twice as densely as the automatic ones">+ around the eigenmodes between</button>
+    <input type="number" step="any" id="modes-lo" placeholder="from" style="width:5rem"> and
+    <input type="number" step="any" id="modes-hi" placeholder="to (GHz)" style="width:5rem">
+    <span class="muted">(blank = the whole band)</span>
+    {% endif %}
+  </div>
+  <div class="chips" style="margin:.5rem 0">
+    <strong>Combinations</strong>
+    {% for combo in refine.combos %}
+    <label class="chip"><input type="checkbox" name="combo" value="{{ combo }}" checked>{{ combo }}</label>
+    {% endfor %}
+  </div>
+  <button type="submit" class="start-run">Refine</button>
+</form>
+{% endif %}
 {% endif %}
 
 {% if heatmap_combos %}
@@ -694,7 +774,11 @@ async function poll() {
   // something the poll can patch in), or when the run hits an error.
   const plotJustAppeared = data.plot_ready && !hadPlot;
   const hitAnError = data.stage === "error" && initialStage !== "error";
-  if (plotJustAppeared || hitAnError) { location.reload(); }
+  // The page shows the eigenmode step's phases and then the run's own, so a
+  // change of step needs a fresh page.
+  const changedStep = data.stage !== initialStage &&
+    (data.stage === "eigenmodes" || initialStage === "eigenmodes");
+  if (plotJustAppeared || hitAnError || changedStep) { location.reload(); }
 }
 setInterval(poll, 4000);
 
@@ -709,6 +793,7 @@ setInterval(poll, 4000);
   var x = document.getElementById("axis-x");
   var y = document.getElementById("axis-y");
   var colour = document.getElementById("axis-color");
+  var dataView = document.getElementById("data-view");
   if (!x || !y) { return; }
 
   var base = "{{ url_for('run_plot', run_id=run.run_id) }}";
@@ -754,6 +839,7 @@ setInterval(poll, 4000);
       theme: window.themeIsDark() ? "dark" : "light",
     });
     if (colour && colour.value) { params.set("color", colour.value); }
+    if (dataView) { params.set("data", dataView.value); }
     applyFilters(params);
     frame.src = base + "?" + params.toString();
   }
@@ -780,7 +866,45 @@ setInterval(poll, 4000);
     }
   }
 
-  [x, y, colour].forEach(function (select) {
+  // Refine form: fill the ranges box from whatever the plot is zoomed to.
+  var fromPlot = document.getElementById("refine-from-plot");
+  if (fromPlot) {
+    fromPlot.addEventListener("click", function () {
+      var plot = frame.contentDocument && frame.contentDocument.querySelector(".js-plotly-plot");
+      var axis = plot && plot._fullLayout && plot._fullLayout.xaxis;
+      if (!axis || x.value !== "freq_ghz") {
+        alert("Put frequency on the X axis, and zoom to the range you want, first.");
+        return;
+      }
+      var lo = Math.max(axis.range[0], 0), hi = axis.range[1];
+      var box = document.getElementById("refine-ranges");
+      box.value = (box.value.trim() ? box.value.trim().replace(/;?$/, "; ") : "")
+        + lo.toFixed(4) + ":" + hi.toFixed(4);
+    });
+  }
+
+  // ...or from the eigenmodes between two frequencies, for the ticked combinations.
+  var aroundModes = document.getElementById("refine-around-modes");
+  if (aroundModes) {
+    aroundModes.addEventListener("click", function () {
+      var params = new URLSearchParams();
+      var lo = document.getElementById("modes-lo").value, hi = document.getElementById("modes-hi").value;
+      if (lo) { params.set("lo", lo); }
+      if (hi) { params.set("hi", hi); }
+      document.querySelectorAll('.refine-form input[name=combo]:checked').forEach(function (b) {
+        params.append("combo", b.value);
+      });
+      fetch("{{ url_for('mode_ranges_json', run_id=run.run_id) }}?" + params.toString())
+        .then(function (r) { return r.json(); })
+        .then(function (data) {
+          var box = document.getElementById("refine-ranges");
+          if (!data.ranges) { alert("No eigenmode falls in that range for the ticked combinations."); return; }
+          box.value = (box.value.trim() ? box.value.trim().replace(/;?$/, "; ") : "") + data.ranges;
+        });
+    });
+  }
+
+  [x, y, colour, dataView].forEach(function (select) {
     if (select) { select.addEventListener("change", render); }
   });
 

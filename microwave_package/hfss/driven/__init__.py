@@ -34,6 +34,78 @@ FIELDS: List[Dict[str, Any]] = [
                 "delta freq.",
     },
     {
+        "name": "coarse_sweep", "label": "Broad sweep", "kind": "select", "default": "on",
+        "options": [
+            {"value": "on", "label": "On",
+             "help": "The sweep over the whole band, as always."},
+            {"value": "off", "label": "Off",
+             "help": "Only the fine windows -- what a refinement of an earlier run uses."},
+        ],
+    },
+    {
+        "name": "fine_windows", "label": "Fine windows around the eigenmodes", "kind": "select",
+        "default": "auto",
+        "options": [
+            {"value": "auto", "label": "Automatic",
+             "help": "When this run is paired with an Eigenmode run, every mode "
+                     "below the sweep stop gets a narrow, densely sampled window "
+                     "of its own beside the coarse sweep. Without eigenmodes "
+                     "only the windows typed below are added."},
+            {"value": "off", "label": "Off",
+             "help": "The coarse sweep alone. A box mode is only f/Q wide -- "
+                     "25-35 MHz -- so a ~100 MHz step under-samples its dip and "
+                     "its depth is then a matter of where the samples fall."},
+        ],
+    },
+    {
+        "name": "fine_halfwidth_linewidths", "label": "Window half-width (linewidths)",
+        "kind": "float", "default": 0.5,
+        "help": "Half-width of a window in units of the mode's linewidth f/Q. "
+                "0.5 is f/(2Q), the half-width at half depth.",
+    },
+    {
+        "name": "fine_points_per_linewidth", "label": "Points per linewidth", "kind": "float",
+        "default": 20.0,
+        "help": "Window step = f/Q divided by this: the default 20 is f/(20Q).",
+    },
+    {
+        "name": "fine_margin_percent", "label": "Window margin (% of f)", "kind": "float",
+        "default": 1.0,
+        "help": "Added to each side of a window. The eigenmode solve has no "
+                "connectors or ports, so it is only a hint of where the driven "
+                "dip lands -- the margin keeps the dip inside its window.",
+    },
+    {
+        "name": "fine_q_fallback", "label": "Q to assume when an eigenmode has none",
+        "kind": "float", "default": 200.0,
+        "help": "Used for a mode whose Q is missing or infinite (a lossless "
+                "perfect-E cavity has no finite Q).",
+    },
+    {
+        "name": "fine_max_points", "label": "Max fine-window points", "kind": "int",
+        "default": 2000,
+        "help": "Across all windows. Over this every window's step is made "
+                "coarser by the same factor -- no mode is dropped.",
+    },
+    {
+        "name": "fine_windows_manual", "label": "Extra fine windows (GHz)", "kind": "text",
+        "default": "",
+        "help": "lo:hi:step, separated by ; -- for example 12.1:12.4:0.002; "
+                "15.0:15.2:0.001. Added to the automatic windows (or used alone "
+                "with them off), merged where they overlap.",
+    },
+    {
+        "name": "adapt_at", "label": "Adapt the mesh at", "kind": "select", "default": "f_stop",
+        "options": [
+            {"value": "f_stop", "label": "Top of the sweep",
+             "help": "The mesh resolves the shortest wavelength the sweep asks about."},
+            {"value": "highest_mode", "label": "Just above the highest eigenmode",
+             "help": "Cheaper when the sweep reaches well past the modes of interest, "
+                     "but the mesh is then coarser than the sweep's top end needs. "
+                     "Needs a paired Eigenmode run; otherwise the top of the sweep."},
+        ],
+    },
+    {
         "name": "port_impedance_ohm", "label": "Port impedance (ohm)", "kind": "float", "default": 50.0,
         "help": "S-parameters are renormalised to this. The CPW gap is "
                 "already solved for 50 ohm, so changing it here only changes "

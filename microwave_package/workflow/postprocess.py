@@ -87,6 +87,24 @@ def postprocess_task(
         close_project_safely(hfss, log=log)
 
 
+# The prefix that lifts the limit: backslash backslash question-mark backslash.
+LONG_PREFIX = chr(92) * 2 + "?" + chr(92)
+
+
+def long_path(path: str) -> str:
+    """`path` in the form Windows accepts past its 260-character limit.
+
+    A solved driven project's results sit several folders deep, and under
+    a run folder with a long name the copy back from the queue overran
+    the limit (WinError 3, "path not found") -- for files that were
+    there. The long-path prefix lifts the limit for the calls that take
+    it; elsewhere the path is returned as it is.
+    """
+    if os.name != "nt" or path.startswith(LONG_PREFIX):
+        return path
+    return LONG_PREFIX + os.path.abspath(path)
+
+
 def copy_tree_verified(source: str, destination: str) -> List[str]:
     """Copy a folder and check every file arrived intact.
 
@@ -94,6 +112,7 @@ def copy_tree_verified(source: str, destination: str) -> List[str]:
     is good). The caller only deletes the original once this comes back
     empty -- the queue copy is the only copy until then.
     """
+    source, destination = long_path(source), long_path(destination)
     shutil.copytree(source, destination, dirs_exist_ok=True)
 
     missing = []
@@ -140,11 +159,11 @@ def bring_task_local(run, queue: "queue_common.QueuePaths", combo_id: str, task_
     combo_dir = run.combo_dir(combo_id)
     staging = os.path.join(combo_dir, ".incoming")
 
-    shutil.rmtree(staging, ignore_errors=True)
+    shutil.rmtree(long_path(staging), ignore_errors=True)
     try:
         missing = copy_tree_verified(output_dir, staging)
     except OSError as exc:
-        shutil.rmtree(staging, ignore_errors=True)
+        shutil.rmtree(long_path(staging), ignore_errors=True)
         if not resilient_io.path_available(queue.root):
             log(f"{combo_id}: the queue went away mid-copy ({exc}); waiting for it to come back.")
             raise
@@ -154,7 +173,7 @@ def bring_task_local(run, queue: "queue_common.QueuePaths", combo_id: str, task_
     if missing:
         log(f"{combo_id}: {len(missing)} file(s) did not copy off the queue "
             f"(e.g. {missing[0]}); leaving the queue copy in place.")
-        shutil.rmtree(staging, ignore_errors=True)
+        shutil.rmtree(long_path(staging), ignore_errors=True)
         return None
 
     try:
@@ -165,15 +184,15 @@ def bring_task_local(run, queue: "queue_common.QueuePaths", combo_id: str, task_
     except OSError as exc:
         log(f"{combo_id}: copied locally but could not clear the queue ({exc}).")
 
-    for entry in os.listdir(staging):
-        source = os.path.join(staging, entry)
-        target = os.path.join(combo_dir, entry)
+    for entry in os.listdir(long_path(staging)):
+        source = long_path(os.path.join(staging, entry))
+        target = long_path(os.path.join(combo_dir, entry))
         if os.path.isdir(target):
             shutil.rmtree(target, ignore_errors=True)
         elif os.path.exists(target):
             os.remove(target)
         shutil.move(source, target)
-    shutil.rmtree(staging, ignore_errors=True)
+    shutil.rmtree(long_path(staging), ignore_errors=True)
 
     log(f"{combo_id}: analysed files are now in the run folder.")
     return combo_dir

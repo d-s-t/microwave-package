@@ -54,7 +54,7 @@ class TestTheContract(unittest.TestCase):
     def test_every_field_has_what_the_form_needs_to_render_it(self):
         for solver in solvers():
             for field in solver.all_fields:
-                self.assertIn(field["kind"], ("int", "float", "select"), field["name"])
+                self.assertIn(field["kind"], ("int", "float", "select", "text"), field["name"])
                 self.assertTrue(field["label"], field["name"])
                 self.assertIn("default", field, field["name"])
                 if field["kind"] == "select":

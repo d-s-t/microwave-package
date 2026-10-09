@@ -22,6 +22,9 @@ A run asks HFSS one of two questions, chosen per run:
   two SMP ports over a frequency sweep; the answer is S11 and S21 across
   the band, plus a Touchstone file per combination.
 
+By default a run does **both**, on the same geometry (see
+[Eigenmode and Driven together](#eigenmode-and-driven-together)).
+
 They share the same geometry and differ only in what is solved on it.
 Each is a solver plugged into [`hfss/registry.py`](microwave_package/hfss/registry.py),
 which is where the contract between a solution type and the rest of the
@@ -261,6 +264,13 @@ even a perfect line reads S11 = S21 = -6 dB at low frequency. They are for seein
 where a feature comes from -- a notch the connector plane shows and the chip plane
 does not is made outside the die.
 
+Without `--no-pair` the command above solves both: an Eigenmode run first
+and then the Driven run, which gets fine frequency windows around the
+modes (`--no-pair` solves just the `--solution-type`). `--fine-windows
+off`, `--fine-windows-manual LO:HI:STEP[;...]`, `--adapt-at
+highest_mode` and `--box-conductivity` (with `--no-perfect-e-box`) set the
+options described below; the finer factors are settings in the web form.
+
 Run `python -m microwave_package.pipeline --help` for every analysis
 setting -- they are grouped by which solution type they apply to.
 
@@ -273,6 +283,102 @@ and retries until the share comes back, then continues from wherever it
 was. You can also just stop it (Ctrl-C, or close the web UI's process)
 and resume later with `--resume`/the web UI's Resume button; nothing
 already built or queued is lost.
+
+## Eigenmode and Driven together
+
+A run can solve both questions for every combination on the same
+geometry, and it is **one run** in the web app: one entry in the run list,
+one status page, one results view with the eigenmodes marked on the S21
+plot and listed under it.
+
+Underneath, an HFSS design has one solution type, and a queue task names
+one project, one design and one solution type, so the two solves cannot
+share a setup or a task. The run therefore keeps its eigenmode part as a
+**hidden part** of itself (`part_of` in its config, a folder named
+`<run>_eigen` beside it; see
+[`workflow/companion.py`](microwave_package/workflow/companion.py)). The
+queue schema is unchanged and the worker needs no change. Hidden parts are
+not listed, their pages redirect to the run's, and deleting the run deletes
+them with it.
+
+- Tick **Both, on the same geometry** under *What to solve* (on by
+  default; `--no-pair` on the command line turns it off). It needs
+  `port_count = 2`, and is refused up front otherwise.
+- **Eigenmodes first.** The run's stage reads "Solving eigenmodes first
+  (step 1 of 2)" and its page and list row show that step's progress; then
+  the S-parameter step starts from the same geometry (the STEP files and
+  copper -- Altium and SolidWorks are not asked again) and reads the modes.
+  Stopping or resuming the run does the same to both steps. If the
+  eigenmode step fails, the S-parameter step still goes ahead with the
+  broad sweep alone and says so.
+- **Fine windows.** Box modes have Q of about 60-500, so they are 25-35 MHz
+  wide while the broad sweep steps about 100 MHz, and a narrow dip is
+  under-sampled. Beside the broad sweep, each eigenmode below the sweep
+  stop gets a window of its own, as extra interpolating sweeps (`Fine_1`,
+  `Fine_2`, ...) in the same setup:
+  half-width = 0.5 x f/Q (that is f/(2Q)) plus a 1 % margin on f, step =
+  f/Q / 20 (that is f/(20Q)). The margin is there because the eigenmode
+  solve has no connectors, so its frequency is only a hint of where the
+  driven dip lands. Overlapping windows merge, and a cap of 2000 points
+  across all windows makes every step coarser by the same factor rather
+  than dropping a mode. All of these are driven settings (*Window
+  half-width*, *Points per linewidth*, *Window margin*, *Q to assume when
+  an eigenmode has none*, *Max fine-window points*), as are *Fine windows*
+  (automatic or off) and *Extra fine windows*, a list of `lo:hi:step` in
+  GHz, for windows you pick yourself -- those work without eigenmodes
+  too. The fine points are folded into the run's results, in frequency
+  order, with a `sweep` column saying which sweep each came from.
+- **Mesh frequency.** *Adapt the mesh at* is the top of the sweep by default
+  (as before); the other choice is just above the highest eigenmode in
+  the band.
+- **Results.** The S-parameter plot against frequency marks the eigenmodes
+  as triangles along its foot (they follow the combination filter; hover for
+  frequency and Q), and an *Eigenmodes* table under it lists them, with a
+  CSV. The chip-field heatmaps come from the eigenmode step too.
+
+### Refining a frequency range afterwards
+
+On a finished run's page, **Refine a frequency range** re-solves chosen
+combinations over narrower ranges. Any number of ranges, each
+`lo:hi:step` in GHz (`lo:hi` alone takes 100 steps), `;`-separated, typed
+in or added with:
+
+- *+ plot's zoom range* -- whatever the plot above is zoomed to; or
+- *+ around the eigenmodes between [from] and [to]* -- a window around each
+  eigenmode in that range (blank = the whole band) for the ticked
+  combinations, sampled twice as densely as the automatic windows.
+
+The refinement is **part of the same run**, not a new entry: it is listed
+in that section with its state and Stop/Resume, it uses the run's
+geometry and settings (borrowed, not rebuilt), solves only the chosen
+ranges for the chosen combinations with no broad sweep, and adapts its mesh
+where the original did so the two line up. Its points join the run's
+results and CSV, and the plot's **Data** selector then switches between
+*Broad only*, *Fine ranges only* (each range its own piece, not one line
+across the gaps) and *Broad + fine, one trace* (the default), where a fine
+window's points replace the broad sweep's interpolated samples inside it.
+The automatic windows count as fine data too. Refining again adds more.
+
+Caveat: the refinement rebuilds the model and re-adapts the mesh (at the
+frequency the run adapted at) rather than reusing the solved project, and
+a very sharp, high-Q feature is sensitive to the mesh. Measured on one
+combination: a broad dip at 16.87 GHz reproduced to 5 MHz and 2 dB, but a
+sharp step near 15.8 GHz sat about 50 MHz away in the refinement from where
+the run's own fine window had it. So read broad and fine data as two
+independent solves where a feature is that sharp, and treat a feature that
+moves between them as mesh-limited, not as a measurement.
+
+### The box's conductor model
+
+*Perfect E on box/lid_inside* stays on by default: the box is probably
+aluminium, which is superconducting below about 1.2 K. Perfect E puts the
+mode and dip **positions** in the right place but exaggerates dip
+**depth** and Q, because nothing is lost in the walls. Turning it off
+gives the box and lid a finite-conductivity boundary of *Box conductivity*
+(S/m, default 1e8, about 6061 aluminium at liquid-helium temperature;
+3.8e7 at room temperature), with no thickness -- an Eigenmode design
+refuses one on that boundary. The setting is `box_conductivity` in a run's
+`materials`, and is listed on the comparison page.
 
 ## Output
 

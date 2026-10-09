@@ -322,6 +322,11 @@
     {% for option in field.options %}
     <p class="muted setting-note">{{ option.label }}: {{ option.help }}</p>
     {% endfor %}
+    {% elif field.kind == "text" %}
+    <label>{{ field.label }}
+      <input type="text" name="{{ field.name }}"
+             value="{{ settings[field.name] if settings[field.name] is not none else field.default }}"></label><br>
+    {% if field.help %}<p class="muted setting-note">{{ field.help }}</p>{% endif %}
     {% else %}
     <label>{{ field.label }}
       <input type="number"
@@ -342,6 +347,14 @@
       attention -- open this only to change how the solve itself runs.</p>
   <fieldset>
     <legend>What to solve</legend>
+    <label class="solve-choice">
+      <input type="checkbox" name="run_both" id="run-both"
+             {% if settings.get('run_both', True) %}checked{% endif %}>
+      Both, on the same geometry</label>
+    <p class="muted setting-note">Every combination is solved as an Eigenmode run first and then a
+      Driven Modal run (two runs, linked on their pages -- an HFSS design has one solution type).
+      The driven sweep gets fine frequency windows around each eigenmode, and the S21 plot shows the
+      eigenmodes as markers. Untick to solve just the type picked below. Needs port_count = 2.</p>
     {% for type in solution_types %}
     <label class="solve-choice">
       <input type="radio" name="solution_type" value="{{ type.value }}"
@@ -396,6 +409,16 @@
     {{ material_field('mat_chip', 'Chip material', material_options.mat_chip) }}
     {{ material_field('mat_vacuum', 'Vacuum material', material_options.mat_vacuum) }}
     <label><input type="checkbox" name="perfect_e_box" {% if materials.perfect_e_box %}checked{% endif %}> Perfect E on box/lid_inside</label><br>
+    <label>Box conductivity when not perfect E (S/m)
+      <input type="number" step="any" min="0" name="box_conductivity"
+             value="{{ materials.get('box_conductivity') or default_box_conductivity }}"></label>
+    <p style="font-size:0.85em;opacity:0.75;margin:0.4em 0 0">
+      The box is aluminium, which is superconducting below about 1.2 K, so perfect E is
+      the right default. It puts mode and dip <em>positions</em> in the right place but
+      exaggerates dip <em>depth</em> and Q, because nothing is lost in the walls. With it
+      off, the box and lid get a finite-conductivity boundary of this value instead --
+      about 1e8 S/m for 6061 at liquid-helium temperature (3.8e7 at room temperature).
+    </p>
     {{ material_field('mat_conductor_pcb', 'PCB conductor', material_options.mat_conductor_pcb) }}
     {{ material_field('mat_conductor_chip', 'Chip conductor', material_options.mat_conductor_chip) }}
     <label><input type="checkbox" name="perfect_e_conductors" {% if materials.perfect_e_conductors %}checked{% endif %}> Perfect E on the conductors</label>
@@ -489,15 +512,17 @@
   function sync() {
     var chosen = document.querySelector('input[name="solution_type"]:checked');
     if (!chosen) { return; }
+    var both = document.getElementById('run-both');
+    both = both && both.checked;
     panels.forEach(function (panel) {
-      panel.hidden = panel.dataset.solutionType !== chosen.value;
+      panel.hidden = !both && panel.dataset.solutionType !== chosen.value;
     });
     if (summary) {
       summary.textContent = summary.textContent.replace(/\(([^,]+)/, '(' + chosen.value);
     }
   }
 
-  document.querySelectorAll('input[name="solution_type"]').forEach(function (radio) {
+  document.querySelectorAll('input[name="solution_type"], #run-both').forEach(function (radio) {
     radio.addEventListener('change', sync);
   });
   sync();

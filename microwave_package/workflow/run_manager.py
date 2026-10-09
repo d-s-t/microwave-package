@@ -262,6 +262,18 @@ def parameter_values_for(name: str, sweep_params, parameter_defaults) -> List[fl
     return [base[name]] if name in base else []
 
 
+def parent_of(config: dict) -> Optional[str]:
+    """The run a run's config says it belongs to, or None.
+
+    `part_of` is what runs made now carry. Runs made before a pair was one
+    run have only the links they used to be joined by -- an eigenmode run
+    that names its driven run, a refinement that names the run it refines
+    -- and are the same thing: parts of that run, with their data on its
+    page. They stay on disk exactly as they were.
+    """
+    return config.get("part_of") or config.get("refines_run_id") or config.get("driven_run_id")
+
+
 class Run:
     # When the atomic replace is being blocked by something outside this
     # process, this holds the time until which to assume it still is.
@@ -287,8 +299,21 @@ class Run:
         sweep_params: List[SweepParameter],
         analysis_settings: dict,
         parameter_defaults: Optional[Dict[str, float]] = None,
+        *,
+        part_of: Optional["Run"] = None,
+        role: Optional[str] = None,
     ) -> "Run":
+        """`part_of` makes a hidden part of another run (see companion.py):
+        it is stored like any run but is not listed on its own, and its id
+        carries `role` so the folder says what it is."""
         run_id = _dt.datetime.now().strftime("run_%Y%m%d_%H%M%S")
+        if part_of is not None:
+            run_id = f"{part_of.run_id}_{role or 'part'}"
+        # Two runs made in the same second must not share a folder.
+        taken, suffix = run_id, 1
+        while os.path.exists(os.path.join(str(paths.RUNS_ROOT), run_id)):
+            suffix += 1
+            run_id = f"{taken}_{suffix}"
         run = cls(run_id)
         os.makedirs(run.run_dir, exist_ok=True)
         os.makedirs(run.plots_dir, exist_ok=True)
@@ -302,6 +327,9 @@ class Run:
             "analysis_settings": analysis_settings,
             "created_at": _dt.datetime.now().isoformat(timespec="seconds"),
         }
+        if part_of is not None:
+            run.config["part_of"] = part_of.run_id
+            run.config["part_role"] = role
         combos = combinations(sweep_params, parameter_defaults)
 
         # Each combination's full geometry -- the equations file's values
@@ -381,17 +409,28 @@ class Run:
                 config = cls._read_json(os.path.join(run_dir, "run_config.json"))
             except (OSError, json.JSONDecodeError):
                 config = {}
+            if parent_of(config):
+                continue  # a part of another run: shown on that run's page, not on its own
             swept = [
                 {"label": parameter_meta.label_for(p["name"]), "n": len(p.get("values", []))}
                 for p in config.get("sweep_params", [])
             ]
+            progress_state, shown_stage = state, state.get("stage")
+            if shown_stage == "eigenmodes" and config.get("eigen_run_id"):
+                # Its eigenmodes are being solved first: what the list shows
+                # is that part's progress, since this run has none yet.
+                try:
+                    progress_state = cls._read_json(
+                        os.path.join(runs_root, config["eigen_run_id"], "state.json"))
+                except (OSError, json.JSONDecodeError):
+                    pass
             summaries.append({
                 "run_id": run_id,
                 "label": (config.get("label") or "").strip(),
                 "created_at": config.get("created_at"),
-                "stage": state.get("stage"),
+                "stage": shown_stage,
                 "swept": swept,
-                **progress_of(state, config.get("analysis_settings")),
+                **progress_of(progress_state, config.get("analysis_settings")),
             })
         return summaries
 
@@ -549,6 +588,12 @@ class Run:
     @property
     def sweep_param_names(self) -> List[str]:
         return [p["name"] for p in self.config.get("sweep_params", [])]
+
+    @property
+    def parent_id(self) -> Optional[str]:
+        """The run this one is a hidden part of (its eigenmodes, or a
+        refinement of it), or None for a run in its own right."""
+        return parent_of(self.config)
 
     @property
     def label(self) -> str:
