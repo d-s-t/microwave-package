@@ -69,7 +69,7 @@ import logging
 import math
 from typing import Any, Dict, List
 
-from ...design import bonds, smp
+from ...design import bonds, parameter_meta, smp
 from ..registry import PortPlacementError
 
 
@@ -170,6 +170,19 @@ def place_ports(hfss, layout, analysis_settings: Dict[str, Any], log=logger.info
 
     plane = analysis_settings.get("reference_plane", DEFAULT_REFERENCE_PLANE)
     impedance = float(analysis_settings.get("port_impedance_ohm", 50.0))
+
+    # The bond-finger and chip planes are defined by the die's bonds. A
+    # bare board (no_chip) has neither, so say so rather than failing
+    # later on an empty bond list. The connector plane is the clean
+    # through-line reference for it; launch is the CPW-side alternative.
+    if parameter_meta.is_bare_board(layout.values) and plane in (
+        REFERENCE_PLANE_BONDS, REFERENCE_PLANE_CHIP,
+    ):
+        raise PortPlacementError(
+            f"The {plane!r} reference plane sits at the die's wire bonds, and this is a "
+            f"bare board (no_chip) with no die or bonds. Use the 'connector' reference "
+            f"plane (the through-line from SMP to SMP) or 'launch'."
+        )
 
     if plane != REFERENCE_PLANE_CONNECTOR and plane in {p["value"] for p in REFERENCE_PLANES}:
         _terminate_connectors(hfss, impedance, log=log)

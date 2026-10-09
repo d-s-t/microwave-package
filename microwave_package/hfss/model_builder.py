@@ -242,6 +242,10 @@ MATERIAL_RULES = [
     ("pcb_via",         "pcb_vias",        "mat_conductor_pcb",   "perfect_e_conductors"),
     ("pcb_substrate",   "pcb",             "mat_pcb",             None),
     ("wirebond",        "wirebond",        "mat_wirebond",        "perfect_e_conductors"),
+    # The corner screws are steel in life; here they take the box's metal
+    # and, with it, its perfect-E setting, so a perfect-E box has perfect-E
+    # screws and the with/without comparison changes only the geometry.
+    ("screw",           "screw",           "mat_box",             "perfect_e_box"),
     # The SMP connector imports as three bodies, and place_connectors sets
     # the material on all three (LCP bead, brass conductors) -- hence None
     # for both rules. The bead rule must precede the bare "connector" one.
@@ -654,7 +658,9 @@ def build_layout(hfss, combo_dir: str, dimensions_txt_content: str,
     file -- a run built with Altium off is still perfectly valid, and was
     the only kind of run until the Altium stage existed.
     """
-    from ..design import cavity as cavity_plan, copper_geometry as cg, equations as eq
+    from ..design import (
+        cavity as cavity_plan, copper_geometry as cg, equations as eq, parameter_meta,
+    )
 
     v = eq.get_numeric_parameters(dimensions_txt_content)
 
@@ -682,7 +688,13 @@ def build_layout(hfss, combo_dir: str, dimensions_txt_content: str,
     # the pedestal, the die is let into the board so their faces finish
     # flush, and the extra half wall_width above the copper is
     # lid_inside's own headroom (see place_lid_inside).
-    pcb_bottom = wall + pedestal
+    # The floor under the board is its own dimension now (it was the wall
+    # thickness), so that a floor thick enough to thread a screw into does
+    # not thicken the walls. The equations file falls back to the wall for
+    # a dimensions.txt from before the split.
+    from ..design import screws as screw_plan
+
+    pcb_bottom = screw_plan.floor_width(v) + pedestal
     pcb_top = pcb_bottom + pcb_width
     # The metal's thickness AS DRAWN: a film below SHEET_BELOW_MM is a
     # sheet, so it has none in the model, and whatever rests on it --
@@ -708,6 +720,7 @@ def build_layout(hfss, combo_dir: str, dimensions_txt_content: str,
                 f"{SHEET_BELOW_MM * 1000:g} um, so drawn as a sheet -- its thickness "
                 "does not enter the model.")
 
+    pcb_bodies: List[str] = []   # the board's copper, for the screws' keep-out
     _drop_superseded_solids(hfss, log)
     build_vacuum(
         hfss, frame, stack,
@@ -729,6 +742,10 @@ def build_layout(hfss, combo_dir: str, dimensions_txt_content: str,
     # question when it drew the board -- so the hole in the model is the
     # feature on the board, wiggle room and all.
     opening = cavity_plan.plan(v)
+    bare = parameter_meta.is_bare_board(v)
+    if bare:
+        log("Bare board (no_chip): no die, opening, bond pads or wire bonds -- "
+            "the CPW runs unbroken from one connector to the other.")
 
     cg.build_substrates(
         hfss.modeler, frame, stack,
@@ -748,6 +765,7 @@ def build_layout(hfss, combo_dir: str, dimensions_txt_content: str,
             thickness=stack.copper_thickness, prefix="pcb", log=log,
         )
         remember_sheets(made, stack.copper_thickness, copper)
+        pcb_bodies = [name for names in made.values() for name in names]
         # The generator already draws the copper round the opening, so
         # this normally cuts nothing. It is here for the copper.txt an
         # older generator wrote, where it is the difference between a
@@ -761,7 +779,9 @@ def build_layout(hfss, combo_dir: str, dimensions_txt_content: str,
         # material override lets the metal win where they overlap. See
         # `copper_geometry._via_post` for why they are not drilled.
 
-    chip = boards.get("chip")
+    # A bare board never has a die, whatever an earlier run left in
+    # copper.txt.
+    chip = None if bare else boards.get("chip")
     if chip is not None and len(chip):
         # Through-vias in the die, if it ever carries any, are posts in
         # the die in the same way.
@@ -791,7 +811,9 @@ def build_layout(hfss, combo_dir: str, dimensions_txt_content: str,
     from ..design import bonds as bond_layout
 
     bonds_path = os.path.join(combo_dir, "bonds.txt")
-    if not include_wirebonds:
+    if bare:
+        pass  # nothing to bond to; said above
+    elif not include_wirebonds:
         log("Wire bonds turned off for this run -- the die is not bonded.")
     elif os.path.isfile(bonds_path):
         cg.build_bond_wires(
@@ -806,6 +828,16 @@ def build_layout(hfss, combo_dir: str, dimensions_txt_content: str,
         )
     else:
         log("No bonds.txt for this combination -- the die is not bonded.")
+
+    # The corner screws, if asked for: holes in box, lid_inside, the board
+    # and its copper, then the screws themselves. After everything they
+    # cut through exists.
+    from . import screws as screw_builder
+
+    try:
+        screw_builder.build_screws(hfss, frame, stack, v, pcb_bodies, log=log)
+    except ValueError as exc:
+        raise RuntimeError(f"Corner screws: {exc}") from exc
 
     ground_offset = None
     if chip is not None:

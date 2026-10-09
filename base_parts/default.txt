@@ -40,6 +40,26 @@
 
 "no_distortion" = 1 ' (boolean) when set to 1, no distortions are present. when set to 0, distortions are added to the box and holes to the PCB.
 
+"no_chip" = 0 ' (boolean) when set to 1, the bare board: no chip, opening, pedestal or wire bonds, just the CPW from one connector to the other. 0 builds the full package.
+
+"screws_on" = 1 ' (boolean) when set to 1, four M2 countersunk screws hold the lid, PCB and box together at the PCB corners. 0 builds without them.
+
+"screw_inset" = 3.5 ' distance from the PCB edge to the screw centre, on both axes (the 4.28 mm countersink must stay inside the lid outline)
+
+"screw_clearance_diameter" = 2.3 ' hole in the lid and the PCB (M2 is 2.0 mm, plus the margin a drill and a router need)
+
+"screw_tap_diameter" = 1.6 ' tap-drill hole in the box floor the screw cuts its thread into
+
+"screw_keepout_diameter" = 3.0 ' no copper or via inside this circle round each PCB hole
+
+"screw_engagement" = 3 ' length of thread in the box: the tapped hole goes right through the floor, so this is the floor thickness at the PCB corners (3 mm is 1.5 x the screw diameter, the usual minimum for steel in aluminium)
+
+"floor_width" = IIF ( "screws_on" > 0.5 , IIF ( "screw_engagement" - "pedestal_depth" > "wall_width" , "screw_engagement" - "pedestal_depth" , "wall_width" ) , "wall_width" ) ' box floor under the chip pocket (the floor under the rest of the board is floor_width + pedestal_depth thick); worked out, not typed: with the screws on, thick enough that the through-tapped hole has screw_engagement of thread, and never thinner than wall_width
+
+"lid_width" = 1.5 ' thickness of lid_inside (was 1.0 mm); must be at least the 1.14 mm head plus 0.3 mm of seat under the countersink, 1.44 mm
+
+"screw_length" = 0 ' length of the screw as cut, head top to tip; 0 means work it out from the stack (lid + board + floor, so the tip is flush with the underside of the box)
+
 "distortion_radius" = 0.6
 
 "distortion_x" = 0.0
@@ -70,7 +90,7 @@
 
 "chip_metal_thickness"= 0.0002	' thickness of the chip conductor (200 nm)
 
-"box_height"= "wall_width"*1.5 + "pedestal_depth" + "pcb_width" + 2 * "copper_thickness"
+"box_height"= "floor_width" + "lid_width" + "pedestal_depth" + "pcb_width" + 2 * "copper_thickness"
 
 "box_length"= "pcb_length" + 2 * "wall_width"
 

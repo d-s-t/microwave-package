@@ -41,6 +41,7 @@ import math
 from dataclasses import dataclass
 from typing import Dict, List
 
+from . import parameter_meta
 from .constraints import CHIP_COPPER_INSET, finger_offset
 
 SIGNAL = "signal"
@@ -90,7 +91,12 @@ def layout(values: Dict[str, float], gap: float) -> List[Bond]:
 
     `gap` is the board's solved CPW gap; it decides how far out the
     ground bonds have to start at the feedline ends.
+
+    The bare board (`no_chip`) has no die to bond to, so no bonds.
     """
+    if parameter_meta.is_bare_board(values):
+        return []
+
     # `span` below is the finger's own offset from the die's edge. It is
     # NOT bonding_clearence: that is where the lid has to stay clear to,
     # and the finger goes midway between the opening and it.

@@ -133,6 +133,14 @@ Const
 Var
     Rpt : TStringList;
 
+    { The four corner screws' copper keep-outs, when screws_on is set:
+      each screw's centre sits at (+-ScrewU, +-ScrewV) and no via may come
+      within ScrewKeepR of it (the keep-out's radius). ScrewKeepR <= 0
+      means no screws. Held here rather than threaded through TryVia and
+      AddViaLattice's argument lists, which already carry a dozen
+      numbers each. }
+    ScrewU, ScrewV, ScrewKeepR : Double;
+
     { The connector library, held open across both launches.
 
       Globals rather than passed around because the footprint is a LIVE
@@ -502,6 +510,40 @@ Begin
     End;
 End;
 
+{ One corner screw's clearance hole: a round Board Cutout, drawn the same
+  way the die's through-opening is. It is the hole the router leaves in
+  the board, so the fabrication outputs and the 3D view agree there is
+  nothing there. It is a polygon, thirty-two sided -- a Region has no arc
+  -- which is round enough for a drilled hole and stays inside the
+  nominal diameter at its flats.
+
+  The copper keep-out round it is NOT drawn here. The ground planes are
+  single-contour regions (see AddGroundPlane for why they cannot carry an
+  interior hole), so the wider void is cut by the HFSS builder from the
+  same screw_keepout_diameter, and ExportCopper ignores this region
+  because it is not on a copper layer. }
+Procedure AddScrewHole(Board : IPCB_Board; X, Y, Dia : Double);
+Var
+    Rgn : IPCB_Region;
+    C   : IPCB_Contour;
+    i   : Integer;
+    Ang : Double;
+Begin
+    Rgn := PCBServer.PCBObjectFactory(eRegionObject, eNoDimension, eCreate_Default);
+    C := PCBServer.PCBContourFactory;
+    For i := 0 To 31 Do
+    Begin
+        Ang := 2.0 * PiVal * i / 32.0;
+        C.AddPoint(MMsToCoord(X + Dia / 2.0 * Cos(Ang)),
+                   MMsToCoord(Y + Dia / 2.0 * Sin(Ang)));
+    End;
+    Rgn.SetOutlineContour(C);
+    Rgn.Layer := eKeepOutLayer;
+    Rgn.Kind := eRegionKind_BoardCutout;
+    Board.AddPCBObject(Rgn);
+    Announce(Board, Rgn);
+End;
+
 Procedure AddVia(Board : IPCB_Board; X, Y, Dia, Hole : Double);
 Var
     V : IPCB_Via;
@@ -749,6 +791,14 @@ Begin
         Reach := VoidR + Dia / 2.0 + MinGap - GapTolerance;
         If ((X - LaunchX) * (X - LaunchX) + Y * Y < Reach * Reach) Or
            ((X + LaunchX) * (X + LaunchX) + Y * Y < Reach * Reach) Then Exit;
+    End;
+    If ScrewKeepR > 0.0 Then
+    Begin
+        { Edge to edge: the via's own radius and MinGap on top of the
+          keep-out circle, the same way every other obstacle is treated. }
+        Reach := ScrewKeepR + Dia / 2.0 + MinGap - GapTolerance;
+        If ((Abs(X) - ScrewU) * (Abs(X) - ScrewU) + (Abs(Y) - ScrewV) * (Abs(Y) - ScrewV)
+            < Reach * Reach) Then Exit;
     End;
     If ViaObstructed(Board, X, Y, Dia, MinGap) Then Exit;
     AddVia(Board, X, Y, Dia, Dia / 2.0);
@@ -1425,6 +1475,7 @@ Var
     SmpOrigin, BondSpan : Double;
     CavHalfL, CavHalfS, CavDepth : Double;
     CavThrough : Boolean;
+    NoChip : Boolean;
     nStitch, nStitchSkip, nShield, nShieldSkip, nBonds, nLaunch, i : Integer;
 Begin
     Rpt := TStringList.Create;
@@ -1471,6 +1522,32 @@ Begin
     CavHalfS   := ParamOf(P, 'cavity_side', ChipHalfS * 2.0) / 2.0;
     CavDepth   := ParamOf(P, 'cavity_depth', ParamOf(P, 'pcb_width', 0.381));
     CavThrough := ParamOf(P, 'cavity_through', 1.0) > 0.5;
+
+    { Bare-board mode (no_chip = 1): no die, so no opening, no bond
+      fingers and no chip document. A zero-size opening is already how
+      every routine here reads "no opening" -- the centre conductor runs
+      unbroken and the ground and back planes stay whole. }
+    NoChip := ParamOf(P, 'no_chip', 0.0) > 0.5;
+    If NoChip Then
+    Begin
+        CavHalfL := 0.0;
+        CavHalfS := 0.0;
+        CavThrough := False;
+        Say('no_chip=1');
+    End;
+
+    { The corner screws' keep-out. The centre is screw_inset in from the
+      board edge on both axes -- the same arithmetic screws.plan does in
+      Python, so the two cannot place a screw differently. }
+    ScrewKeepR := 0.0;
+    If ParamOf(P, 'screws_on', 0.0) > 0.5 Then
+    Begin
+        ScrewU := HalfL - ParamOf(P, 'screw_inset', 3.5);
+        ScrewV := HalfS - ParamOf(P, 'screw_inset', 3.5);
+        ScrewKeepR := ParamOf(P, 'screw_keepout_diameter', 3.0) / 2.0;
+        Say('screws_on=1');
+        Say('screw_keepout_r_mm=' + FloatToStr(ScrewKeepR));
+    End;
 
     { Placed so the outermost land sits port_space from the board edge. }
     SmpOrigin := HalfL - PortSpace + ParamOf(P, 'smp_outer_v', -2.6);
@@ -1549,14 +1626,35 @@ Begin
     { The opening itself, after the copper: the copper is what has to
       make room for it, so a failure here leaves a board whose planes
       already stand clear rather than one with copper across a hole. }
-    PCBServer.PreProcess;
-    Try
-        AddCavity(Board, CavHalfL, CavHalfS, CavDepth, CavThrough);
-        Say('package_cavity=ok');
-    Except
-        Say('package_cavity=FAIL');
+    If NoChip Then
+        Say('package_cavity=skipped')
+    Else
+    Begin
+        PCBServer.PreProcess;
+        Try
+            AddCavity(Board, CavHalfL, CavHalfS, CavDepth, CavThrough);
+            Say('package_cavity=ok');
+        Except
+            Say('package_cavity=FAIL');
+        End;
+        PCBServer.PostProcess;
     End;
-    PCBServer.PostProcess;
+
+    { The four screw holes, once the copper they are cut through exists. }
+    If ScrewKeepR > 0.0 Then
+    Begin
+        PCBServer.PreProcess;
+        Try
+            AddScrewHole(Board, -ScrewU, -ScrewV, ParamOf(P, 'screw_clearance_diameter', 2.3));
+            AddScrewHole(Board, -ScrewU,  ScrewV, ParamOf(P, 'screw_clearance_diameter', 2.3));
+            AddScrewHole(Board,  ScrewU, -ScrewV, ParamOf(P, 'screw_clearance_diameter', 2.3));
+            AddScrewHole(Board,  ScrewU,  ScrewV, ParamOf(P, 'screw_clearance_diameter', 2.3));
+            Say('package_screw_holes=4');
+        Except
+            Say('package_screw_holes=FAIL');
+        End;
+        PCBServer.PostProcess;
+    End;
 
     { The library is opened OUTSIDE the edit batch. PreProcess and
       PostProcess bracket edits to one board, and opening a second
@@ -1589,14 +1687,19 @@ Begin
     Client.ShowDocument(Doc);
     Say('signal_pad_mm=' + FloatToStr(TraceHalfL));
 
-    PCBServer.PreProcess;
-    Try
-        nBonds := AddBondPads(Board, BondPath, PadW, PadH, Trace, False);
-        Say('package_bond_pads=' + IntToStr(nBonds));
-    Except
-        Say('package_bond_pads=FAIL');
+    If NoChip Then
+        Say('package_bond_pads=skipped')
+    Else
+    Begin
+        PCBServer.PreProcess;
+        Try
+            nBonds := AddBondPads(Board, BondPath, PadW, PadH, Trace, False);
+            Say('package_bond_pads=' + IntToStr(nBonds));
+        Except
+            Say('package_bond_pads=FAIL');
+        End;
+        PCBServer.PostProcess;
     End;
-    PCBServer.PostProcess;
 
     { The vias run LAST, now that the launch and the bond fingers are
       really on the board: TryVia checks every candidate against the
@@ -1654,6 +1757,15 @@ Begin
         Except
             Say('saved_package=FAIL');
         End;
+    End;
+
+    If NoChip Then
+    Begin
+        Say('chip_body=skipped');
+        Say('chip_bond_pads=skipped');
+        Say('ok=1');
+        Say('stage=end');
+        Exit;
     End;
 
     ChipDoc := Client.OpenNewDocument('PCB', 'chip', 'chip', False);
