@@ -164,6 +164,16 @@ into the form still wins. Started any other way, set it by hand. Eigenmode
 runs solve normally, but the chip-field columns come back flagged
 "object 'chip' not found", since there is no chip to measure.
 
+**The SolidWorks parts' equation link.** `box.SLDPRT` and `lid_inside.SLDPRT`
+read their dimensions from `base_parts/default.txt` through a link that is
+stored in the part as an *absolute path*; as committed, that path is in
+whichever worktree last saved them, not in your checkout. Each run
+therefore re-points the link at the equations file it is writing and
+re-reads it when it opens the parts (`step_generation.link_equations`),
+in memory only -- the parts are never saved back, so a run leaves no
+modified binaries in the checkout. If you re-save the parts yourself, do it
+from the checkout you work in; the stored path is then harmless either way.
+
 **Corner screws.** The "Corner screws" tick (`screws_on = 1`) holds the lid,
 PCB and box together with four M2 ISO 10642 countersunk screws, `screw_inset`
 in from the PCB edge on both axes, with holes in all three parts: a clearance
