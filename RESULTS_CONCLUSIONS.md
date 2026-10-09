@@ -175,6 +175,20 @@ It says nothing about the board's transmission.
 4. Run the wire-bond comparison again with the sweep reaching past 17 GHz.
 5. Pick runs by dip position, not dip depth.
 
+## Geometric approximations to know about
+
+- **Screw keep-out in the copper.** Altium regions cannot hold an interior
+  hole, so each ground plane (top and bottom) gives up a square round every
+  screw, running out to the board's corner (the keep-out diameter plus 1 mm),
+  and four pieces with the keep-out circle bitten out are drawn back. The
+  copper is whole and the circle is empty, with no slot to the edge. The
+  circle is a polygon of 8 steps per quarter (about 0.3 % under the true
+  area), the same kind of approximation as the connector's anti-pad arcs.
+- **Screw thread.** The box's tapped hole is modelled at the screw's own
+  diameter, not the 1.6 mm tap drill, and the thread is not modelled.
+- **Field exports** on the student licence fail above its mesh limit; see the
+  README.
+
 ## Defaults changed
 
 | Default | Was | Now | Why |
