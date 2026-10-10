@@ -312,6 +312,44 @@ class TestSolveUnderACover(unittest.TestCase):
         self.assertLess(cpw.z0_gcpw(0.4, widest, 0.381, 2.2, 0.035, height * 0.97), 50.0)
 
 
+class TestAgainstAedt2DExtractor(unittest.TestCase):
+    """ANSYS's own 2D Extractor on the same cross-sections (base_parts/cpw_q2d_check.py, run
+    2026-10-11, AEDT 2025 R2): Z0 = sqrt(L/C) of the copper as a solid under a lid with its channel.
+    These are recorded numbers, so the test needs no AEDT."""
+
+    # (eps_r, trace, gap, channel width or None, relief or None, Z0 by Q2D)
+    Q2D = [
+        (2.2, 0.4, 0.111, None, None, 62.39),     # open top: the old solve called this 50 ohm
+        (2.2, 0.4, 0.111, 1.0, 0.2, 51.99),
+        (2.2, 0.4, 0.0943, 1.0, 0.2, 50.29),
+        (2.2, 0.4, 0.111, 1.0, 0.3, 56.52),
+        (9.8, 0.2, 0.271, None, None, 54.55),     # open top: the old solve called this 50 ohm
+        (9.8, 0.2, 0.2474, 1.2, 0.3, 50.15),
+        (2.2, 0.5, 0.1063, 1.2, 0.3, 50.38),
+        (2.2, 0.45, 0.129, 1.0, 0.2, 50.17),
+    ]
+
+    def test_the_formula_is_within_two_and_a_half_percent_of_aedt(self):
+        for eps_r, trace, gap, channel, relief, z_q2d in self.Q2D:
+            z = cpw.z0_gcpw(trace, gap, 0.381, eps_r, 0.035, cover_height=relief)
+            self.assertAlmostEqual(z, z_q2d, delta=0.025 * z_q2d, msg=(eps_r, trace, gap, relief))
+
+    def test_the_old_open_top_gaps_were_not_50_ohm_to_aedt(self):
+        self.assertGreater(62.39, 55.0)     # 5880, 111 um, nothing over it
+        self.assertGreater(54.55, 52.0)     # TMM 10i, 271 um, nothing over it
+
+    def test_the_gaps_this_solve_gives_are_50_ohm_to_aedt(self):
+        """Solved under the lid, AEDT reads 50.15 to 50.38 ohm for the four boards it was asked about."""
+        for eps_r, trace, channel, relief, gap_given, z_q2d in (
+            (2.2, 0.4, 1.0, 0.2, 0.0943, 50.29), (9.8, 0.2, 1.2, 0.3, 0.2474, 50.15),
+            (2.2, 0.5, 1.2, 0.3, 0.1063, 50.38), (2.2, 0.45, 1.0, 0.2, 0.129, 50.17),
+        ):
+            gap = cpw.solve_gap_for_z0(trace, 0.381, eps_r, conductor_thickness=0.035,
+                                       cover_height=relief, channel_width=channel)
+            self.assertAlmostEqual(gap, gap_given, delta=0.0006)    # the very gaps AEDT was given
+            self.assertAlmostEqual(z_q2d, 50.0, delta=0.5)
+
+
 class TestPermittivityLookup(unittest.TestCase):
     def test_known_materials_match_the_hfss_names(self):
         self.assertEqual(cpw.permittivity_of("Rogers TMM 10i (tm)"), 9.8)

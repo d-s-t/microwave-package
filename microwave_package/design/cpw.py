@@ -62,7 +62,8 @@ The model was fitted to and checked against a 2-D quasi-static field solve of
 the real cross-section (`base_parts/cpw_fd_check.py`: the copper as a solid,
 the substrate, the lid with its channel and the channel's side walls; and, for
 the open top, a gridless boundary-element solve, `base_parts/cpw_bem_check.py`,
-which agrees with it to 0.3 % with 35 um of copper), over
+which agrees with it to 0.3 % with 35 um of copper; and AEDT's own 2D Extractor,
+`base_parts/cpw_q2d_check.py`, which agrees with it to 0.5 % on nine boards), over
 eps_r 2.2-10.2, substrate 0.254-0.635 mm, copper 18-70 um, trace 0.15-0.8 mm
 and covers 0.04-3 mm high (484 geometries). The solved gap lands within
 0.9 % rms of 50 ohm in the field solve (5.7 % at worst); in impedance, over

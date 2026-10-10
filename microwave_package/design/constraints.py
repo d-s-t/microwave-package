@@ -250,6 +250,13 @@ ROUTE_MARGIN = 0.1
 # The narrowest CPW gap the layout accepts (mm). Below it the model solves but
 # the line carries no signal (an 86 um gap on RT/duroid 5880 read S11 0 dB,
 # S21 -91 dB; 111 um transmitted) and it is under what most PCB fabs etch.
+# The cause, found with a 94 um gap (box study B22): AEDT cannot unite the
+# board's copper ("would not unite the pieces of 'pcb_copper_top'"), so it is
+# left in pieces with no conductor material and the validation then refuses
+# the model; a 129 um gap on the same board built. Swapping the 94 um
+# ground-plane regions for the 111 um ones made it build, so the trigger is in
+# the planes around the launch, not the vias, pads or die. The 86 um board is
+# very likely the same failure with the checks not yet there to catch it.
 MIN_CPW_GAP = 0.1
 
 
@@ -599,8 +606,9 @@ def check_layout(values: Dict[str, float], mat_pcb: Optional[str] = None,
     if gap < MIN_CPW_GAP:
         return (
             f"the 50 ohm CPW gap for a {_fmt(trace)} mm trace on this substrate is only "
-            f"{gap * 1000.0:.0f} um, under the {_fmt(MIN_CPW_GAP * 1000.0)} um minimum (such a "
-            f"line did not transmit in the box study and is below what most fabs etch) -- "
+            f"{gap * 1000.0:.0f} um, under the {_fmt(MIN_CPW_GAP * 1000.0)} um minimum (AEDT could not "
+            f"unite the copper of a board with a 94 um gap, and one with 86 um did not transmit; it "
+            f"is also below what most fabs etch) -- "
             f"widen cpw_trace_width"
         )
 

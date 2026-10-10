@@ -523,9 +523,24 @@ conductor-thickness term alone: the old correction widens a 0.4 mm trace by 83 u
 narrows a 111 um slot by as much, a first-order formula applied where the correction is three
 quarters of the slot (it refuses a 57 um gap outright, "closes the slot"). The new term is the
 parallel-plate field between the sidewalls, which a solve of a thick conductor must contain.
-The covered case rests on the finite-element solve alone so far (thin metal under a cover
-agrees with the standard covered conformal map to 0.6-1.4 %); an AEDT 2D Extractor check
-is still to do.
+**AEDT's own 2D Extractor settles it** (`base_parts/cpw_q2d_check.py`, run 2026-10-11; the copper as a
+solid under the lid and its channel, Z0 = sqrt(L/C) of the exported matrices, 8 seconds a case):
+
+| Q2D | Finite element | Formula | Case |
+|---|---|---|---|
+| **62.39** | 62.44 | 61.77 | 5880, 0.4 mm, 111 um gap, open top (the old solve called this 50 ohm) |
+| 51.99 | 52.03 | 51.75 | 5880, 0.4 mm, 111 um gap, lid 1.0 mm x 200 um (B17) |
+| 50.29 | 50.29 | 50.00 | 5880, 0.4 mm, **94 um** gap, lid 1.0 mm x 200 um |
+| 56.52 | 56.55 | 56.10 | 5880, 0.4 mm, 111 um gap, lid 1.0 mm x 300 um (B17) |
+| **54.55** | 54.87 | 54.47 | TMM 10i, 0.2 mm, 271 um gap, open top (the old solve called this 50 ohm) |
+| 50.15 | 50.13 | 50.00 | TMM 10i, 0.2 mm, **247 um** gap, default lid 1.2 mm x 300 um |
+| 23.78 | 23.51 | 24.75 | 5880, 0.4 mm, 111 um gap, old default lid 0.5 mm x 40 um (B13) |
+| 50.38 | 50.38 | 50.00 | 5880, 0.5 mm, **106 um** gap, default lid 1.2 mm x 300 um |
+| 50.17 | 50.23 | 50.01 | 5880, 0.45 mm, **129 um** gap, lid 1.0 mm x 200 um (B23) |
+
+AEDT agrees with the finite-element solve to 0.5 % or better everywhere (1.1 % on the 40 um lid), and
+puts the old solve's open-top "50 ohm" gaps at 62.4 and 54.6 ohm. The gaps the new solve gives
+(bold) are 50.15-50.38 ohm in AEDT. The numbers are pinned in `tests/test_cpw.py`.
 
 Direction of the change: a cover lowers Z, so under the new model it needs a *wider* gap than
 the same line open top, and it does (57 um open top, 71 um under a 300 um relief, 94 um under
@@ -560,16 +575,41 @@ trace, `chip_trace_width` (0.2 mm by default, so nothing changes for a board tha
 0.2 mm; the Altium generator, the bond pads and the die's gap ports use it, and the bond wires
 run from the board's signal pads to the die's); and the layout check refuses a die trace that is no
 CPW on its silicon, or a die with no room for the ground bonds beside its line.
-**Needs a run to confirm:** the Altium script change (three lines, `ChipTrace`) has not been run.
+The Altium script change (three lines, `ChipTrace`) was run: the 0.4 mm board with a 0.2 mm die
+gets `track|top|-3|0|3|0|0.2` and grounds from |y| = 0.269 to 3 mm on the die, a 0.4 mm track and
+0.2 mm signal pads (y = +-0.1) on the board, 0.1 mm signal pads (y = +-0.05) on the die.
 
-**The 100 um minimum gap (`MIN_CPW_GAP`) is untouched, and the candidate is below it.** Solved under
-its lid the candidate (0.4 mm, 1.0 mm / 200 um) has a 94 um gap, so `check_layout` refuses it; the
-0.5 mm trace under the default lid (106 um) is the 5880 board that passes. The limit came from a fab
-reading (4 mil) and from the board that did not transmit, and that board was *not* a mismatch: by the
-field solve the B12/B15 boards (5880, 0.2 mm trace, 86 um gap, lids 0.5 mm and 0.8 mm x 40 um) were
-37.9 ohm lines, while B13 (a 23.5 ohm line) transmitted. So the cause of the 86 um failure is still not
-found and nothing is known about gaps between 86 and 111 um; the HFSS run of the candidate at 94 um
-(and 71 um at 300 um relief) is what would say, and the limit stays at 100 um until it has.
+**B22 and B23, the chip board with the die fixed** [run_20261010_232950, run_20261011_021452] (5880, lid
+1.0 mm x 200 um, pedestal 0.5, corner screws on, B19's settings: 2-26 GHz, 97 points, delta S 0.05,
+4 passes, connector plane, perfect-E box). **B22**, the candidate itself (0.4 mm trace, 94 um gap), did not
+build (see the 100 um minimum below) and nothing was solved. **B23** has a 0.45 mm board trace (129 um gap,
+the die's trace 0.2 mm with a 169 um gap): clean (S21 above -3 dB) for **100 / 100 / 85 / 12 %** of 2-10 / 10-17
+/ 17-20 / 20-26 GHz; S11 averages -14.4 dB in 2-10 GHz (worst -7.0), -9.0 dB in 10-17 GHz and -11.9 dB in
+17-20 GHz; S21 never falls below -2.6 dB under 17 GHz. What is not clean: a notch at 17.75 GHz (-7.4 dB), a
+broad dip from 20 to 22 GHz (down to -5.5 dB), and 23-25.75 GHz (-4 to -12.6 dB, with -38.8 dB at the 26.0 GHz
+end point). B19, the same lid with the broken die and a 0.4 mm trace, read 100 / 100 / 92 / 52 %: with a real
+die the 20-26 GHz band is 12 % clean, not 54 %, and 17-20 GHz is no better. (The traces differ, 0.45 against
+0.4 mm, so this is the die's effect and the 129 um gap together; the candidate with the die was not run.) So
+the "clean to 20 GHz" of the box study holds for the bare board; with the chip, S21 is above -3 dB to
+17 GHz and mostly to 20 GHz, not above.
+
+**The 100 um minimum gap (`MIN_CPW_GAP`) is a model-build limit, and the candidate is below it.** Solved under
+its lid the candidate (0.4 mm, 1.0 mm / 200 um) has a 94 um gap, so `check_layout` refuses it, and it
+should: built with the limit relaxed (B22, the candidate with the chip and the die fixed),
+AEDT would not unite the board's copper ("would not unite the pieces of 'pcb_copper_top'"), the
+pieces were left with no conductor material, and the model's own validation refused it (overlapping
+bodies, an empty vacuum; nothing was queued). Rebuilding it from the same files gave the same failure
+every time; the same layout with the 111 um board's copper (B19's) built, and so did a 129 um gap
+(B23, above). Swapping parts of the 94 um layout for the 111 um one narrowed it to the ground-plane
+regions around the launch (the strap behind the connector and the two planes: the only regions that
+differ); the vias, the bond pads, the die and the lid are not it. Why a 94 um slot defeats the boolean
+there is not known (nothing in the region list sits within a micron of anything else). Copper left
+in pieces is a line with no metal in it, which is very likely what the 86 um board of B12 and B15 was:
+S11 0 dB and S21 -91 dB were a model with no conductor, not a mismatch (its line was 37.9 ohm by the field
+solve, and the 23.5 ohm board of B13 transmitted). So the limit is not only a fab number: it stays at
+100 um, and the buildable 5880 boards are the ones whose gap is above it: for a 1.0 mm / 200 um lid a
+0.45 mm trace (129 um; 0.42 mm gives 106 um, 0.44 mm 120 um), for the default 1.2 mm / 300 um lid a 0.5 mm trace
+(106 um). The threshold between 94 and 106 um has not been located.
 
 **The rules the layout check now applies** (`constraints.check_layout`, messages name the number
 to change):
