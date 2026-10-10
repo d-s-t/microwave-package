@@ -468,6 +468,10 @@ def check_layout(values: Dict[str, float], mat_pcb: Optional[str] = None) -> Opt
     permittivity, so a check made with another one refuses boards that can be
     built and accepts ones that cannot. Left out, it is the default TMM 10i.
 
+    The gap is solved for the line under the lid (`lid_cover`), so a relief
+    channel too shallow to reach 50 ohm, or too narrow to hold the CPW with
+    its walls clear of the slots, is refused here too.
+
     Returns a sentence naming the parameter to change, in the same style
     as `check_combination`.
     """

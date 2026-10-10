@@ -54,6 +54,11 @@ target is the band above 20 GHz (17 GHz and up is where it starts to matter).
    and TMM 10i with the wide lid is 69 / 43 / 17 / 4 %. On a finer 0.1 GHz grid and a tighter mesh (B20, with the chip) it is 99 % of
    2-20 GHz and 61 % of 20-26 GHz: three narrow notches at box modes (16.94, 18.58 and 19.20
    GHz, down to -9.5 dB) and a cluster at 24.6-25.8 GHz (down to -42 dB) remain.
+11. **The CPW gap is now solved for the line under the lid** (cover-aware gap, 2026-10-10). The old
+   gaps were not 50 ohm lines even before the lid: a 2-D field solve puts the old 111 um gap on 5880 at
+   62 ohm with nothing over it, 52 ohm under the candidate lid, and the old default lid (0.5 mm / 40 um)
+   at 24-28 ohm on both boards. The default lid is now 1.2 mm / 300 um, since the old one cannot
+   reach 50 ohm at any gap.
 
 ## How much to trust it
 
@@ -441,7 +446,7 @@ above -2.2 dB from 2 to 20 GHz and 20-26 GHz is 54 % clean, worst -26.6 dB at 25
 **The candidate** (`default.txt` values that differ, plus the material). Both the bare
 board and the board with the chip were run with exactly this:
 
-| Setting | Candidate | Default |
+| Setting | Candidate | Default at the time (lid since changed to 1.2 mm / 300 um) |
 |---|---|---|
 | `mat_pcb` (new-run form, PCB material) | RT/duroid 5880 (eps 2.2) | Rogers TMM 10i (eps 9.8) |
 | `cpw_trace_width` | 0.4 mm | 0.2 mm |
@@ -449,18 +454,80 @@ board and the board with the chip were run with exactly this:
 | `route_clearence` (lid relief depth) | 200 um (0.2 mm) | 40 um |
 
 Everything else is the default (50 x 25 mm board, 0.8 mm via step, 150 um via fence
-setback, corner screws on, perfect-E box). The 50 ohm gap that follows from the trace
-is 111 um on 5880, within what a fab etches. The solved gap is not changed by the lid.
+setback, corner screws on, perfect-E box). The 50 ohm gap that followed from the trace
+was 111 um on 5880 (the solve then ignored the lid, so it did not change with it; solved
+under the lid it is 94 um, see "the cover-aware gap").
 A bare board is the same with `no_chip` 1 and `pedestal_depth` 0 (the form pins both).
 
-**Not done, a proposed code follow-up:** the CPW 50 ohm solve ignores the lid cover
-(`cpw.solve_gap_for_z0` sees the substrate and the air above it, not a lid 40 um
-over the trace), so the gap is solved for a line that is not the one built. The
-fix is to include the cover in the solve, or to refuse a relief channel that
-does not clear the whole CPW (trace + two gaps) by a margin; only the second,
-weaker rule (channel at least 0.1 mm wider than the trace) exists today. These runs
-used 0.25 GHz steps and loose convergence (4 passes, delta S 0.05); B20 repeats the
-candidate with tighter settings.
+**Done afterwards, see the next section:** the CPW 50 ohm solve ignored the lid cover (and its thickness
+correction was off): it now solves the line under the lid and the layout check refuses a relief that
+is too shallow or too narrow for it. The runs above used the old gaps (111 um on the candidate) and
+0.25 GHz steps with loose convergence (4 passes, delta S 0.05); B20 repeats the candidate with
+tighter settings.
+
+## Box study, the cover-aware gap (2026-10-10)
+
+The follow-up the lid cover section proposed is done: `cpw.solve_gap_for_z0` now solves the
+50 ohm gap for the line under the lid, and the layout check refuses a lid that cannot carry
+it. Two things came out of doing it that the earlier sections did not know.
+
+**1. The gap was never right for 35 um copper either.** A 2-D finite-element solve of the real
+cross-section (`base_parts/cpw_fd_check.py`: the copper as a solid with sidewalls, the board,
+the lid with its channel and the channel's side walls; thin metal agrees with conformal mapping
+to 0.5 %, and the sidewall capacitance of thick metal is exactly the parallel-plate t/gap in the
+limit) says the old thickness correction overcorrected by about two. With nothing over the line, the
+gap the old solve called 50 ohm is a **62 ohm** line on RT/duroid 5880 (0.4 mm trace, 111 um)
+and 55 ohm on TMM 10i (0.2 mm, 271 um). The old correction widens the trace by
+1.25 t/pi (1 + ln(4 pi w/t)), 83 um at 0.4 mm, a first-order formula applied where it does not hold;
+the delta that fits the field solve is 1.1-1.4 t on 5880 and 0.8-1.1 t on TMM, so it is not a
+geometry shift at all. The sidewalls add capacitance in the air above the board, and the model is now
+that: `t/gap + 0.09 (1 - exp(-t/10 um))` added to the air-side partial capacitance. With the lid as a
+ceiling `route_clearence` over the trace it reproduces the field solve: the gap it solves is 50 ohm to
+0.9 % rms (5.7 % at worst) over 484 geometries (eps_r 2.2-10.2, board 0.254-0.635 mm, copper 18-70
+um, trace 0.15-0.8 mm, lid 0.04-3 mm high), and the impedance of any geometry to 0.6 % rms (1.7 %
+at most) once the lid is 0.18 mm or more over the line. It is why the candidate worked at 111 um:
+the lid brought the 62 ohm line down to 52.
+
+| Board, trace | Lid: channel / relief | Old gap | Field solve at the old gap | New gap | Field solve at the new gap |
+|---|---|---|---|---|---|
+| 5880, 0.4 mm | 1.0 mm / 200 um (candidate) | 111 um | 52.0 ohm | **94 um** | 50.3 ohm |
+| 5880, 0.4 mm | 1.0 mm / 300 um | 111 um | 56.6 ohm | 71 um | 50.4 ohm |
+| 5880, 0.4 mm | none (open top) | 111 um | 62.4 ohm | 57 um | 50.4 ohm |
+| 5880, 0.4 mm | 0.5 mm / 40 um (the old default) | 111 um | 23.5 ohm | refused | |
+| TMM 10i, 0.2 mm | 0.5 mm / 40 um (the old default) | 271 um | 27.6 ohm | refused | |
+| TMM 10i, 0.2 mm | 1.2 mm / 300 um (the new default) | 271 um | 50.7 ohm | 247 um | 50.1 ohm |
+| TMM 10i, 0.2 mm | 1.0 mm / 200 um (B18) | 271 um | 47.6 ohm | refused | |
+
+B17 is the HFSS side of the first three rows: the candidate at the old fixed 111 um gap, relief
+200 and 300 um, read S11 -14.4 dB and -12.5 dB on average in 2-10 GHz. The field solve has the
+line going from 52.0 to 56.6 ohm between them. The default lid on 5880 (23.5 ohm) read -4.8 dB.
+
+**2. The default lid cannot carry a 50 ohm line.** With a ceiling 40 um over the trace the
+air side is so large a capacitance that no gap reaches 50 ohm: a 0.2 mm trace on TMM 10i
+is 27.6 ohm at 271 um and tops out under 32 ohm however wide the gap, a 0.4 mm trace on 5880
+under 27 ohm. It needs a relief at least 188 um deep (TMM, 0.2 mm) or 119 um (5880,
+0.4 mm) before a usable slot can reach 50 ohm at all. So the old default was a mismatched line
+on both boards, and the layout check refuses it. `default.txt` now has `route_width` 1.2 mm and
+`route_clearence` 300 um: the default board's gap is 247 um (CPW 0.69 mm, walls 0.25 mm clear of it).
+Every number above this section in this file is for the old default lid (0.5 mm / 40 um) unless
+it says otherwise, and for the old gaps.
+
+**The rules the layout check now applies** (`constraints.check_layout`, messages name the number
+to change):
+- The relief has to be deep enough for the trace to reach 50 ohm at a slot of at most 0.6 mm:
+  `route_clearence` at least 119 um for the candidate, 188 um for the default board.
+- The channel has to be at least trace + 2 gaps + 2 x max(0.1 mm, depth/2) wide, the gap being
+  the solved one. A wall over a slot pulls the line down by up to a third (field solve, 50 um over the
+  slot edge); out at that clearance it moves it under 1.5 %. The candidate needs 0.79 mm, the
+  default board 0.99 mm. This replaces nothing: the old rule (channel at least 0.1 mm wider than
+  the trace, so the lid does not short it) is still checked first.
+- A relief of zero depth is refused (the lid would sit on the trace).
+
+A sweep over `route_clearence` or `route_width` re-solves the gap for every combination, so
+each one stays 50 ohm instead of drifting off it (B7 and B17 varied the relief at a fixed gap,
+so their combinations were not the same line). The chip's line stays open-top: it sits
+in the lid's pocket over the die, whose ceiling is not one of the relief parameters, and its
+200 nm film is a sheet.
 
 ## Box study, where it stands (written 2026-10-10)
 
@@ -509,9 +576,9 @@ finite-conductivity section).
 3. The box walls were perfect E throughout. Depth, and with it the band's cleanliness, was
    not checked with a finite-conductivity box (1e8 S/m) on the candidate; on TMM 10i that
    changed Q by 1.3-2.5x and positions by about 1 %.
-4. The CPW solve ignores the lid cover (a proposed code follow-up; only a weak rule, a
-   channel at least 0.1 mm wider than the trace, exists). The candidate's 0.4 mm trace
-   was found by experiment, not solved for.
+4. Settled in code (see "the cover-aware gap"): the CPW solve now includes the lid cover, and the
+   candidate's 0.4 mm trace at 1.0 mm / 200 um gets a 94 um gap, 17 um narrower than the 111 um the
+   runs above used. Whether HFSS prefers it was not run when this was written (see that section).
 5. The 30 mm bare board gave an identical S11 and S21 at all 97 frequencies; the cause was
    not found (it was not the lid channel width, which is a trace + 0.3 mm there, and the
    saved model looked sound).

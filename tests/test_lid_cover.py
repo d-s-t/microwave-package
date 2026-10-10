@@ -108,6 +108,10 @@ class TestLayoutCheckOfTheLid(unittest.TestCase):
         v = {k: x for k, x in values().items() if not k.startswith("route_")}
         self.assertIsNone(constraints.check_layout(v, TMM))
 
+    def test_an_open_top_line_that_cannot_reach_50_ohm_is_still_a_no_geometry_refusal(self):
+        v = {k: x for k, x in values(cpw_trace_width=0.6).items() if not k.startswith("route_")}
+        self.assertIn("no 50 ohm geometry", constraints.check_layout(v, TMM))
+
     def test_the_material_decides_what_the_lid_has_to_clear(self):
         """The same 1.0 mm / 300 um lid: 0.5 mm trace is a 5880 board's 106 um gap and a 0.7 mm CPW,
         and a TMM 10i board's trace the lid cannot reach 50 ohm over."""
