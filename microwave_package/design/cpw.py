@@ -37,6 +37,12 @@ from typing import Dict
 # Anything not listed here has to be passed explicitly.
 PERMITTIVITY: Dict[str, float] = {
     "Rogers TMM 10i (tm)": 9.8,
+    # The other boards the new-run form offers (model_builder.MATERIAL_OPTIONS):
+    # without these a run that chose one failed before anything was built.
+    # Values are the data-sheet ones HFSS's library carries for each.
+    "Rogers RT/duroid 5880 (tm)": 2.2,
+    "Rogers RT/duroid 6010/6010LM (tm)": 10.2,
+    "FR4_epoxy": 4.4,
     "silicon": 11.9,
     "sapphire": 10.0,
     "vacuum": 1.0,
