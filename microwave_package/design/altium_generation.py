@@ -625,13 +625,19 @@ def build_params(
         z0=target_z0,
         conductor_thickness=values.get("copper_thickness", 0.0),
     )
-    out["chip_cpw_gap"] = cpw.solve_gap_for_z0(
-        trace_width=trace,
-        substrate_height=values["chip_width"],
-        eps_r=cpw.permittivity_of(mat_chip),
-        z0=target_z0,
-        conductor_thickness=values.get("chip_metal_thickness", 0.0),
-    )
+    if values.get("no_chip", 0.0) > 0.5:
+        # A bare board has no die, so there is no chip line to solve a gap
+        # for -- and solving one anyway failed a trace width the board
+        # itself can carry. The board's own gap stands in; nothing draws it.
+        out["chip_cpw_gap"] = out["pcb_cpw_gap"]
+    else:
+        out["chip_cpw_gap"] = cpw.solve_gap_for_z0(
+            trace_width=trace,
+            substrate_height=values["chip_width"],
+            eps_r=cpw.permittivity_of(mat_chip),
+            z0=target_z0,
+            conductor_thickness=values.get("chip_metal_thickness", 0.0),
+        )
     out["target_z0"] = target_z0
     out.update(cavity.as_parameters(cavity.plan(values)))
     return out
@@ -739,11 +745,17 @@ def generate_for_combo(
     reason = constraints.check_layout(values, materials.get("mat_pcb"))
     if reason:
         return False, f"layout cannot be built: {reason}"
-    params = build_params(
-        values,
-        mat_pcb=materials.get("mat_pcb", "Rogers TMM 10i (tm)"),
-        mat_chip=materials.get("mat_chip", "silicon"),
-    )
+    try:
+        params = build_params(
+            values,
+            mat_pcb=materials.get("mat_pcb", "Rogers TMM 10i (tm)"),
+            mat_chip=materials.get("mat_chip", "silicon"),
+        )
+    except (ValueError, KeyError) as exc:
+        # One combination whose gap cannot be solved is that combination's
+        # failure, not the run's: it used to escape as an exception and end
+        # the whole sweep.
+        return False, f"layout cannot be built: {exc}"
     from . import smp
 
     # Held from the parameter file to the copy out of generated/:
