@@ -41,6 +41,11 @@ PERMITTIVITY: Dict[str, float] = {
     # without these a run that chose one failed before anything was built.
     # Values are the data-sheet ones HFSS's library carries for each.
     "Rogers RT/duroid 5880 (tm)": 2.2,
+    "Rogers RO3003 (tm)": 3.0,
+    # The library's RO4003 carries the design value, 3.55 (loss tangent
+    # 0.0027), not the 3.38 process value on the RO4003C data sheet: the gap
+    # is solved for what HFSS meshes with.
+    "Rogers RO4003 (tm)": 3.55,
     "Rogers RT/duroid 6010/6010LM (tm)": 10.2,
     "FR4_epoxy": 4.4,
     "silicon": 11.9,
