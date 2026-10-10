@@ -146,7 +146,7 @@ def rebuild_model(swModel) -> None:
         logger.warning("Rebuild failed: %s", e)
 
 
-def save_as_step(swModel, step_filepath: str) -> Tuple[bool, Optional[str]]:
+def save_as_step(swModel, step_filepath: str, options: int = 1) -> Tuple[bool, Optional[str]]:
     """
     Save the active document as a STEP file.
 
@@ -158,6 +158,11 @@ def save_as_step(swModel, step_filepath: str) -> Tuple[bool, Optional[str]]:
     Rather than trust the return value, we check the file itself: delete
     any pre-existing file with the same name first, call SaveAs, then
     confirm the new file actually exists (and is non-empty).
+
+    `options` is swSaveAsOptions_e: 1 silent (the default), and 2 saves a
+    copy, which is how `solidworks_manufacturing` writes an SLDPRT
+    without the open document taking the new name. Despite the name this
+    writes whatever the file's extension says.
     """
     import pythoncom
     import win32com.client
@@ -177,7 +182,7 @@ def save_as_step(swModel, step_filepath: str) -> Tuple[bool, Optional[str]]:
         export_data = win32com.client.VARIANT(pythoncom.VT_DISPATCH, None)
         err_var = win32com.client.VARIANT(pythoncom.VT_BYREF | pythoncom.VT_I4, 0)
         warn_var = win32com.client.VARIANT(pythoncom.VT_BYREF | pythoncom.VT_I4, 0)
-        swModel.Extension.SaveAs(step_filepath, 0, 1, export_data, err_var, warn_var)
+        swModel.Extension.SaveAs(step_filepath, 0, options, export_data, err_var, warn_var)
     except Exception as e:
         return False, f"SaveAs raised an exception: {e}"
 

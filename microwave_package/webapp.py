@@ -31,7 +31,7 @@ from typing import Dict, Optional
 
 import pandas as pd
 from flask import (Flask, Response, jsonify, redirect, render_template, request,
-                   send_from_directory, url_for)
+                   send_file, send_from_directory, url_for)
 from markupsafe import Markup
 
 from ansys_analyze_common import queue_common
@@ -48,7 +48,7 @@ from .hfss.driven import ports
 # solver has a view like it.
 from .hfss.eigenmode import fields as eigenmode_fields
 from .pipeline import run_pipeline
-from .workflow import compare, companion, plotting, resilient_io, run_manager
+from .workflow import compare, companion, manufacturing, plotting, resilient_io, run_manager
 from .workflow.run_manager import Run
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s: %(message)s", stream=sys.stdout)
@@ -1308,6 +1308,84 @@ def combo_step_file(run_id, combo_id):
     return send_from_directory(folder, filename, mimetype="model/step")
 
 
+# -- manufacturing files ---------------------------------------------------
+# What a machine shop and a PCB fab need for one combination, listed in a
+# panel on the run page and generated on demand. See workflow/manufacturing.
+
+def _pipeline_busy() -> bool:
+    """Whether any run of this process is driving SolidWorks/Altium/AEDT.
+    A manufacturing job opens the same programs and the same base parts,
+    and two same-named SolidWorks documents cannot be open at once."""
+    return any(thread.is_alive() for thread in _active_threads.values())
+
+
+def _manufacturing_target(run_id, combo_id):
+    """(run, None) or (None, error response) for a manufacturing route."""
+    try:
+        run = Run.load(run_id)
+    except (OSError, ValueError):
+        return None, (jsonify(ok=False, error="run not found"), 404)
+    if combo_id not in run.state.get("combos", {}):
+        return None, (jsonify(ok=False, error="unknown combination"), 404)
+    return run, None
+
+
+@app.route("/runs/<run_id>/combos/<combo_id>/manufacturing.json")
+def combo_manufacturing(run_id, combo_id):
+    run, error = _manufacturing_target(run_id, combo_id)
+    if error:
+        return error
+    groups = manufacturing.listing(run, combo_id)
+    for group in groups:
+        for entry in group["files"]:
+            entry["url"] = (url_for("combo_manufacturing_file", run_id=run_id, combo_id=combo_id,
+                                    key=entry["key"]) if entry["exists"] else None)
+    return jsonify(
+        combo_id=combo_id,
+        groups=groups,
+        generate_url=url_for("combo_manufacturing_generate", run_id=run_id, combo_id=combo_id),
+        run_busy=_pipeline_busy(),
+    )
+
+
+@app.route("/runs/<run_id>/combos/<combo_id>/manufacturing/generate", methods=["POST"])
+def combo_manufacturing_generate(run_id, combo_id):
+    run, error = _manufacturing_target(run_id, combo_id)
+    if error:
+        return error
+    group = (request.get_json(silent=True) or request.form or {}).get("group")
+    if group not in manufacturing.GROUPS:
+        return jsonify(ok=False, error="unknown group"), 400
+    can, why = manufacturing.can_generate(run, combo_id, group)
+    if not can:
+        return jsonify(ok=False, error=why), 409
+    if _pipeline_busy():
+        return jsonify(ok=False, error="a run is using SolidWorks/Altium right now -- "
+                                       "try again when it has finished"), 409
+    started = manufacturing.JOBS.start(
+        run_id, combo_id, group,
+        lambda log: manufacturing.make_group(run, combo_id, group, log),
+    )
+    if not started:
+        return jsonify(ok=False, error="already being generated"), 409
+    return jsonify(ok=True), 202
+
+
+@app.route("/runs/<run_id>/combos/<combo_id>/manufacturing/<key>")
+def combo_manufacturing_file(run_id, combo_id, key):
+    run, error = _manufacturing_target(run_id, combo_id)
+    if error:
+        return error
+    spec = manufacturing.SPECS.get(key)
+    if spec is None:
+        return Response("unknown file", status=404)
+    path = manufacturing.path_of(run, combo_id, key)
+    if path is None:
+        return Response("not generated yet", status=404)
+    return send_file(path, mimetype=spec.mime, as_attachment=True,
+                     download_name=manufacturing.download_name(run, combo_id, key))
+
+
 @app.route("/runs/<run_id>/combos/<combo_id>/details.json")
 def combo_details(run_id, combo_id):
     """Everything the run page's combination window shows.
@@ -1371,6 +1449,7 @@ def combo_details(run_id, combo_id):
             "aedt_url": (url_for("open_combo_in_aedt", run_id=run_id, combo_id=combo_id)
                          if has_project else None),
             "start_url": url_for("index", from_run=run_id, combo=combo_id),
+            "manufacturing_url": url_for("combo_manufacturing", run_id=run_id, combo_id=combo_id),
             "heatmap": bool(combo.get("post_status") == "done" and _chip_field_file(run, combo_id)),
         },
     })

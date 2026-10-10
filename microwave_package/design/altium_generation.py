@@ -48,6 +48,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import subprocess
 import threading
 import time
@@ -512,7 +513,7 @@ def run_script(
             # that is half one combination and half the next.
             reports = {sentinel_path} | {str(p) for p in (
                 paths.ALTIUM_GENERATE_REPORT, paths.ALTIUM_COPPER_REPORT,
-                paths.ALTIUM_MEASURE_REPORT,
+                paths.ALTIUM_MEASURE_REPORT, paths.ALTIUM_MANUFACTURING_REPORT,
             )}
             busy = _wait_until_idle(exe, sorted(reports), BUSY_TIMEOUT, log)
             if busy:
@@ -807,6 +808,7 @@ def generate_for_combo(
             return False, "Altium reported success but wrote no copper.txt"
 
         os.makedirs(combo_dir, exist_ok=True)
+        _keep_board(combo_dir)
         for name, path in (("copper.txt", source), ("bonds.txt", paths.ALTIUM_BONDS_FILE)):
             if not os.path.isfile(path):
                 continue
@@ -892,12 +894,31 @@ def board_fingerprint(values: Dict[str, float],
     return hashlib.sha256(json.dumps(identity, sort_keys=True).encode("utf-8")).hexdigest()
 
 
+def _keep_board(combo_dir: str) -> None:
+    """Keep the package board Altium just saved with its combination.
+
+    `generated/` is shared and rewritten by the next combination, so
+    without this the only record of a board was its copper.txt -- enough
+    for HFSS, not for sending the board to be made. The chip board is not
+    kept: it stands in for a part that is bought.
+    """
+    from .. import paths
+
+    source = paths.ALTIUM_OUT_DIR / "package.PcbDoc"
+    if source.is_file():
+        shutil.copyfile(source, os.path.join(combo_dir, "package.PcbDoc"))
+
+
 def copy_layout(source_dir: str, combo_dir: str) -> bool:
     """Give `combo_dir` the copper.txt and bonds.txt already drawn in
-    `source_dir`. Returns False if the source has no copper to give."""
+    `source_dir`, and the board itself if it kept one. Returns False if
+    the source has no copper to give."""
     if not os.path.isfile(os.path.join(source_dir, "copper.txt")):
         return False
     os.makedirs(combo_dir, exist_ok=True)
+    board = os.path.join(source_dir, "package.PcbDoc")
+    if os.path.isfile(board):
+        shutil.copyfile(board, os.path.join(combo_dir, "package.PcbDoc"))
     for name in ("copper.txt", "bonds.txt"):
         source = os.path.join(source_dir, name)
         if os.path.isfile(source):
@@ -979,3 +1000,73 @@ def _describe(report: Dict[str, str], what: str) -> str:
         return f"{what} failed: {report['error']}"
     reached = ", ".join(f"{k}={v}" for k, v in report.items())
     return f"{what} did not finish. It got as far as: {reached}"
+
+
+# --- fabrication outputs -------------------------------------------------
+
+def export_manufacturing(pcbdoc: str, out_dir: str, name: str,
+                         log: Callable[[str], None] = logger.info) -> Dict[str, str]:
+    """Have Altium write the fabrication formats that only it writes --
+    ODB++, IPC-2581 and a STEP of the bare board -- for `pcbdoc`.
+
+    The files come out as `<name>_pcb_odb.zip`, `<name>_pcb_ipc2581.xml`
+    and `<name>_pcb.STEP` in `out_dir`. Returns {format: "ok" or the
+    reason}; raises RuntimeError if the script did not run at all. A
+    format Altium could not write is reported, not fatal: the rest of the
+    set is still worth having.
+    """
+    from .. import paths
+
+    os.makedirs(out_dir, exist_ok=True)
+    work = os.path.join(out_dir, "_altium_export")
+    shutil.rmtree(work, ignore_errors=True)
+    os.makedirs(work)
+    # Altium reads a board it has not got open from a copy of its own:
+    # the document is closed again afterwards, and this keeps it away
+    # from the combination's file.
+    board_copy = os.path.join(work, "package.PcbDoc")
+    shutil.copyfile(pcbdoc, board_copy)
+    write_params(str(paths.ALTIUM_MANUFACTURING_PARAMS), {}, extra={
+        "pcb": board_copy, "work_dir": work, "name": name,
+    })
+    with _one_at_a_time(log):
+        ok, report = run_script(
+            str(paths.ALTIUM_MANUFACTURING_EXPORTER), "ExportManufacturing",
+            str(paths.ALTIUM_MANUFACTURING_REPORT), log=log,
+        )
+        if not ok:
+            raise RuntimeError(_describe(report, "Altium fabrication export"))
+
+        results: Dict[str, str] = {}
+        odb = os.path.join(work, "odb")
+        if os.path.isdir(odb) and os.listdir(odb):
+            _zip_tree(odb, os.path.join(out_dir, f"{name}_pcb_odb.zip"))
+            results["odb"] = "ok"
+        else:
+            results["odb"] = report.get("odb", "not written")
+        for key, produced, final in (
+            ("ipc2581", "ipc2581.xml", f"{name}_pcb_ipc2581.xml"),
+            ("step", "board.STEP", f"{name}_pcb.STEP"),
+        ):
+            source = os.path.join(work, produced)
+            if os.path.isfile(source) and os.path.getsize(source) > 0:
+                os.replace(source, os.path.join(out_dir, final))
+                results[key] = "ok"
+            else:
+                results[key] = report.get(key, "not written")
+    shutil.rmtree(work, ignore_errors=True)
+    for key, state in results.items():
+        log(f"Altium {key}: {state}")
+    return results
+
+
+def _zip_tree(folder: str, destination: str) -> None:
+    import zipfile
+
+    temporary = destination + ".part"
+    with zipfile.ZipFile(temporary, "w", zipfile.ZIP_DEFLATED) as archive:
+        for root, _dirs, files in os.walk(folder):
+            for file in files:
+                full = os.path.join(root, file)
+                archive.write(full, os.path.relpath(full, folder))
+    os.replace(temporary, destination)

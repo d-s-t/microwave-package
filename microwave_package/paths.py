@@ -68,6 +68,11 @@ ALTIUM_SMP_FOOTPRINT_FILE = ALTIUM_DIR / "vendor" / "footprint.txt"
 ALTIUM_FOOTPRINT_MEASURER = ALTIUM_DIR / "MeasureFootprint.pas"
 ALTIUM_MEASURE_REPORT = ALTIUM_DIR / "measure_report.txt"
 ALTIUM_COPPER_REPORT = ALTIUM_OUT_DIR / "copper_report.txt"
+# Fabrication outputs (ODB++, IPC-2581, board STEP) for a chosen combination:
+# the script, the parameter file naming the board to export, and its report.
+ALTIUM_MANUFACTURING_EXPORTER = ALTIUM_DIR / "ExportManufacturing.pas"
+ALTIUM_MANUFACTURING_PARAMS = ALTIUM_DIR / "manufacturing_params.txt"
+ALTIUM_MANUFACTURING_REPORT = ALTIUM_OUT_DIR / "manufacturing_report.txt"
 # The bond layout, computed in Python and read by both Altium (for
 # the pads) and HFSS (for the wires), so the two agree.
 ALTIUM_BONDS_FILE = ALTIUM_OUT_DIR / "bonds.txt"
