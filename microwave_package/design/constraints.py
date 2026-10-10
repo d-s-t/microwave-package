@@ -253,6 +253,45 @@ ROUTE_MARGIN = 0.1
 MIN_CPW_GAP = 0.1
 
 
+def lid_cover(values: Dict[str, float]) -> Dict[str, float]:
+    """The lid over the trace, as the keyword arguments `cpw.solve_gap_for_z0`
+    takes: `cover_height` (the relief channel's depth, `route_clearence`) and
+    `channel_width` (`route_width`). Empty when the values carry no lid, so a
+    caller with only a board still gets an open-top line.
+
+    The lid rests on the board's top copper, so the ceiling over the trace is
+    the channel's depth above the copper, and the CPW has to fit the channel's
+    width: this is the line that is built, and the one the gap is solved for.
+    """
+    width = values.get("route_width")
+    depth = values.get("route_clearence")
+    if not width or depth is None:
+        return {}
+    return {"cover_height": depth, "channel_width": width}
+
+
+def _relief_reason(exc, values: Dict[str, float]) -> str:
+    """The layout check's sentence for a lid channel the solve refused."""
+    trace = values["cpw_trace_width"]
+    width = values.get("route_width", 0.0)
+    depth = values.get("route_clearence", 0.0)
+    if exc.kind == "narrow":
+        return (
+            f"the lid's relief channel is route_width = {_fmt(width)} mm wide, but a {_fmt(trace)} mm "
+            f"trace under a {depth * 1000.0:.0f} um relief needs {exc.gap * 1000.0:.0f} um gaps for 50 ohm, "
+            f"a CPW {trace + 2.0 * exc.gap:.2f} mm across, and the channel's walls have to stand "
+            f"{(exc.needed_width - trace - 2.0 * exc.gap) / 2.0:.2f} mm outside it or they sit over the "
+            f"slots and pull the line well under 50 ohm -- raise route_width to at least "
+            f"{exc.needed_width:.2f} mm"
+        )
+    reach = (f" -- deepen route_clearence to at least {exc.min_height * 1000.0:.0f} um, or narrow "
+             f"cpw_trace_width" if exc.min_height else " -- narrow cpw_trace_width")
+    return (
+        f"the lid's relief is only {depth * 1000.0:.0f} um deep (route_clearence), which puts the lid so "
+        f"close over a {_fmt(trace)} mm trace that the line stays under 50 ohm whatever the gap{reach}"
+    )
+
+
 def check_via_grid(values: Dict[str, float]) -> Optional[str]:
     """Why this combination's via grid would come out sparser than asked
     for, or None if it will not.
@@ -463,11 +502,22 @@ def check_layout(values: Dict[str, float], mat_pcb: Optional[str] = None) -> Opt
             f"trace edges and shorts it -- raise route_width to at least "
             f"{_fmt(trace + ROUTE_MARGIN)} mm or narrow cpw_trace_width"
         )
+    relief = values.get("route_clearence")
+    if route_width and relief is not None and relief <= 0:
+        return (
+            f"the lid's relief is route_clearence = {_fmt(relief)} mm deep: the lid would rest on the "
+            f"trace and short it -- give the relief a depth (a few hundred um; the 50 ohm solve says "
+            f"how much it needs)"
+        )
 
     # The CPW gap is solved rather than drawn, so the first thing that
     # can fail is the solve itself: too wide a trace over a thin
     # substrate is microstrip-dominated and cannot reach 50 ohm at any
     # gap. Better to say so here than to let the solver raise mid-sweep.
+    #
+    # The lid is part of the line: the solve takes the channel's depth as the
+    # ceiling over the trace, and refuses a channel that is too shallow to
+    # reach 50 ohm or too narrow for the CPW it comes to.
     from . import cpw
 
     try:
@@ -476,7 +526,10 @@ def check_layout(values: Dict[str, float], mat_pcb: Optional[str] = None) -> Opt
             substrate_height=get("pcb_width", 0.381),
             eps_r=cpw.permittivity_of(mat_pcb or "Rogers TMM 10i (tm)"),
             conductor_thickness=get("copper_thickness"),
+            **lid_cover(values),
         )
+    except cpw.ReliefChannelError as exc:
+        return _relief_reason(exc, values)
     except ValueError as exc:
         return f"no 50 ohm geometry for this trace width: {exc}"
     if gap < MIN_CPW_GAP:

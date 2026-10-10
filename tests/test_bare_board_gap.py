@@ -10,8 +10,7 @@ DUROID = "Rogers RT/duroid 5880 (tm)"
 
 def values(trace, no_chip):
     base = eq.get_numeric_parameters(eq.read_file(str(paths.DEFAULT_EQUATIONS_FILE)))
-    return {**base, "cpw_trace_width": trace, "route_width": 0.8, "no_chip": float(no_chip),
-            "pedestal_depth": 0.0}
+    return {**base, "cpw_trace_width": trace, "no_chip": float(no_chip), "pedestal_depth": 0.0}
 
 
 class TestBareBoardGap(unittest.TestCase):

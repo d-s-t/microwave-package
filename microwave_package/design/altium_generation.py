@@ -604,12 +604,17 @@ def build_params(
     rather than recomputed downstream, so the run keeps a record of the
     geometry it actually built.
 
+    The board's gap is solved for the line under the lid: the relief
+    channel's depth is the ceiling over the trace (`constraints.lid_cover`).
+    The chip's is not -- its line sits in the lid's pocket over the die,
+    whose ceiling is not one of the relief parameters -- so it stays open-top.
+
     Adds the die's opening too -- its size, its depth, and whether it
     goes through. Decided here rather than in the DelphiScript so that
     the script only draws, and so that HFSS, which asks `cavity.plan`
     the same question, cannot get a different answer.
     """
-    from . import cavity, cpw, smp
+    from . import cavity, constraints, cpw, smp
 
     out = dict(values)
     # The connector land pattern travels with the parameters so the
@@ -624,6 +629,7 @@ def build_params(
         eps_r=cpw.permittivity_of(mat_pcb),
         z0=target_z0,
         conductor_thickness=values.get("copper_thickness", 0.0),
+        **constraints.lid_cover(values),
     )
     if values.get("no_chip", 0.0) > 0.5:
         # A bare board has no die, so there is no chip line to solve a gap
