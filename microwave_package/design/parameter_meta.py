@@ -68,6 +68,8 @@ LABELS: Dict[str, str] = {
     "screw_tap_diameter": "Screw tap-drill hole (box)",
     "screw_keepout_diameter": "Copper keep-out round the screw",
     "screw_engagement": "Thread engagement in the box floor",
+    "vent_width": "Vent groove width",
+    "vent_depth": "Vent groove depth (below the floor top)",
     # distortion geometry
     "distortion_radius": "Distortion radius",
     "distortion_x": "Distortion offset along feedline",
@@ -103,7 +105,14 @@ NO_CHIP_PARAM = "no_chip"
 # on/off pinned for the whole run, like no_chip. Its dimensions are swept
 # like any other parameter -- see SCREW_GEOMETRY_PARAMETERS.
 SCREWS_PARAM = "screws_on"
-BOOLEAN_PARAMETERS = {DISTORTION_PARAM, NO_CHIP_PARAM, SCREWS_PARAM}
+
+# The vents flag: 1 cuts the narrow grooves that let the pedestal recess and
+# the screw bores breathe out of the box's side (see design.venting). A plain
+# on/off pinned for the whole run; the groove's size is swept like any other.
+VENTS_PARAM = "vents_on"
+BOOLEAN_PARAMETERS = {DISTORTION_PARAM, NO_CHIP_PARAM, SCREWS_PARAM, VENTS_PARAM}
+
+VENT_GEOMETRY_PARAMETERS = ["vent_width", "vent_depth"]
 
 SCREW_GEOMETRY_PARAMETERS = [
     "screw_inset", "screw_clearance_diameter", "screw_tap_diameter",
@@ -211,6 +220,14 @@ GROUPS: List[dict] = [
                 "Only used when the Corner screws box above is ticked.",
         "collapsed": True,
         "names": SCREW_GEOMETRY_PARAMETERS,
+    },
+    {
+        "title": "Vent grooves",
+        "hint": "The narrow grooves in the box floor that let trapped air out to the box's "
+                "side (the pedestal recess, the screw bores). Far below cutoff, below the "
+                "board's ground plane. Only used when Vent grooves is ticked.",
+        "collapsed": True,
+        "names": VENT_GEOMETRY_PARAMETERS,
     },
 ]
 
