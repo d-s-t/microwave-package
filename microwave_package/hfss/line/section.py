@@ -39,6 +39,8 @@ import math
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Sequence, Tuple
 
+from ...design import constraints
+
 BOARD = "board"
 CHIP = "chip"
 WHICH = (BOARD, CHIP)
@@ -336,7 +338,7 @@ def from_parameters(which: str, values: Dict[str, float], substrate_material: st
     along the line -- the fence as the equations describe it, which is NOT
     verified against a layout. The report says so.
     """
-    trace = values["cpw_trace_width"]
+    trace = constraints.chip_trace(values) if which == CHIP else values["cpw_trace_width"]
     section = _section(which, "parameters", values, substrate_material, eps_r, length, half_width,
                        trace, gap, ground_below=(which == BOARD))
     diameter = values.get("via_diameter", 0.3)

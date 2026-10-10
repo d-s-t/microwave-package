@@ -44,6 +44,9 @@ FIELDS: List[Dict[str, Any]] = [
     {"name": "section_half_width_mm", "label": "Section half-width (mm)", "kind": "float", "default": 3.0,
      "help": "How far either side of the trace the section reaches. Its walls are perfect conductors, "
              "so it must be wide enough that they do not load the line."},
+    {"name": "line_gap_mm", "label": "Gap by hand (mm, 0 = as the layout has it)", "kind": "float", "default": 0.0,
+     "help": "Build the section with this gap instead of the layout's: to see what HFSS makes of a "
+             "particular gap, or to find the one it wants. The trace and everything else are the run's."},
     {"name": "line_f_start_ghz", "label": "Band start (GHz)", "kind": "float", "default": 1.0},
     {"name": "line_f_stop_ghz", "label": "Band stop (GHz)", "kind": "float", "default": 26.0},
     {"name": "line_points", "label": "Frequency points", "kind": "int", "default": 53,

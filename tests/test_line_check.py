@@ -254,6 +254,7 @@ class RecordingHfss(FakeHfss):
         return object()
 
 
+DUROID = "Rogers RT/duroid 5880 (tm)"
 MATERIALS = {"mat_box": "aluminum", "mat_pcb": TMM, "mat_chip": "silicon", "mat_vacuum": "vacuum",
              "perfect_e_box": True, "mat_conductor_pcb": "copper", "mat_conductor_chip": "niobium",
              "perfect_e_conductors": True, "mat_wirebond": "gold", "include_wirebonds": True}
@@ -350,7 +351,7 @@ class TestSetupAndSection(unittest.TestCase):
             build.create_setup(SetupHfss(), "", {**self.SETTINGS, "line_f_start_ghz": 30.0}, log=lambda _m: None)
 
     def settings(self, **over):
-        return {"which_line": sec.BOARD, "materials": dict(MATERIALS), "section_length_mm": 6.0,
+        return {"which_line": sec.BOARD, "materials": {**MATERIALS, "mat_pcb": DUROID}, "section_length_mm": 6.0,
                 "section_half_width_mm": 3.0, "line_z0_ohm": 50.0, **over}
 
     def test_the_section_comes_from_the_copper_file_when_there_is_one(self):
@@ -376,8 +377,29 @@ class TestSetupAndSection(unittest.TestCase):
             build.make_section(values(), self.settings(which_line=sec.CHIP), folder, log=lambda _m: None)
 
     def test_a_section_that_would_short_is_refused_before_anything_is_drawn(self):
+        folder = tempfile.mkdtemp()
+        with open(os.path.join(folder, "copper.txt"), "w") as handle:
+            handle.write(COPPER)
         with self.assertRaisesRegex(registry.PortPlacementError, "less than 0.1 mm wider"):
-            build.make_section(values(route_width=0.4), self.settings(), tempfile.mkdtemp(), log=lambda _m: None)
+            build.make_section(values(route_width=0.4), self.settings(), folder, log=lambda _m: None)
+
+    def test_the_board_gap_is_solved_under_the_lid_and_the_chip_one_on_its_own_trace(self):
+        board, _ = build.make_section(values(cpw_trace_width=0.45), self.settings(), tempfile.mkdtemp(),
+                                      log=lambda _m: None)
+        self.assertAlmostEqual(board.gap, 0.129, places=3)          # the 2D Extractor's 50.17 ohm board
+        chip, _ = build.make_section(values(cpw_trace_width=0.4, chip_trace_width=0.2),
+                                     self.settings(which_line=sec.CHIP), tempfile.mkdtemp(),
+                                     log=lambda _m: None)
+        self.assertEqual(chip.trace_width, 0.2)
+
+    def test_a_gap_set_by_hand_wins_over_the_layout_and_says_so(self):
+        folder = tempfile.mkdtemp()
+        with open(os.path.join(folder, "copper.txt"), "w") as handle:
+            handle.write(COPPER)
+        s, analytic = build.make_section(values(), self.settings(line_gap_mm=0.111), folder, log=lambda _m: None)
+        self.assertEqual((s.source, s.gap), ("parameters", 0.111))
+        self.assertTrue(any("by hand" in n for n in s.notes))
+        self.assertGreater(analytic, 0.0)
 
 
 class TestReadingBack(unittest.TestCase):

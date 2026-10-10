@@ -20,7 +20,7 @@ import logging
 import os
 from typing import Any, Dict, List, Optional, Tuple
 
-from ...design import copper_geometry, cpw, equations as eq
+from ...design import constraints, copper_geometry, cpw, equations as eq
 from .. import model_builder, registry
 from . import section as sec
 
@@ -45,11 +45,14 @@ def make_section(values: Dict[str, float], settings: Dict[str, Any], combo_dir: 
     eps_r = cpw.permittivity_of(material)
     height = values.get("pcb_width" if which == sec.BOARD else "chip_width", 0.381)
     metal = values.get("copper_thickness" if which == sec.BOARD else "chip_metal_thickness", 0.0)
-    trace = values["cpw_trace_width"]
+    trace = constraints.chip_trace(values) if which == sec.CHIP else values["cpw_trace_width"]
     try:
+        # The board's line is solved under the lid it is built with; the die's
+        # as the layout check solves it (no cover).
         analytic = cpw.solve_gap_for_z0(
             trace_width=trace, substrate_height=height, eps_r=eps_r,
-            z0=float(settings.get("line_z0_ohm", 50.0)), conductor_thickness=metal)
+            z0=float(settings.get("line_z0_ohm", 50.0)), conductor_thickness=metal,
+            **(constraints.lid_cover(values) if which == sec.BOARD else {}))
     except ValueError as exc:
         analytic = None
         log(f"The analytic 50 ohm gap could not be solved for this line ({exc}); the check goes on "
@@ -58,8 +61,14 @@ def make_section(values: Dict[str, float], settings: Dict[str, Any], combo_dir: 
     half_width = float(settings.get("section_half_width_mm", 3.0))
 
     built = None
+    forced_gap = float(settings.get("line_gap_mm", 0.0) or 0.0)
+    if forced_gap > 0:
+        # A gap asked for by hand (to see what HFSS makes of it, whatever the
+        # layout would have drawn): the section is built from the parameters.
+        built = sec.from_parameters(which, values, material, eps_r, length, half_width, forced_gap)
+        built.notes.append(f"the gap was set by hand (line_gap_mm = {forced_gap:g} mm)")
     copper_path = os.path.join(combo_dir, "copper.txt") if combo_dir else None
-    if copper_path and os.path.isfile(copper_path):
+    if built is None and copper_path and os.path.isfile(copper_path):
         boards = copper_geometry.read_file(copper_path)
         board = boards.get(sec.COPPER_BOARD_NAME[which])
         if board is not None:

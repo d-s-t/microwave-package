@@ -19,14 +19,14 @@ class TestAutomaticChecks(unittest.TestCase):
         checks = preflight.run(preflight._values())
         self.assertEqual([c.id for c in checks if c.status == FAIL], [])
 
-    def test_the_candidate_passes_with_two_warnings_the_user_should_read(self):
+    def test_the_candidate_passes_with_the_one_warning_the_user_should_read(self):
         values = preflight._values(preflight.CANDIDATE_VALUES)
         checks = by_id(preflight.run(values, DUROID))
         self.assertEqual([i for i, c in checks.items() if c.status == FAIL], [])
         self.assertEqual(checks["cryo.cte"].status, WARN)          # 5880's 237 ppm/degC z expansion
         self.assertIn("237", checks["cryo.cte"].detail)
         self.assertEqual(checks["cpw.gap"].status, PASS)
-        self.assertIn("111 um", checks["cpw.gap"].detail)
+        self.assertIn("129 um", checks["cpw.gap"].detail)
 
     def test_the_default_trace_on_5880_fails_the_layout_check_with_the_reason(self):
         values = preflight._values({"route_width": 1.0, "route_clearence": 0.2})
@@ -34,13 +34,24 @@ class TestAutomaticChecks(unittest.TestCase):
         self.assertEqual(checks["layout.build"].status, FAIL)
         self.assertIn("100 um minimum", checks["layout.build"].detail)
 
-    def test_a_lid_channel_that_does_not_clear_the_cpw_is_a_warning_not_a_pass(self):
-        values = preflight._values({"cpw_trace_width": 0.4})            # channel 0.5 mm, line needs ~0.82
-        self.assertEqual(by_id(preflight.run(values, DUROID))["cpw.lid"].status, WARN)
+    def test_a_lid_channel_too_narrow_for_the_cpw_fails_in_the_gap_and_the_layout(self):
+        values = preflight._values({**preflight.CANDIDATE_VALUES, "route_width": 0.7})
+        checks = by_id(preflight.run(values, DUROID))
+        self.assertEqual(checks["cpw.gap"].status, FAIL)
+        self.assertEqual(checks["layout.build"].status, FAIL)
+        self.assertIn("route_width", checks["layout.build"].detail)
 
-    def test_a_channel_no_wider_than_the_trace_fails(self):
-        values = preflight._values({"cpw_trace_width": 0.5})
-        self.assertEqual(by_id(preflight.run(values, DUROID))["layout.build"].status, FAIL)
+    def test_a_lid_too_shallow_to_reach_50_ohm_fails_and_says_how_deep(self):
+        values = preflight._values({**preflight.CANDIDATE_VALUES, "route_clearence": 0.04})
+        checks = by_id(preflight.run(values, DUROID))
+        self.assertEqual(checks["layout.build"].status, FAIL)
+        self.assertIn("route_clearence", checks["layout.build"].detail)
+
+    def test_the_dies_own_trace_is_what_the_chip_line_is_solved_for(self):
+        wide = preflight._values({**preflight.CANDIDATE_VALUES, "chip_trace_width": 0.4})
+        self.assertEqual(by_id(preflight.run(wide, DUROID))["cpw.chip_gap"].status, FAIL)   # no 50 ohm CPW on 0.381 mm silicon
+        narrow = preflight._values({**preflight.CANDIDATE_VALUES, "chip_trace_width": 0.2})
+        self.assertEqual(by_id(preflight.run(narrow, DUROID))["cpw.chip_gap"].status, PASS)
 
     def test_fab_limits_are_the_fabs_to_change(self):
         values = preflight._values()
@@ -95,7 +106,7 @@ class TestTheReport(unittest.TestCase):
         values = preflight._values(preflight.CANDIDATE_VALUES)
         text = preflight.render_markdown(preflight.run(values, DUROID), values, DUROID)
         self.assertIn(DUROID, text)
-        self.assertIn("cpw_trace_width = 0.4", text)
+        self.assertIn("cpw_trace_width = 0.45", text)
         self.assertIn("## Fabricator limits used", text)
         self.assertIn("## Simulation", text)
 

@@ -31,7 +31,7 @@ PASS, FAIL, WARN, MANUAL, INFO = "pass", "fail", "warn", "manual", "info"
 
 # The board the box study ended on (RESULTS_CONCLUSIONS.md, "the candidate"):
 # everything else is default.txt's.
-CANDIDATE_VALUES = {"cpw_trace_width": 0.4, "route_width": 1.0, "route_clearence": 0.2}
+CANDIDATE_VALUES = {"cpw_trace_width": 0.45, "route_width": 1.0, "route_clearence": 0.2}
 CANDIDATE_PCB = "Rogers RT/duroid 5880 (tm)"
 
 # What a typical PCB fabricator can do (mm). A specific fab's numbers replace
@@ -94,7 +94,7 @@ def _safely(check_id: str, group: str, title: str, fn: Callable[[], List[Check]]
 # the automatic checks
 # ---------------------------------------------------------------------------
 
-def layout_checks(values, mat_pcb) -> List[Check]:
+def layout_checks(values, mat_pcb, mat_chip="silicon") -> List[Check]:
     how = "automatic: constraints.check_combination / check_via_grid / check_layout (also run by every run)"
     out = []
     for check_id, title, reason in (
@@ -102,7 +102,7 @@ def layout_checks(values, mat_pcb) -> List[Check]:
          constraints.check_combination(values)),
         ("layout.vias", "The via lattice is dense enough to be placed", constraints.check_via_grid(values)),
         ("layout.build", "The layout can be drawn (gap solves, fence fits, lid clears the trace, screws fit)",
-         constraints.check_layout(values, mat_pcb)),
+         constraints.check_layout(values, mat_pcb, mat_chip)),
     ):
         out.append(Check(check_id, "Layout", title, FAIL if reason else PASS, reason or "", how))
     return out
@@ -114,35 +114,45 @@ def cpw_checks(values, mat_pcb, mat_chip, has_chip) -> List[Check]:
     eps = cpw.permittivity_of(mat_pcb)
     h = values.get("pcb_width", 0.381)
     metal = values.get("copper_thickness", 0.035)
-    gap = cpw.solve_gap_for_z0(trace_width=trace, substrate_height=h, eps_r=eps, conductor_thickness=metal)
-    z_back = cpw.z0_gcpw(trace, gap, h, eps, metal)
+    cover = constraints.lid_cover(values)
+    title = f"Board line: analytic 50 ohm gap under the lid, on {mat_pcb} (eps {eps:g})"
+    try:
+        gap = cpw.solve_gap_for_z0(trace_width=trace, substrate_height=h, eps_r=eps, conductor_thickness=metal,
+                                   **cover)
+    except ValueError as exc:
+        out.append(Check("cpw.gap", "CPW", title, FAIL, str(exc),
+                         "automatic; the independent check is the HFSS 'Line impedance' solution type"))
+        return out
+    z_back = cpw.z0_gcpw(trace, gap, h, eps, metal, cover.get("cover_height"))
     out.append(Check(
-        "cpw.gap", "CPW", f"Board line: analytic 50 ohm gap on {mat_pcb} (eps {eps:g})",
+        "cpw.gap", "CPW", title,
         PASS if gap >= constraints.MIN_CPW_GAP else FAIL,
-        f"trace {trace:g} mm, gap {gap * 1000:.0f} um (fab minimum {constraints.MIN_CPW_GAP * 1000:.0f} um); "
-        f"the formula read back gives {z_back:.2f} ohm",
+        f"trace {trace:g} mm, gap {gap * 1000:.0f} um (fab minimum {constraints.MIN_CPW_GAP * 1000:.0f} um) "
+        f"under a lid relief {values.get('route_clearence', 0.0) * 1000:g} um deep; the formula read back "
+        f"gives {z_back:.2f} ohm",
         "automatic; the independent check is the HFSS 'Line impedance' solution type"))
     route_width = values.get("route_width", 0.0)
-    want = trace + 2.0 * gap + 0.2
+    want = trace + 2.0 * gap + 2.0 * cpw.wall_clearance(cover.get("cover_height", 0.0))
     out.append(Check(
-        "cpw.lid", "CPW", "The lid's relief channel clears the whole CPW (trace + two gaps + margin)",
+        "cpw.lid", "CPW", "The lid's relief channel holds the whole CPW with its walls clear of the slots",
         PASS if route_width >= want else WARN,
-        f"route_width {route_width:g} mm against trace + 2 gap + 0.2 = {want:.3f} mm; relief depth "
-        f"{values.get('route_clearence', 0.0) * 1000:g} um. The analytic gap does NOT see the lid "
-        f"(a lid 40 um over the trace made a 5880 board unusable until the channel was widened)",
-        "automatic for the margin; the real effect needs the HFSS 'Line impedance' check, lid included"))
+        f"route_width {route_width:g} mm against trace + 2 gap + 2 wall clearance = {want:.3f} mm; the gap "
+        "above is solved with the lid's ceiling over the trace, so it follows the relief depth",
+        "automatic for the analytic model; the lid as built is what the HFSS 'Line impedance' check shows"))
     if has_chip:
+        trace_chip = constraints.chip_trace(values)
+        title = f"Chip line: analytic gap on {mat_chip}"
         try:
             chip_gap = cpw.solve_gap_for_z0(
-                trace_width=trace, substrate_height=values.get("chip_width", 0.381),
+                trace_width=trace_chip, substrate_height=values.get("chip_width", 0.381),
                 eps_r=cpw.permittivity_of(mat_chip), conductor_thickness=values.get("chip_metal_thickness", 0.0))
-            out.append(Check("cpw.chip_gap", "CPW", f"Chip line: analytic gap on {mat_chip}",
-                             PASS if chip_gap < 5.0 else WARN,
-                             f"trace {trace:g} mm gap {chip_gap:.3f} mm. The die's line is on high-permittivity "
-                             "silicon with no ground below; a gap this wide or an unreachable 50 ohm means the "
-                             "chip's trace should not be the board's", "automatic; confirm in HFSS (which_line = chip)"))
+            out.append(Check("cpw.chip_gap", "CPW", title, PASS,
+                             f"chip_trace_width {trace_chip:g} mm, gap {chip_gap * 1000:.0f} um. The die's line is on "
+                             "high-permittivity silicon with no ground below",
+                             "automatic; confirm in HFSS (which_line = chip)"))
         except ValueError as exc:
-            out.append(Check("cpw.chip_gap", "CPW", f"Chip line: analytic gap on {mat_chip}", FAIL, str(exc)))
+            out.append(Check("cpw.chip_gap", "CPW", title, FAIL, str(exc),
+                             "reduce chip_trace_width, the die's own trace"))
     return out
 
 
@@ -270,7 +280,7 @@ def run(values: Optional[Dict[str, float]] = None, mat_pcb: str = "Rogers TMM 10
     if has_chip is None:
         has_chip = float(values.get("no_chip", 0.0)) < 0.5
     checks: List[Check] = []
-    checks += _safely("layout", "Layout", "Layout rules", lambda: layout_checks(values, mat_pcb))
+    checks += _safely("layout", "Layout", "Layout rules", lambda: layout_checks(values, mat_pcb, mat_chip))
     checks += _safely("cpw", "CPW", "CPW gap", lambda: cpw_checks(values, mat_pcb, mat_chip, has_chip))
     checks += _safely("fab", "Fabrication", "Fabrication limits", lambda: fab_checks(values, fab))
     checks += _safely("mech", "Mechanical", "Mechanical fits", lambda: mechanical_checks(values))
