@@ -461,6 +461,56 @@ weaker rule (channel at least 0.1 mm wider than the trace) exists today. These r
 used 0.25 GHz steps and loose convergence (4 passes, delta S 0.05); B20 repeats the
 candidate with tighter settings.
 
+## Box study, where it stands (written 2026-10-10)
+
+**The answer so far.** Clean S21 up to 20 GHz, and more than half of 20-26 GHz, is
+reachable: RT/duroid 5880 instead of TMM 10i, `cpw_trace_width` 0.4 mm,
+`route_width` 1.0 mm, `route_clearence` 200 um, everything else default (the full table
+is in the lid cover section above). With the chip (B19): S21 above -3 dB for 100 / 100 /
+100 / 54 % of 2-10 / 10-17 / 17-20 / 20-26 GHz, S11 -12.9 dB on average in 2-10 GHz; without
+it (B17) 100 / 100 / 100 / 75 %. On the default board (TMM 10i, 0.2 mm trace, the
+default lid) the same bands were 80 / 50 / 1 / 0 % (bare) and 66 / 32 / 8 / 0 % (with the
+chip). What caused each notch, in the order they were found:
+
+| Notch | Cause | Lever |
+|---|---|---|
+| 3.7, 10, 13.2, 15.5, 17.1, 18.6 GHz and the like | box (air cavity) modes, within 0.03 GHz of eigenmodes, do not move with the substrate or the vias | board length and width |
+| 16.75 GHz (TMM 10i) | ground strip between the CPW gap and the via fence | fence setback (-5 GHz per mm); gone on 5880 |
+| about 25 GHz (TMM 10i) | via-lattice substrate mode, Q 550, -2.2 GHz per mm of via step | substrate permittivity; gone on 5880 |
+| 2-10 GHz mismatch on 5880 | the lid covers the line (CPW 50 ohm solve ignores it) | wide lid channel, 200 um relief |
+| 0.5 mm trace in the default lid, and 0.2 mm trace on 5880 | the lid shorts the trace; a gap under 100 um | now refused by the layout check |
+
+**B20, the validation of the candidate with the chip** [run_20261010_102243] (both solves; 20 eigenmodes at
+delta f 1 % and up to 8 passes; the driven sweep 2-26 GHz on a 0.1 GHz grid (241
+points) at delta S 0.02 and up to 8 passes; fine windows at every mode). **In progress when
+this was written.** The eigenmode step is done: the box modes are where they were with the
+loose settings (7.18, 9.95, 12.38, 13.17, 13.49, 15.12, 15.54, 16.94, 17.08, 18.58 and
+19.27 GHz), and the chip adds lower-Q modes (Q 370-860) at 3.21 (twice), 5.67, 8.72,
+10.99, 13.74, 16.37 and 19.12 GHz; 20 modes reach only 19.3 GHz. The driven step is on the
+worker. Whether "100 % clean to 20 GHz" survives the finer grid and the tighter mesh is the
+question it answers; its result goes into this file in a follow-up.
+
+**Open questions, none settled by the runs so far**
+1. Does the 100 % survive the finer look (B20)? A 0.25 GHz step can miss a notch only a
+   few tens of MHz wide, and the box modes at 7.18, 9.95, 13.17, 17.08 and 18.58 GHz
+   have Q of 800-10500.
+2. The notch near 25.75 GHz (-21 dB, bare; -27 dB with the chip) is not explained on
+   5880: no eigenmode run was made above 20 GHz for it.
+3. The box walls were perfect E throughout. Depth, and with it the band's cleanliness, was
+   not checked with a finite-conductivity box (1e8 S/m) on the candidate; on TMM 10i that
+   changed Q by 1.3-2.5x and positions by about 1 %.
+4. The CPW solve ignores the lid cover (a proposed code follow-up; only a weak rule, a
+   channel at least 0.1 mm wider than the trace, exists). The candidate's 0.4 mm trace
+   was found by experiment, not solved for.
+5. The 30 mm bare board gave an identical S11 and S21 at all 97 frequencies; the cause was
+   not found (it was not the lid channel width, which is a trace + 0.3 mm there, and the
+   saved model looked sound).
+6. Tolerances: one combination per setting was run; a trace width, a permittivity
+   or a relief depth a little off was not tried (the 0.2 mm and 0.5 mm traces, one
+   either side, failed for the two reasons above).
+7. Board length 60 mm on the default lid cleaned 29 % of 20-26 GHz; it was not tried with
+   the wide lid on 5880.
+
 ## What to do next
 
 0. Run the bare board (`no_chip`, the "Bare board" tick on the form). It
