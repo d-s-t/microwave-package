@@ -30,6 +30,14 @@ target is the band above 20 GHz (17 GHz and up is where it starts to matter).
    GHz stay when the board's length or width changes and shrink when the SMP
    connector is taken out of the model, so they belong to the connector and its
    launch. The chip makes every band worse (66 / 32 / 8 / 0 % clean).
+8. **Those notches belong to the via lattice and the launch, and they can be moved
+   but not removed** (box study, iterations 3-5). The deep notch near 25 GHz is a low-Q
+   (Q 550) substrate mode set by the via step: 25.0 GHz at 0.8 mm, 24.1 GHz at
+   1.2 mm. The one near 16.75 GHz moves with the setback of the via fence from the
+   CPW gap, about -5 GHz per mm (14.5 GHz at 600 um). A wider via step (1.2 mm) or
+   a 600 um setback makes 17-20 GHz half clean (from 1 %); a lid relief of 200 um
+   makes 10-17 GHz 75 % clean (from 50 %). Combining them is worse than either, and
+   no set tried cleans 20-26 GHz.
 
 ## How much to trust it
 
@@ -285,10 +293,53 @@ survives all of them, moving with the via step but never leaving the band. These
 are 0.25 GHz-step scans, so a narrow notch can be missed and the fractions are
 a guide to position, not a measurement of depth (perfect E exaggerates it).
 
-Next: the launch levers (the ground-via setback near the launch, the connector's
-distance from the wall), a combination of the helpful ones (via step 1.2 mm with a
-deeper relief), the 25 GHz notch (what it is: it survives a lumped port and every
-board change), a 35 mm board length, and the 30 mm degenerate solve.
+**B8, via step and lid relief together** [run_20261010_022423] (via 1.0 and 1.2 mm
+with 200 um relief): 59 / 43 / 33 / 0 % and 59 / 61 / 33 / 0 %. Not additive:
+against relief alone (62 / 75 / 17 / 0 %) the 10-17 GHz band is worse, and against
+via 1.2 mm alone (72 / 32 / 50 / 0 %) the 17-20 GHz band is worse.
+
+**B9, eigenmodes from about 23 GHz** [run_20261010_025450] (4 modes, via 0.8 and 1.2 mm).
+At via 0.8 mm: 23.77 (Q 3900), 24.21 (Q 18000), 24.30 (Q 6100) and 24.995 GHz
+(Q 553). At 1.2 mm: 23.77 (Q 3900), 24.11 and 24.14 (Q 514 each) and 24.21 GHz
+(Q 17700). The three with Q in the thousands do not move; the Q 550 one goes
+from 25.0 to about 24.1 GHz with the via step, as the driven notch does (25.25 to
+24.5 GHz). So **the deep notch near 25 GHz is a low-Q substrate mode set by the
+via lattice**, not a box mode and not the connector. It moves by about -2.2 GHz per
+mm of via step; the in-between values (0.5 mm) are the way up, but at 0.5 mm the
+deepest 20-26 GHz notch is only -28 dB (B5), still in the band.
+
+**B10, setback of the via fence from the CPW gap** (`via_gnd_clearance`, in
+micrometres; 150 um default) [run_20261010_031023]. The deep launch-side notch
+moves almost linearly with it, about -5 GHz per mm: 16.75 GHz at 150 um, 16.0 GHz at
+300 um, 14.5 GHz at 600 um. Clean fractions 75 / 32 / 17 / 0 % at 300 um and
+69 / 32 / 50 / 0 % at 600 um. That is the behaviour of a resonance of the strip of
+ground between the gap and the fence; it cannot be pushed past about 17.5 GHz
+by a smaller setback (the line extrapolates to 17.5 GHz at zero setback). The 25 GHz
+notch does not move with it.
+
+**B11, via 1.2 mm + setback 600 um + relief 200 um** [run_20261010_034053]: 59 / 46 / 8 / 0 %. Worse
+than the best single changes: stacking the levers does not stack the gains.
+
+**Best sets so far** (bare 50 x 25 mm board, perfect E, 0.25 GHz step; the share clean in
+2-10 / 10-17 / 17-20 / 20-26 GHz):
+
+| For | Set | Clean |
+|---|---|---|
+| The 17-20 GHz band | `via_max_spacing` 1.2 mm, rest default | 72 / 32 / 50 / 0 % |
+| The 17-20 GHz band | `via_gnd_clearance` 600 um, rest default | 69 / 32 / 50 / 0 % |
+| The 10-17 GHz band | `route_clearence` 200 um, rest default | 62 / 75 / 17 / 0 % |
+| Everything up to 10 GHz | the defaults (0.8 mm, 150 um, 40 um) | 80 / 50 / 1 / 0 % |
+
+Nothing reaches 20-26 GHz: the notch near 25 GHz is a substrate mode of the via
+lattice, and with a lattice fine enough to push it out of the band (under about
+0.5 mm) the board still has notches at 21-21.5 GHz. A clean 20-26 GHz band is not
+available from these levers on this board; the remaining ones are the board size
+(a shorter board has fewer and higher box modes but the 30 mm one failed to solve),
+removing the chip, and a different substrate or thinner board for the lattice modes.
+
+Next: the 30 mm degenerate solve and board lengths between 30 and 40 mm; the
+substrate (thickness and permittivity set the lattice modes); and field plots of the
+Q 550 mode on a coarser mesh to say where it lives.
 
 ## What to do next
 
