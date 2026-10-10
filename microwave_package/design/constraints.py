@@ -416,8 +416,12 @@ def check_screws(values: Dict[str, float], gap: float) -> Optional[str]:
     return None
 
 
-def check_layout(values: Dict[str, float]) -> Optional[str]:
+def check_layout(values: Dict[str, float], mat_pcb: Optional[str] = None) -> Optional[str]:
     """Why this combination's layout cannot be built, or None if it can.
+
+    `mat_pcb` is the run's PCB material: the CPW gap is solved from its
+    permittivity, so a check made with another one refuses boards that can be
+    built and accepts ones that cannot. Left out, it is the default TMM 10i.
 
     Returns a sentence naming the parameter to change, in the same style
     as `check_combination`.
@@ -450,7 +454,7 @@ def check_layout(values: Dict[str, float]) -> Optional[str]:
         gap = cpw.solve_gap_for_z0(
             trace_width=trace,
             substrate_height=get("pcb_width", 0.381),
-            eps_r=cpw.PERMITTIVITY["Rogers TMM 10i (tm)"],
+            eps_r=cpw.permittivity_of(mat_pcb or "Rogers TMM 10i (tm)"),
             conductor_thickness=get("copper_thickness"),
         )
     except ValueError as exc:

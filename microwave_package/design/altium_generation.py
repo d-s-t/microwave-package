@@ -735,11 +735,10 @@ def generate_for_combo(
 
     # Cheaper to refuse here than to let Altium build a board that is
     # quietly wrong -- and the message names the parameter to change.
-    reason = constraints.check_layout(values)
+    materials = materials or {}
+    reason = constraints.check_layout(values, materials.get("mat_pcb"))
     if reason:
         return False, f"layout cannot be built: {reason}"
-
-    materials = materials or {}
     params = build_params(
         values,
         mat_pcb=materials.get("mat_pcb", "Rogers TMM 10i (tm)"),
