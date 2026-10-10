@@ -247,6 +247,10 @@ CHIP_COPPER_INSET = 0.15
 VIA_GAP_TOLERANCE = 0.001
 # How much wider than the trace the lid's relief channel has to be (mm).
 ROUTE_MARGIN = 0.1
+# The narrowest CPW gap the layout accepts (mm). Below it the model solves but
+# the line carries no signal (an 86 um gap on RT/duroid 5880 read S11 0 dB,
+# S21 -91 dB; 111 um transmitted) and it is under what most PCB fabs etch.
+MIN_CPW_GAP = 0.1
 
 
 def check_via_grid(values: Dict[str, float]) -> Optional[str]:
@@ -475,6 +479,13 @@ def check_layout(values: Dict[str, float], mat_pcb: Optional[str] = None) -> Opt
         )
     except ValueError as exc:
         return f"no 50 ohm geometry for this trace width: {exc}"
+    if gap < MIN_CPW_GAP:
+        return (
+            f"the 50 ohm CPW gap for a {_fmt(trace)} mm trace on this substrate is only "
+            f"{gap * 1000.0:.0f} um, under the {_fmt(MIN_CPW_GAP * 1000.0)} um minimum (such a "
+            f"line did not transmit in the box study and is below what most fabs etch) -- "
+            f"widen cpw_trace_width"
+        )
 
     # The fence sits outside the gap, and needs its own diameter of room
     # before the board edge -- plus via_min_spacing, because the generator
