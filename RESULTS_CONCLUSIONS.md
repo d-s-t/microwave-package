@@ -46,6 +46,13 @@ target is the band above 20 GHz (17 GHz and up is where it starts to matter).
    way, now caught by the layout check: a 0.2 mm trace needs an 86 um gap on 5880
    and does not transmit (limit 100 um), and a lid relief channel no wider than the
    trace shorts it (limit trace + 0.1 mm).
+10. **The candidate board is clean to 20 GHz** (lid cover study, 2026-10-10): RT/duroid
+   5880, `cpw_trace_width` 0.4 mm, `route_width` 1.0 mm, `route_clearence` 200 um, all
+   else default. S21 is above -3 dB for 100 % of 2-20 GHz and 54 % of 20-26 GHz with the
+   chip (75 % without it); S11 averages -12.9 dB in 2-10 GHz. It needs both the
+   substrate and the wide lid channel: 5880 with the default lid is 38 / 99 / 72 / 2 %
+   and TMM 10i with the wide lid is 69 / 43 / 17 / 4 %. Read at a 0.25 GHz step with a
+   loose mesh; a tighter validation run (B20) is in progress.
 
 ## How much to trust it
 
@@ -399,6 +406,60 @@ and 10-17 GHz 79 %, but 2-10 GHz only 28 %. What is left are box modes, which bo
 size moves (7.19, 9.96 and 13.18 GHz in 2-17 GHz, and 20.04 and 20.07 GHz at the bottom
 of the 20-26 GHz band) and the weak notch at 22.5 and 25.75 GHz. Not yet tried on
 5880: the chip, the via step and the relief, the board length.
+
+## Box study, the lid cover and the candidate board (2026-10-10)
+
+**B16, board length on 5880** [run_20261010_075040] (bare, 0.4 mm trace, default lid). Clean in
+2-10 / 10-17 / 17-20 / 20-26 GHz: 40 mm 44 / 64 / 25 / 21 %, 60 mm 56 / 71 / 92 / 29 %
+(50 mm, from B14: 38 / 99 / 72 / 2 %). Length moves the box modes in and out of the
+20-26 GHz band, and it is the one lever that cleaned part of it before the lid was
+changed.
+
+**B17, a wide lid channel** [run_20261010_082104]. The 50 ohm gap is solved for the
+substrate alone, but the lid sits on the board's ground copper with only a 40 um relief
+over the trace, so the line is really a covered CPW, and on a low-permittivity board
+the cover loads it far more than on TMM 10i. On 5880 with the 0.4 mm trace,
+`route_width` 1.0 mm (the channel clears the trace and both gaps) and
+`route_clearence` 200 um: clean **100 / 100 / 100 / 75 %**; with 300 um 100 / 100 / 100 /
+71 %. S11 in 2-10 GHz averages -14.4 dB (worst -8.3 dB), against -4.8 dB (worst -1.0 dB)
+with the default 0.5 mm channel and 40 um relief; in 10-17 GHz -10.2 dB. S21 in
+2-20 GHz never falls below -2.0 dB. What is left of 20-26 GHz is a notch at 25.75 GHz
+(-21 dB) and nothing else (worst -21 dB).
+
+**B18, the same lid on TMM 10i** [run_20261010_085138] (0.2 mm trace, `route_width` 1.0 mm,
+200 um relief): 69 / 43 / 17 / 4 %, with the 16.75 and 25.5 GHz notches back. So the gain is
+the 5880 substrate and the wide lid together; the lid alone does not rescue the
+high-permittivity board.
+
+**B19, the board with the chip** [run_20261010_093710] (5880, 0.4 mm trace, 1.0 mm channel,
+200 um relief, pedestal 0.5 mm, corner screws on): clean **100 / 100 / 100 / 54 %**; S11
+in 2-10 GHz -12.9 dB on average (worst -4.1 dB), in 10-17 GHz -9.5 dB (worst -4.1 dB).
+The chip, which made every band worse on TMM 10i, costs almost nothing here: S21 stays
+above -2.2 dB from 2 to 20 GHz and 20-26 GHz is 54 % clean, worst -26.6 dB at 25.0 GHz.
+
+**The candidate** (`default.txt` values that differ, plus the material). Both the bare
+board and the board with the chip were run with exactly this:
+
+| Setting | Candidate | Default |
+|---|---|---|
+| `mat_pcb` (new-run form, PCB material) | RT/duroid 5880 (eps 2.2) | Rogers TMM 10i (eps 9.8) |
+| `cpw_trace_width` | 0.4 mm | 0.2 mm |
+| `route_width` (lid relief width) | 1.0 mm | 0.5 mm |
+| `route_clearence` (lid relief depth) | 200 um (0.2 mm) | 40 um |
+
+Everything else is the default (50 x 25 mm board, 0.8 mm via step, 150 um via fence
+setback, corner screws on, perfect-E box). The 50 ohm gap that follows from the trace
+is 111 um on 5880, within what a fab etches. The solved gap is not changed by the lid.
+A bare board is the same with `no_chip` 1 and `pedestal_depth` 0 (the form pins both).
+
+**Not done, a proposed code follow-up:** the CPW 50 ohm solve ignores the lid cover
+(`cpw.solve_gap_for_z0` sees the substrate and the air above it, not a lid 40 um
+over the trace), so the gap is solved for a line that is not the one built. The
+fix is to include the cover in the solve, or to refuse a relief channel that
+does not clear the whole CPW (trace + two gaps) by a margin; only the second,
+weaker rule (channel at least 0.1 mm wider than the trace) exists today. These runs
+used 0.25 GHz steps and loose convergence (4 passes, delta S 0.05); B20 repeats the
+candidate with tighter settings.
 
 ## What to do next
 
