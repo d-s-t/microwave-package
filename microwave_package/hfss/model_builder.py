@@ -141,6 +141,11 @@ MATERIAL_OPTIONS: Dict[str, List[str]] = {
     "mat_box": ["aluminum", "copper", "brass", "gold"],
     "mat_pcb": [
         "Rogers TMM 10i (tm)", "Rogers RT/duroid 5880 (tm)",
+        # Both in the stock library under exactly these names. RO3003's
+        # z-axis expansion (25 ppm/C, x/y 17/16) is near copper's, which
+        # 5880's 237 ppm/C is not -- the reason it is here, for a board that
+        # is cooled to millikelvin.
+        "Rogers RO3003 (tm)", "Rogers RO4003 (tm)",
         "Rogers RT/duroid 6010/6010LM (tm)", "FR4_epoxy", "sapphire",
     ],
     "mat_chip": ["silicon", "sapphire", "gallium_arsenide", "SiC"],
