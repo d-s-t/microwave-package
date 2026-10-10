@@ -73,8 +73,42 @@ class TestSolveGap(unittest.TestCase):
         self.assertIn("trace width", str(ctx.exception))
 
     def test_non_default_target_impedance(self):
-        gap = cpw.solve_gap_for_z0(0.2, 0.381, 9.8, z0=75.0)
-        self.assertAlmostEqual(cpw.z0_gcpw(0.2, gap, 0.381, 9.8), 75.0, places=6)
+        gap = cpw.solve_gap_for_z0(0.1, 0.381, 9.8, z0=75.0)
+        self.assertAlmostEqual(cpw.z0_gcpw(0.1, gap, 0.381, 9.8), 75.0, places=6)
+
+
+class TestWidestSlot(unittest.TestCase):
+    """A trace too wide for a CPW on its substrate can level off just over
+    50 ohm and then have a root at an absurd gap: the 0.4 mm trace the board
+    carries, on the 0.381 mm silicon die, "solved" to 28.8 mm, which put the
+    die's ground planes 29 mm from its line (the chip-board runs of the box
+    study). The solve looks no wider than a couple of substrate thicknesses."""
+
+    def test_a_trace_that_only_reaches_50_ohm_at_an_absurd_gap_is_refused(self):
+        with self.assertRaises(ValueError) as ctx:
+            cpw.solve_gap_for_z0(0.4, 0.381, 11.9, conductor_thickness=0.0002)
+        self.assertIn("unreachable", str(ctx.exception))
+
+    def test_the_bug_is_what_the_old_bracket_found(self):
+        """Its impedance is 50.9 ohm at a 100 mm gap, so the old bracket held a root."""
+        self.assertGreater(cpw.z0_gcpw(0.4, 100.0, 0.381, 11.9, 0.0002), 50.0)
+        gap = cpw.solve_gap_for_z0(0.4, 0.381, 11.9, conductor_thickness=0.0002, gap_bounds=(1e-4, 100.0))
+        self.assertTrue(20.0 < gap < 40.0, gap)
+
+    def test_the_widest_slot_is_two_substrate_thicknesses(self):
+        self.assertEqual(cpw.MAX_GAP_PER_HEIGHT, 2.0)
+        with self.assertRaisesRegex(ValueError, r"0\.0001\.\.0\.762 mm"):
+            cpw.solve_gap_for_z0(0.4, 0.381, 11.9)
+
+    def test_real_cpws_are_well_inside_it(self):
+        """Every board and die in use sits at under 1.3 thicknesses."""
+        for eps_r, trace in ((9.8, 0.2), (11.9, 0.2), (2.2, 0.5), (4.4, 0.4), (10.2, 0.2)):
+            gap = cpw.solve_gap_for_z0(trace, 0.381, eps_r, conductor_thickness=0.035)
+            self.assertLess(gap / 0.381, 1.3, (eps_r, trace, gap))
+
+    def test_bounds_can_still_be_given(self):
+        gap = cpw.solve_gap_for_z0(0.2, 0.381, 9.8, gap_bounds=(0.05, 0.5))
+        self.assertTrue(0.05 < gap < 0.5)
 
 
 class TestConductorThickness(unittest.TestCase):
@@ -238,7 +272,7 @@ class TestSolveUnderACover(unittest.TestCase):
         # ... and it says how deep would do
         self.assertTrue(0.10 < ctx.exception.min_height < 0.14, ctx.exception.min_height)
         gap = cpw.solve_gap_for_z0(**self.CANDIDATE, cover_height=ctx.exception.min_height * 1.02)
-        self.assertLess(gap, 0.6)
+        self.assertLess(gap, cpw.MAX_GAP_PER_HEIGHT * 0.381)
 
     def test_a_channel_that_does_not_clear_the_cpw_is_refused(self):
         """The 94 um gap makes the CPW 0.589 mm across; the walls need 0.1 mm outside each slot."""
@@ -271,9 +305,11 @@ class TestSolveUnderACover(unittest.TestCase):
         self.assertNotIsInstance(ctx.exception, cpw.ReliefChannelError)
 
     def test_min_cover_height_is_the_edge_of_what_a_usable_slot_reaches(self):
+        widest = cpw.MAX_GAP_PER_HEIGHT * 0.381
         height = cpw.min_cover_height(0.4, 0.381, 2.2, conductor_thickness=0.035)
-        self.assertGreaterEqual(cpw.z0_gcpw(0.4, 0.6, 0.381, 2.2, 0.035, height), 50.0)
-        self.assertLess(cpw.z0_gcpw(0.4, 0.6, 0.381, 2.2, 0.035, height * 0.97), 50.0)
+        self.assertAlmostEqual(height, 0.118, delta=0.002)
+        self.assertGreaterEqual(cpw.z0_gcpw(0.4, widest, 0.381, 2.2, 0.035, height), 50.0)
+        self.assertLess(cpw.z0_gcpw(0.4, widest, 0.381, 2.2, 0.035, height * 0.97), 50.0)
 
 
 class TestPermittivityLookup(unittest.TestCase):

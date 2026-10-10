@@ -39,10 +39,10 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 from . import parameter_meta
-from .constraints import CHIP_COPPER_INSET, finger_offset
+from .constraints import CHIP_COPPER_INSET, chip_trace, finger_offset, ground_bond_start
 
 SIGNAL = "signal"
 GROUND = "ground"
@@ -86,11 +86,13 @@ def _row(limit: float, pitch: float) -> List[float]:
     return [first + i * pitch for i in range(count)]
 
 
-def layout(values: Dict[str, float], gap: float) -> List[Bond]:
+def layout(values: Dict[str, float], gap: float, chip_gap: Optional[float] = None) -> List[Bond]:
     """Every bond on the package, board pad to die pad.
 
-    `gap` is the board's solved CPW gap; it decides how far out the
-    ground bonds have to start at the feedline ends.
+    `gap` is the board's solved CPW gap, and `chip_gap` the die's (which has
+    its own trace, `chip_trace_width`); the wider of the two lines decides how
+    far out the ground bonds have to start at the feedline ends, and each
+    signal pad sits on its own line's centre conductor.
 
     The bare board (`no_chip`) has no die to bond to, so no bonds.
     """
@@ -108,7 +110,7 @@ def layout(values: Dict[str, float], gap: float) -> List[Bond]:
     pad_w = values.get("bond_pad_width", 0.15)
     inset = values.get("bond_pad_length", 0.3)
     trace = values.get("cpw_trace_width", 0.2)
-    clearance = values.get("via_gnd_clearance", 0.15)
+    die_trace = chip_trace(values)
 
     bonds: List[Bond] = []
 
@@ -140,13 +142,15 @@ def layout(values: Dict[str, float], gap: float) -> List[Bond]:
         pcb_x = sign * (chip_half_l + span)
         chip_x = sign * (chip_half_l - inset)
 
-        # Signal: two wires side by side, both on the centre conductor.
+        # Signal: two wires side by side, both on the centre conductor --
+        # the board's at the board end, the die's at the die end.
         offset = trace / 4.0
+        chip_offset = die_trace / 4.0
         for wire in (-1.0, 1.0):
-            bonds.append(Bond(SIGNAL, pcb_x, wire * offset, chip_x, wire * offset))
+            bonds.append(Bond(SIGNAL, pcb_x, wire * offset, chip_x, wire * chip_offset))
 
         # Ground: out beyond the gap, then every pitch toward the corner.
-        first = trace / 2.0 + gap + clearance + pad_w / 2.0
+        first = ground_bond_start(values, gap, chip_gap) + pad_w / 2.0
         for y in _frange(first, end_limit, pitch):
             for side in (-1.0, 1.0):
                 bonds.append(Bond(GROUND, pcb_x, side * y, chip_x, side * y))

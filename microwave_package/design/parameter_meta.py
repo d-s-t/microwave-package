@@ -46,6 +46,7 @@ LABELS: Dict[str, str] = {
     "wing_width": "Mounting wing width",
     # transmission line, shielding and bonds
     "cpw_trace_width": "CPW trace width",
+    "chip_trace_width": "Chip CPW trace width",
     "via_diameter": "Via diameter",
     "via_max_spacing": "Maximum via spacing",
     "via_gnd_clearance": "Via fence setback from gap",
@@ -186,7 +187,7 @@ GROUPS: List[dict] = [
                 "the lid's relief depth rather than typed.",
         "collapsed": False,
         "names": [
-            "cpw_trace_width",
+            "cpw_trace_width", "chip_trace_width",
             "via_diameter", "via_max_spacing", "via_gnd_clearance", "via_min_spacing",
             "bond_pad_length", "bond_pad_width", "bond_pad_pitch",
             "bond_height", "bond_wire_diameter",

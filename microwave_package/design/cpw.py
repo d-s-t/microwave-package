@@ -78,6 +78,9 @@ Validity
   clearance(cover_height)` outside the slot edges, and by up to 30 % when they
   stand 50 um over the slot. `solve_gap_for_z0` refuses a channel narrower
   than trace + 2 gap + 2 wall_clearance rather than extrapolate.
+* Slots up to `MAX_GAP_PER_HEIGHT` (2) substrate thicknesses are looked for. A
+  wider trace can level off just over 50 ohm and then have a root at an absurd gap
+  (0.4 mm on a 0.381 mm silicon die: 28.8 mm); that is refused as unreachable.
 * Quasi-static: no dispersion (fine well under the board's 26 GHz limit for
   these dimensions), lossless conductors, an infinitely wide substrate, and
   the vias of the fence ignored (they are in the ground plane).
@@ -130,6 +133,17 @@ _FRINGE_METAL_SCALE_MM = 0.010
 # How far outside the slot edges the lid's channel walls have to stand for the
 # cover to be a plane to the line (see `wall_clearance`).
 MIN_WALL_CLEARANCE_MM = 0.1
+
+# The widest slot the solve will look for, as a multiple of the substrate
+# thickness. Past about one thickness the coplanar grounds stop mattering to
+# the substrate half and the line is a microstrip with distant grounds, whose
+# impedance flattens out towards its microstrip value. A trace too wide for 50
+# ohm as a CPW can still have that value just above 50 ohm, and then the
+# bisection reports a root at an absurd gap: a 0.4 mm trace on the 0.381 mm
+# silicon die levels off at 50.9 ohm and "solved" to a 29 mm gap, which put the
+# die's ground 29 mm from its line. Slots up to two thicknesses are real CPWs
+# (the boards here run 0.4-1.2 thicknesses); beyond that the answer is "no".
+MAX_GAP_PER_HEIGHT = 2.0
 
 
 class ReliefChannelError(ValueError):
@@ -280,15 +294,19 @@ def min_cover_height(
     eps_r: float,
     z0: float = TARGET_Z0_OHM,
     conductor_thickness: float = 0.0,
-    max_gap: float = 0.6,
+    max_gap: Optional[float] = None,
 ) -> Optional[float]:
     """The lowest cover, in millimetres, over which a trace of this width
-    reaches `z0` with a gap of at most `max_gap` (the widest slot worth
-    drawing). None if it does not, even with the cover far away.
+    reaches `z0` with a gap of at most `max_gap` (by default the widest slot
+    the solve looks for, `MAX_GAP_PER_HEIGHT` substrate thicknesses). None if
+    it does not, even with the cover far away.
 
     A higher cover loads the line less, so the impedance a given gap gives
     only rises with it, and a bisection finds the crossing.
     """
+    if max_gap is None:
+        max_gap = MAX_GAP_PER_HEIGHT * substrate_height
+
     def reaches(height):
         return z0_gcpw(trace_width, max_gap, substrate_height, eps_r, conductor_thickness, height) >= z0
 
@@ -313,7 +331,7 @@ def solve_gap_for_z0(
     eps_r: float,
     z0: float = TARGET_Z0_OHM,
     conductor_thickness: float = 0.0,
-    gap_bounds: tuple = (1e-4, 100.0),
+    gap_bounds: Optional[tuple] = None,
     tolerance: float = 1e-9,
     *,
     cover_height: Optional[float] = None,
@@ -328,11 +346,16 @@ def solve_gap_for_z0(
     plane at the ceiling is only a fair stand-in for the channel when they do.
     Either failure raises `ReliefChannelError`; an open-top line that cannot
     reach `z0` raises a plain ValueError, as before.
+
+    The gap is looked for between 0.1 um and `MAX_GAP_PER_HEIGHT` substrate
+    thicknesses (`gap_bounds` overrides). A target that is only reached by a
+    wider slot than that is refused as unreachable, rather than solved to a
+    gap at which the line is no longer a CPW.
     """
     if channel_width is not None and cover_height is None:
         raise ValueError("channel_width needs a cover_height: a channel is a cut of some depth")
 
-    low, high = gap_bounds
+    low, high = gap_bounds if gap_bounds is not None else (1e-4, MAX_GAP_PER_HEIGHT * substrate_height)
     gap = _bisect_gap(trace_width, substrate_height, eps_r, z0, conductor_thickness,
                       low, high, tolerance, cover_height)
     if gap is None:

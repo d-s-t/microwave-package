@@ -226,7 +226,11 @@ outside the slots -- a wall over the slot pulls the line a fifth or more under
 50 ohm. The message gives the width or depth that does. A sweep of
 `route_clearence` or `route_width` re-solves the gap for every combination, so
 each stays 50 ohm. The chip's line is solved open-top: it sits in the lid's
-pocket over the die, not under the relief.
+pocket over the die, not under the relief. It also has a trace of its own,
+`chip_trace_width` (0.2 mm): the board's trace (0.4 mm on RT/duroid 5880) is no
+50 ohm CPW on a 0.381 mm silicon die, and the layout check refuses a die trace that
+is not, or a die too small for its ground bonds. The solve looks no wider than two
+substrate thicknesses and calls anything beyond that unreachable.
 
 Reading fields back from a solved project is limited by the student licence:
 a project whose solved mesh is over its element limit (the default 50 x 25 mm

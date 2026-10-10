@@ -29,7 +29,7 @@ class TestLayoutCheckUsesTheMaterial(unittest.TestCase):
     def test_the_generator_asks_with_the_runs_material(self):
         seen = []
 
-        def spy(vals, mat_pcb=None):
+        def spy(vals, mat_pcb=None, mat_chip=None):
             seen.append(mat_pcb)
             return "stop here"
 

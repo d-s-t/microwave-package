@@ -270,6 +270,13 @@ def lid_cover(values: Dict[str, float]) -> Dict[str, float]:
     return {"cover_height": depth, "channel_width": width}
 
 
+def chip_trace(values: Dict[str, float]) -> float:
+    """The width of the die's own signal trace: `chip_trace_width`, or the
+    board's `cpw_trace_width` for values that have no such parameter (runs
+    from before the die's line had a width of its own)."""
+    return values.get("chip_trace_width") or values.get("cpw_trace_width", 0.2)
+
+
 def _relief_reason(exc, values: Dict[str, float]) -> str:
     """The layout check's sentence for a lid channel the solve refused."""
     trace = values["cpw_trace_width"]
@@ -461,12 +468,65 @@ def check_screws(values: Dict[str, float], gap: float) -> Optional[str]:
     return None
 
 
-def check_layout(values: Dict[str, float], mat_pcb: Optional[str] = None) -> Optional[str]:
+def ground_bond_start(values: Dict[str, float], board_gap: float, chip_gap: Optional[float] = None) -> float:
+    """How far from the line's axis the edge of the first ground bond pad at a
+    feedline end has to be: beyond the wider of the board's and the die's CPW
+    (trace / 2 + gap), plus the setback the via fence uses. `bonds.layout` and
+    the layout check both use this, so what is placed is what was checked."""
+    clearance = values.get("via_gnd_clearance", 0.15)
+    edge = values.get("cpw_trace_width", 0.2) / 2.0 + board_gap
+    if chip_gap is not None:
+        edge = max(edge, chip_trace(values) / 2.0 + chip_gap)
+    return edge + clearance
+
+
+def check_chip_line(values: Dict[str, float], mat_chip: Optional[str], board_gap: float) -> Optional[str]:
+    """Why the die's CPW cannot be built, or None if it can: a 50 ohm gap
+    for the die's trace on the die's silicon that is a real CPW, and room
+    on the die's copper for the ground bonds beside it."""
+    from . import cpw
+
+    def get(name: str, default: float = 0.0) -> float:
+        return values.get(name, default)
+
+    trace = chip_trace(values)
+    if trace <= 0:
+        return "chip_trace_width must be positive"
+    try:
+        chip_gap = cpw.solve_gap_for_z0(
+            trace_width=trace,
+            substrate_height=get("chip_width", 0.381),
+            eps_r=cpw.permittivity_of(mat_chip or "silicon"),
+            conductor_thickness=get("chip_metal_thickness"),
+        )
+    except ValueError as exc:
+        return (
+            f"no 50 ohm CPW for a {_fmt(trace)} mm trace on the {_fmt(get('chip_width', 0.381))} mm die: "
+            f"{exc} -- reduce chip_trace_width (the die's own trace; it does not have to equal "
+            f"the board's cpw_trace_width)"
+        )
+
+    copper_half = get("chip_side") / 2.0 - CHIP_COPPER_INSET
+    pad = get("bond_pad_width")
+    need = ground_bond_start(values, board_gap, chip_gap) + pad
+    if need > copper_half:
+        return (
+            f"the die's CPW (a {_fmt(trace)} mm trace with {chip_gap * 1000.0:.0f} um gaps) and the "
+            f"board's leave the ground bonds no room: they start {need - pad:.3f} mm from the line and "
+            f"need {_fmt(pad)} mm more, but the die's copper ends {copper_half:.3f} mm out -- "
+            f"reduce chip_trace_width, or widen chip_side"
+        )
+    return None
+
+
+def check_layout(values: Dict[str, float], mat_pcb: Optional[str] = None,
+                 mat_chip: Optional[str] = None) -> Optional[str]:
     """Why this combination's layout cannot be built, or None if it can.
 
     `mat_pcb` is the run's PCB material: the CPW gap is solved from its
     permittivity, so a check made with another one refuses boards that can be
     built and accepts ones that cannot. Left out, it is the default TMM 10i.
+    `mat_chip` is the die's, likewise (default silicon).
 
     The gap is solved for the line under the lid (`lid_cover`), so a relief
     channel too shallow to reach 50 ohm, or too narrow to hold the CPW with
@@ -578,6 +638,15 @@ def check_layout(values: Dict[str, float], mat_pcb: Optional[str] = None) -> Opt
                 "pcb_length, or move the connectors out with port_space"
             )
         return check_screws(values, gap)
+
+    # The die's own line. Its gap is solved on the silicon, for its own trace
+    # (`chip_trace_width`): a trace that is a CPW on the board can be no CPW at
+    # all on a 0.381 mm die, where 0.4 mm of trace levels off just over 50
+    # ohm and the old solve put the ground 29 mm away. And the ground bonds
+    # land beside the gap, on copper, so the die has to have the room.
+    reason = check_chip_line(values, mat_chip, board_gap=gap)
+    if reason:
+        return reason
 
     # The die's opening, which everything below has to keep out of. It
     # is cut larger than the die by cavity_clearance, so "clears the

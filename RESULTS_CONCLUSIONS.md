@@ -46,7 +46,8 @@ target is the band above 20 GHz (17 GHz and up is where it starts to matter).
    way, now caught by the layout check: a 0.2 mm trace needs an 86 um gap on 5880
    and does not transmit (limit 100 um), and a lid relief channel no wider than the
    trace shorts it (limit trace + 0.1 mm).
-10. **The candidate board is clean to 20 GHz** (lid cover study, 2026-10-10): RT/duroid
+10. **The candidate board is clean to 20 GHz** (lid cover study, 2026-10-10; the "with the chip"
+   numbers here and in B19/B20 are for a die with broken copper, see "the cover-aware gap"): RT/duroid
    5880, `cpw_trace_width` 0.4 mm, `route_width` 1.0 mm, `route_clearence` 200 um, all
    else default. S21 is above -3 dB for 100 % of 2-20 GHz and 54 % of 20-26 GHz with the
    chip (75 % without it); S11 averages -12.9 dB in 2-10 GHz. It needs both the
@@ -437,7 +438,8 @@ with the default 0.5 mm channel and 40 um relief; in 10-17 GHz -10.2 dB. S21 in
 the 5880 substrate and the wide lid together; the lid alone does not rescue the
 high-permittivity board.
 
-**B19, the board with the chip** [run_20261010_093710] (5880, 0.4 mm trace, 1.0 mm channel,
+**B19, the board with the chip** [run_20261010_093710] (**the die's copper was broken in this run, see
+"the cover-aware gap", item 3**; 5880, 0.4 mm trace, 1.0 mm channel,
 200 um relief, pedestal 0.5 mm, corner screws on): clean **100 / 100 / 100 / 54 %**; S11
 in 2-10 GHz -12.9 dB on average (worst -4.1 dB), in 10-17 GHz -9.5 dB (worst -4.1 dB).
 The chip, which made every band worse on TMM 10i, costs almost nothing here: S21 stays
@@ -505,17 +507,37 @@ line going from 52.0 to 56.6 ohm between them. The default lid on 5880 (23.5 ohm
 **2. The default lid cannot carry a 50 ohm line.** With a ceiling 40 um over the trace the
 air side is so large a capacitance that no gap reaches 50 ohm: a 0.2 mm trace on TMM 10i
 is 27.6 ohm at 271 um and tops out under 32 ohm however wide the gap, a 0.4 mm trace on 5880
-under 27 ohm. It needs a relief at least 188 um deep (TMM, 0.2 mm) or 119 um (5880,
-0.4 mm) before a usable slot can reach 50 ohm at all. So the old default was a mismatched line
+under 27 ohm. It needs a relief at least 183 um deep (TMM, 0.2 mm) or 118 um (5880,
+0.4 mm) before a usable slot (up to two substrate thicknesses, 0.76 mm) can reach 50 ohm at all. So the old default was a mismatched line
 on both boards, and the layout check refuses it. `default.txt` now has `route_width` 1.2 mm and
 `route_clearence` 300 um: the default board's gap is 247 um (CPW 0.69 mm, walls 0.25 mm clear of it).
 Every number above this section in this file is for the old default lid (0.5 mm / 40 um) unless
 it says otherwise, and for the old gaps.
 
+**3. The chip-board runs B19 and B20 had a broken die.** The die's CPW gap is solved on the silicon
+for the trace, and the trace was the board's 0.4 mm. A 0.4 mm trace on the 0.381 mm silicon die is
+no CPW: its impedance levels off at 50.9 ohm at a 100 mm gap, so the bisection found a root at
+28.8 mm and the die's `copper.txt` has `track|top|-3|0|3|0|0.4` with ground regions from
+|y| = 3 to 29.5 mm (`region|top|-3,-29.50118,3,-29.50118,3,-3,-3,-3` and its mirror): no ground
+beside the line, and a metal sheet reaching 26 mm past the die into the board, lid and walls.
+**run_20261010_093710 (B19) and run_20261010_102243 (B20), and every number quoted from them
+("with the chip": 100 / 100 / 100 / 54 %, 99 % of 2-20 GHz and 61 % of 20-26 GHz, S11 -12.2 dB,
+the eigenmodes with the chip) are for that broken die and are not the candidate.** The bare-board
+runs (B13-B18) have no die and are not affected. With a 0.2 mm trace (the die's line until then) the
+gap was 0.17 mm and fine.
+The fixes (this branch): the solve looks no wider than two substrate thicknesses and refuses
+what only a wider slot reaches (the 29 mm root is now "unreachable"); the die's line has its own
+trace, `chip_trace_width` (0.2 mm by default, so nothing changes for a board that already used
+0.2 mm; the Altium generator, the bond pads and the die's gap ports use it, and the bond wires
+run from the board's signal pads to the die's); and the layout check refuses a die trace that is no
+CPW on its silicon, or a die with no room for the ground bonds beside its line.
+**Needs a run to confirm:** the Altium script change (three lines, `ChipTrace`) has not been run.
+
 **The rules the layout check now applies** (`constraints.check_layout`, messages name the number
 to change):
-- The relief has to be deep enough for the trace to reach 50 ohm at a slot of at most 0.6 mm:
-  `route_clearence` at least 119 um for the candidate, 188 um for the default board.
+- The relief has to be deep enough for the trace to reach 50 ohm at a slot of at most two substrate
+  thicknesses (0.76 mm): `route_clearence` at least 118 um for the candidate, 183 um for the default
+  board.
 - The channel has to be at least trace + 2 gaps + 2 x max(0.1 mm, depth/2) wide, the gap being
   the solved one. A wall over a slot pulls the line down by up to a third (field solve, 50 um over the
   slot edge); out at that clearance it moves it under 1.5 %. The candidate needs 0.79 mm, the
@@ -548,7 +570,7 @@ chip). What caused each notch, in the order they were found:
 | 2-10 GHz mismatch on 5880 | the lid covers the line (CPW 50 ohm solve ignores it) | wide lid channel, 200 um relief |
 | 0.5 mm trace in the default lid, and 0.2 mm trace on 5880 | the lid shorts the trace; a gap under 100 um | now refused by the layout check |
 
-**B20, the validation of the candidate with the chip** [run_20261010_102243] (both solves; 20 eigenmodes at
+**B20, the validation of the candidate with the chip** [run_20261010_102243] (**same broken die as B19**; both solves; 20 eigenmodes at
 delta f 1 % and up to 8 passes; the driven sweep 2-26 GHz on a 0.1 GHz grid (241
 points) at delta S 0.02 and up to 8 passes; fine windows at every mode, 1717 points in all).
 The eigenmode step: the box modes are where they were with the loose settings (7.18, 9.95,

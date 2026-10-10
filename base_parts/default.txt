@@ -66,7 +66,9 @@
 
 "distortion_y" = 0.8
 
-"cpw_trace_width"= 0.2	' width of the CPW signal trace (the gap is solved for 50 ohm, not typed)
+"cpw_trace_width"= 0.2	' width of the CPW signal trace on the PCB (the gap is solved for 50 ohm, not typed)
+
+"chip_trace_width"= 0.2	' width of the CPW signal trace on the die, with its own gap solved for 50 ohm on the silicon; a width that suits the PCB (0.4 mm on RT/duroid 5880) is not a CPW on a 0.381 mm die, so the die's does not follow cpw_trace_width
 
 "via_diameter"= 0.3	' finished diameter of the stitching and shielding vias
 
