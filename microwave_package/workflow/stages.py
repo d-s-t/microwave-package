@@ -241,7 +241,9 @@ class _AltiumStage:
         # The same boards as a combination already drawn: copy them. The
         # constraints are still asked, because they are about the values.
         drawn = self._drawn.get(fingerprint) if fingerprint else None
-        if drawn and not constraints.check_layout(values) and altium_generation.copy_layout(
+        if drawn and not constraints.check_layout(
+            values, (self._materials or {}).get("mat_pcb")
+        ) and altium_generation.copy_layout(
             run.combo_dir(drawn), run.combo_dir(combo_id)
         ):
             run.update_combo(combo_id, altium_status="done", altium_error=None,
