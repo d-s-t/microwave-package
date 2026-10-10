@@ -218,8 +218,8 @@ low-permittivity board the ceiling is most of the capacitance. The 50 ohm gap
 is therefore solved for the covered line (`design/cpw.py`: conformal mapping
 with a ceiling, and the sidewalls of the copper as a parallel-plate term;
 `base_parts/cpw_fd_check.py` solves the real cross-section as a 2-D field
-problem to check it against, and `tests/test_cpw_field_check.py` keeps them
-together). The layout check refuses a lid that cannot carry the line: a relief
+problem to check it against, `base_parts/cpw_bem_check.py` is a second, gridless
+solver for the open top, and `tests/test_cpw_field_check.py` keeps them together). The layout check refuses a lid that cannot carry the line: a relief
 so shallow that the line stays under 50 ohm at any gap, or a channel that does
 not clear the CPW (trace + 2 gaps) with its walls 0.1 mm, or half the depth,
 outside the slots -- a wall over the slot pulls the line a fifth or more under

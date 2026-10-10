@@ -504,6 +504,35 @@ B17 is the HFSS side of the first three rows: the candidate at the old fixed 111
 200 and 300 um, read S11 -14.4 dB and -12.5 dB on average in 2-10 GHz. The field solve has the
 line going from 52.0 to 56.6 ohm between them. The default lid on 5880 (23.5 ohm) read -4.8 dB.
 
+**Which one is wrong, the field solve or the old formula?** Three solvers on the same open-top,
+35 um geometry (ohm); `base_parts/cpw_bem_check.py` has no grid at all (charge on the conductor
+surfaces, the exact Green's function of the slab on its ground plane), and
+`tests/test_cpw_field_check.py` keeps all of this:
+
+| Board, trace, gap | Boundary element (no grid) | Finite element | New formula | Old formula |
+|---|---|---|---|---|
+| 5880, 0.4 mm, 111 um | 62.6 | 62.4 | 61.8 | **50.0** |
+| 5880, 0.5 mm, 127 um | 59.7 | 59.5 | 58.9 | **50.1** |
+| TMM 10i, 0.2 mm, 271 um | 55.0 | 54.9 | 54.5 | **50.0** |
+| 5880, 0.4 mm, 111 um, 0.5 um metal | 71.2 | 70.9 | 71.2 | 71.5 (the old formula's thin limit) |
+
+With thin metal all four agree to 0.5 %, so the backing plane, the finite ground width and the
+substrate are not the difference; the two independent numerical solvers agree with each other to
+0.3 % with 35 um copper, and the old formula is 20-25 % away. The disagreement is the
+conductor-thickness term alone: the old correction widens a 0.4 mm trace by 83 um and
+narrows a 111 um slot by as much, a first-order formula applied where the correction is three
+quarters of the slot (it refuses a 57 um gap outright, "closes the slot"). The new term is the
+parallel-plate field between the sidewalls, which a solve of a thick conductor must contain.
+The covered case rests on the finite-element solve alone so far (thin metal under a cover
+agrees with the standard covered conformal map to 0.6-1.4 %); an AEDT 2D Extractor check
+is still to do.
+
+Direction of the change: a cover lowers Z, so under the new model it needs a *wider* gap than
+the same line open top, and it does (57 um open top, 71 um under a 300 um relief, 94 um under
+200 um). The old 111 um is wider than all of them because the old open-top number was too wide
+by the thickness error. What B17 had was a 52 ohm line (200 um relief) and a 56.6 ohm line
+(300 um) by the field solve, 51.8 and 56.1 ohm by the formula; the old model's own belief was 50.
+
 **2. The default lid cannot carry a 50 ohm line.** With a ceiling 40 um over the trace the
 air side is so large a capacitance that no gap reaches 50 ohm: a 0.2 mm trace on TMM 10i
 is 27.6 ohm at 271 um and tops out under 32 ohm however wide the gap, a 0.4 mm trace on 5880
@@ -532,6 +561,15 @@ trace, `chip_trace_width` (0.2 mm by default, so nothing changes for a board tha
 run from the board's signal pads to the die's); and the layout check refuses a die trace that is no
 CPW on its silicon, or a die with no room for the ground bonds beside its line.
 **Needs a run to confirm:** the Altium script change (three lines, `ChipTrace`) has not been run.
+
+**The 100 um minimum gap (`MIN_CPW_GAP`) is untouched, and the candidate is below it.** Solved under
+its lid the candidate (0.4 mm, 1.0 mm / 200 um) has a 94 um gap, so `check_layout` refuses it; the
+0.5 mm trace under the default lid (106 um) is the 5880 board that passes. The limit came from a fab
+reading (4 mil) and from the board that did not transmit, and that board was *not* a mismatch: by the
+field solve the B12/B15 boards (5880, 0.2 mm trace, 86 um gap, lids 0.5 mm and 0.8 mm x 40 um) were
+37.9 ohm lines, while B13 (a 23.5 ohm line) transmitted. So the cause of the 86 um failure is still not
+found and nothing is known about gaps between 86 and 111 um; the HFSS run of the candidate at 94 um
+(and 71 um at 300 um relief) is what would say, and the limit stays at 100 um until it has.
 
 **The rules the layout check now applies** (`constraints.check_layout`, messages name the number
 to change):
