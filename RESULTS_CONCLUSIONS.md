@@ -51,8 +51,9 @@ target is the band above 20 GHz (17 GHz and up is where it starts to matter).
    else default. S21 is above -3 dB for 100 % of 2-20 GHz and 54 % of 20-26 GHz with the
    chip (75 % without it); S11 averages -12.9 dB in 2-10 GHz. It needs both the
    substrate and the wide lid channel: 5880 with the default lid is 38 / 99 / 72 / 2 %
-   and TMM 10i with the wide lid is 69 / 43 / 17 / 4 %. Read at a 0.25 GHz step with a
-   loose mesh; a tighter validation run (B20) is in progress.
+   and TMM 10i with the wide lid is 69 / 43 / 17 / 4 %. On a finer 0.1 GHz grid and a tighter mesh (B20, with the chip) it is 99 % of
+   2-20 GHz and 61 % of 20-26 GHz: three narrow notches at box modes (16.94, 18.58 and 19.20
+   GHz, down to -9.5 dB) and a cluster at 24.6-25.8 GHz (down to -42 dB) remain.
 
 ## How much to trust it
 
@@ -482,20 +483,29 @@ chip). What caused each notch, in the order they were found:
 
 **B20, the validation of the candidate with the chip** [run_20261010_102243] (both solves; 20 eigenmodes at
 delta f 1 % and up to 8 passes; the driven sweep 2-26 GHz on a 0.1 GHz grid (241
-points) at delta S 0.02 and up to 8 passes; fine windows at every mode). **In progress when
-this was written.** The eigenmode step is done: the box modes are where they were with the
-loose settings (7.18, 9.95, 12.38, 13.17, 13.49, 15.12, 15.54, 16.94, 17.08, 18.58 and
-19.27 GHz), and the chip adds lower-Q modes (Q 370-860) at 3.21 (twice), 5.67, 8.72,
-10.99, 13.74, 16.37 and 19.12 GHz; 20 modes reach only 19.3 GHz. The driven step is on the
-worker. Whether "100 % clean to 20 GHz" survives the finer grid and the tighter mesh is the
-question it answers; its result goes into this file in a follow-up.
+points) at delta S 0.02 and up to 8 passes; fine windows at every mode, 1717 points in all).
+The eigenmode step: the box modes are where they were with the loose settings (7.18, 9.95,
+12.38, 13.17, 13.49, 15.12, 15.54, 16.94, 17.08, 18.58 and 19.27 GHz), and the chip adds
+lower-Q modes (Q 370-860) at 3.21 (twice), 5.67, 8.72, 10.99, 13.74, 16.37 and 19.12 GHz;
+20 modes reach only 19.3 GHz. The S-parameters: on the 0.1 GHz grid S21 is above -3 dB for
+**99 % of 2-20 GHz and 61 % of 20-26 GHz** (100 / 99 / 98 / 62 % of the four bands, counting
+the fine-window points too), against 100 / 100 / 100 / 54 % at 0.25 GHz and a looser mesh. So
+"clean to 20 GHz" holds as "almost clean": the finer look finds three narrow notches at box
+modes that the coarse grid stepped over, **16.944 GHz (-6.8 dB), 18.581 GHz (-7.3 dB) and
+19.202 GHz (-9.5 dB)**, each within 6 MHz of an eigenmode (Q 1700, 10500 and 2500), and the
+worst S21 from 2 to 10 GHz is -2.8 dB (at the 9.947 GHz mode). S11 averages -12.2 dB in 2-10
+GHz (worst -3.9), -9.6 dB in 10-17 GHz and -10.6 dB in 17-20 GHz. In 20-26 GHz the notches
+are a cluster from 24.6 to 25.8 GHz (-17 to -23 dB, and **-42.5 dB at 25.8 GHz**, deeper than
+the -27 dB the coarse grid saw) and a weak one at 22.8 GHz (-3.8 dB); the rest of the band is
+clean. Perfect-E walls exaggerate how deep and narrow box-mode notches are (see the
+finite-conductivity section).
 
 **Open questions, none settled by the runs so far**
-1. Does the 100 % survive the finer look (B20)? A 0.25 GHz step can miss a notch only a
-   few tens of MHz wide, and the box modes at 7.18, 9.95, 13.17, 17.08 and 18.58 GHz
-   have Q of 800-10500.
-2. The notch near 25.75 GHz (-21 dB, bare; -27 dB with the chip) is not explained on
-   5880: no eigenmode run was made above 20 GHz for it.
+1. Answered by B20: almost. Three narrow notches at box modes (16.94, 18.58, 19.20 GHz, down
+   to -9.5 dB) show on the 0.1 GHz grid; the rest of 2-20 GHz stays above -3 dB. Whether the
+   real box, which is not perfect E, makes them shallower is not checked (question 3).
+2. The cluster of notches from 24.6 to 25.8 GHz (-42.5 dB at 25.8 GHz in B20) is not
+   explained on 5880: no eigenmode run was made above 20 GHz for it.
 3. The box walls were perfect E throughout. Depth, and with it the band's cleanliness, was
    not checked with a finite-conductivity box (1e8 S/m) on the candidate; on TMM 10i that
    changed Q by 1.3-2.5x and positions by about 1 %.
@@ -505,9 +515,11 @@ question it answers; its result goes into this file in a follow-up.
 5. The 30 mm bare board gave an identical S11 and S21 at all 97 frequencies; the cause was
    not found (it was not the lid channel width, which is a trace + 0.3 mm there, and the
    saved model looked sound).
-6. Tolerances: one combination per setting was run; a trace width, a permittivity
-   or a relief depth a little off was not tried (the 0.2 mm and 0.5 mm traces, one
-   either side, failed for the two reasons above).
+6. Tolerances: one combination per setting was run; a trace width, a permittivity or a relief
+   depth a little off was not tried. The trace widths either side of 0.4 mm that were run
+   (0.2 and 0.5 mm) failed only for the reasons found: the 0.2 mm trace's 86 um gap is under
+   the 100 um limit, and the 0.5 mm trace failed only with the default 0.5 mm lid channel
+   (with a 0.8 mm channel it transmits: 28 / 79 / 100 / 0 %, B15).
 7. Board length 60 mm on the default lid cleaned 29 % of 20-26 GHz; it was not tried with
    the wide lid on 5880.
 
