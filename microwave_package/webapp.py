@@ -20,6 +20,7 @@ from __future__ import annotations
 import datetime as _dt
 import glob
 import itertools
+import json
 import logging
 import os
 import re
@@ -403,7 +404,7 @@ def _solve_settings_from_form(form) -> dict:
 
     settings = {"solution_type": solution_type, **registry.all_defaults()}
     # A pair solves both types, so both types' controls count.
-    both = "run_both" in form
+    both = "run_both" in form and solution_type != "LineImpedance"
     settings["run_both"] = both
     fields = [f for t in registry.solution_types() for f in registry.get(t["value"]).all_fields]         if both else registry.get(solution_type).all_fields
     for field in fields:
@@ -799,6 +800,7 @@ def run_status(run_id):
         run=run,
         run_name=_run_name(run),
         pair_note=_pair_note(run),
+        line_checks=_line_checks(run),
         eigenmodes=companion.eigenmode_table(run),
         has_fine=df is not None and plotting.has_fine_data(df),
         views=plotting.VIEWS,
@@ -829,6 +831,25 @@ def run_status(run_id):
         # rows it otherwise buries the results underneath it.
         combos_open=not run.is_complete,
     )
+
+
+def _line_checks(run) -> list:
+    """The verdict of each combination of a line-impedance run, for its page:
+    pass or fail, the impedance range, and the gap that was solved against the
+    gap the analytic calculation gives. `[]` for any other kind of run."""
+    if registry.solution_type_of(run.analysis_settings) != "LineImpedance":
+        return []
+    checks = []
+    for combo_id in run.state.get("combos", {}):
+        path = os.path.join(run.combo_path(combo_id), "line_check.json")
+        try:
+            with open(path, encoding="utf-8") as handle:
+                verdict = json.load(handle)
+        except (OSError, ValueError):
+            continue
+        verdict["combo_id"] = combo_id
+        checks.append(verdict)
+    return checks
 
 
 def _pair_note(run) -> Optional[str]:

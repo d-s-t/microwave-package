@@ -117,6 +117,24 @@ class Solver:
     # project is copied into -- every task is a "run_setups" task now, so
     # this is what says at a glance which kind of run one came from.
     task_id_prefix: str = "analyze"
+    # What HFSS itself calls this solution type, when it is not `value`: a
+    # solver that is a different QUESTION put to the same kind of design
+    # (the line-impedance check is a driven-modal solve of a short section)
+    # still builds, queues and reopens a "DrivenModal" design.
+    hfss_solution_type: Optional[str] = None
+    # `build_model(hfss, combo_id, combo_dir, dimensions_txt, run, settings, log)`
+    # draws the whole model, ports and setup included, and returns
+    # `(object_names, port_names)`. When a solver has one it REPLACES the
+    # package: no STEP import, no board rebuild (see model_builder.build_model).
+    build_model: Optional[Callable[..., Any]] = None
+    # Whether the model comes from the SolidWorks STEP files. A solver that
+    # draws its own geometry says False and the run never starts SolidWorks.
+    needs_solid: bool = True
+
+    @property
+    def hfss_type(self) -> str:
+        """The solution type to open the design with and to queue."""
+        return self.hfss_solution_type or self.value
 
     @property
     def all_fields(self) -> List[Dict[str, Any]]:

@@ -492,7 +492,9 @@ def create_run(sweep_params, analysis_settings: dict, parameter_defaults=None) -
     time would mean a sweep's worth of geometry built for projects that
     can never be given ports. Raises ValueError with the reason.
     """
-    both = analysis_settings.get("run_both")
+    # A line-impedance check is its own question, not a half of a pair.
+    both = (analysis_settings.get("run_both")
+            and registry.solution_type_of(analysis_settings) != "LineImpedance")
     types = [EIGENMODE, DRIVEN_MODAL] if both else [registry.solution_type_of(analysis_settings)]
     port_counts = run_manager.parameter_values_for("port_count", sweep_params, parameter_defaults)
     for solution_type in types:

@@ -17,3 +17,5 @@ run that does not say which it wants is still one.
 from . import registry  # noqa: F401  (re-exported: `from ..hfss import registry`)
 from . import eigenmode  # noqa: F401  (registers itself on import -- and first)
 from . import driven  # noqa: F401  (registers itself on import)
+
+from . import line  # noqa: F401  (registers itself on import)

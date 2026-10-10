@@ -72,7 +72,8 @@ def postprocess_task(
         if not setup_names:
             raise RuntimeError("Analyzed project has no setup to post-process.")
 
-        solver = registry.get(task.get("solution_type"))
+        solver = registry.get(
+            (task.get("metadata") or {}).get("solver") or task.get("solution_type"))
         rows = solver.read_results(hfss, setup_names, task, task["output_dir"], log)
 
         # `rows`, not `modes`: a driven run's rows are frequency points,
@@ -212,7 +213,8 @@ def task_from_run(run, combo_id: str, analysis_settings: dict) -> Dict[str, Any]
         "task_id": combo["task_id"],
         "project_file": model_builder.project_file_for(run, combo_id),
         "output_dir": run.combo_dir(combo_id),
-        "solution_type": solver.value,
+        "solution_type": solver.hfss_type,
+        "metadata": {"solver": solver.value},
         "objects": combo.get("object_names") or {},
         "post_processing": solver.post_processing_ops(analysis_settings),
     }
