@@ -1007,27 +1007,36 @@ def _describe(report: Dict[str, str], what: str) -> str:
 def export_manufacturing(pcbdoc: str, out_dir: str, name: str,
                          log: Callable[[str], None] = logger.info) -> Dict[str, str]:
     """Have Altium write the fabrication formats that only it writes --
-    ODB++, IPC-2581 and a STEP of the bare board -- for `pcbdoc`.
+    ODB++, IPC-2581 and a STEP of the bare board, and its own Gerber/drill
+    set -- for `pcbdoc`, by running an Output Job in a throwaway project.
 
-    The files come out as `<name>_pcb_odb.zip`, `<name>_pcb_ipc2581.xml`
-    and `<name>_pcb.STEP` in `out_dir`. Returns {format: "ok" or the
-    reason}; raises RuntimeError if the script did not run at all. A
-    format Altium could not write is reported, not fatal: the rest of the
-    set is still worth having.
+    Finished files land in `out_dir` as `<name>_pcb_odb.zip`,
+    `<name>_pcb_ipc2581.xml`, `<name>_pcb.STEP` and `<name>_pcb_altium_fab.zip`
+    (Altium's own Gerber and drill files, mask, paste and legend included).
+    Returns {format: "ok" or the reason}; raises RuntimeError if the script
+    did not run at all. A format Altium could not write is reported, not
+    fatal: the rest of the set is still worth having.
     """
     from .. import paths
+    from . import outjob
 
     os.makedirs(out_dir, exist_ok=True)
     work = os.path.join(out_dir, "_altium_export")
     shutil.rmtree(work, ignore_errors=True)
-    os.makedirs(work)
-    # Altium reads a board it has not got open from a copy of its own:
-    # the document is closed again afterwards, and this keeps it away
-    # from the combination's file.
+    os.makedirs(os.path.join(work, "out"))
+    # Altium opens a project of its own making, around a copy of the
+    # board: the document is closed again afterwards, and this keeps the
+    # combination's file out of it.
     board_copy = os.path.join(work, "package.PcbDoc")
     shutil.copyfile(pcbdoc, board_copy)
+    project = os.path.join(work, "export.PrjPcb")
+    job = os.path.join(work, "export.OutJob")
+    with open(project, "w", encoding="utf-8", newline="") as f:
+        f.write(outjob.project_text("package.PcbDoc", "export.OutJob"))
+    with open(job, "w", encoding="utf-8", newline="") as f:
+        f.write(outjob.text(os.path.join(work, "out")))
     write_params(str(paths.ALTIUM_MANUFACTURING_PARAMS), {}, extra={
-        "pcb": board_copy, "work_dir": work, "name": name,
+        "pcb": board_copy, "project": project, "outjob": job,
     })
     with _one_at_a_time(log):
         ok, report = run_script(
@@ -1037,36 +1046,62 @@ def export_manufacturing(pcbdoc: str, out_dir: str, name: str,
         if not ok:
             raise RuntimeError(_describe(report, "Altium fabrication export"))
 
-        results: Dict[str, str] = {}
-        odb = os.path.join(work, "odb")
-        if os.path.isdir(odb) and os.listdir(odb):
-            _zip_tree(odb, os.path.join(out_dir, f"{name}_pcb_odb.zip"))
-            results["odb"] = "ok"
-        else:
-            results["odb"] = report.get("odb", "not written")
-        for key, produced, final in (
-            ("ipc2581", "ipc2581.xml", f"{name}_pcb_ipc2581.xml"),
-            ("step", "board.STEP", f"{name}_pcb.STEP"),
-        ):
-            source = os.path.join(work, produced)
-            if os.path.isfile(source) and os.path.getsize(source) > 0:
-                os.replace(source, os.path.join(out_dir, final))
-                results[key] = "ok"
-            else:
-                results[key] = report.get(key, "not written")
-    shutil.rmtree(work, ignore_errors=True)
+    results = collect_outputs(os.path.join(work, "out"), out_dir, name)
     for key, state in results.items():
         log(f"Altium {key}: {state}")
+    shutil.rmtree(work, ignore_errors=True)
     return results
 
 
-def _zip_tree(folder: str, destination: str) -> None:
+def collect_outputs(produced: str, out_dir: str, name: str) -> Dict[str, str]:
+    """Sort what the Output Job wrote under `produced` into the named
+    files in `out_dir`. Returns {format: "ok" or "not written"}."""
     import zipfile
 
-    temporary = destination + ".part"
-    with zipfile.ZipFile(temporary, "w", zipfile.ZIP_DEFLATED) as archive:
-        for root, _dirs, files in os.walk(folder):
-            for file in files:
-                full = os.path.join(root, file)
-                archive.write(full, os.path.relpath(full, folder))
-    os.replace(temporary, destination)
+    found = {"step": [], "ipc2581": [], "odb": [], "fab": []}
+    for root, _dirs, files in os.walk(produced):
+        for file in files:
+            full = os.path.join(root, file)
+            lower = file.lower()
+            relative = os.path.relpath(full, produced).lower()
+            if lower.endswith((".step", ".stp")):
+                found["step"].append(full)
+            elif lower.endswith(".xml") and "ipc" in (relative + _head(full)).lower():
+                found["ipc2581"].append(full)
+            elif "odb" in relative and not lower.endswith(".xml"):
+                found["odb"].append(full)
+            else:
+                found["fab"].append(full)
+
+    results: Dict[str, str] = {}
+    for key, final in (("step", f"{name}_pcb.STEP"), ("ipc2581", f"{name}_pcb_ipc2581.xml")):
+        if found[key]:
+            shutil.copyfile(max(found[key], key=os.path.getsize), os.path.join(out_dir, final))
+            results[key] = "ok"
+        else:
+            results[key] = "not written"
+    for key, final, folder_hint in (("odb", f"{name}_pcb_odb.zip", "odb"),
+                                    ("fab", f"{name}_pcb_altium_fab.zip", None)):
+        files = found[key]
+        # an ODB++ output that is already one archive is passed through
+        if key == "odb" and len(files) == 1 and zipfile.is_zipfile(files[0]):
+            shutil.copyfile(files[0], os.path.join(out_dir, final))
+            results[key] = "ok"
+        elif files:
+            temporary = os.path.join(out_dir, final + ".part")
+            with zipfile.ZipFile(temporary, "w", zipfile.ZIP_DEFLATED) as archive:
+                for full in files:
+                    archive.write(full, os.path.relpath(full, produced))
+            os.replace(temporary, os.path.join(out_dir, final))
+            results[key] = "ok"
+        else:
+            results[key] = "not written"
+    return results
+
+
+def _head(path: str, size: int = 400) -> str:
+    try:
+        with open(path, "r", encoding="utf-8", errors="ignore") as f:
+            return f.read(size)
+    except OSError:
+        return ""

@@ -237,6 +237,34 @@ python -m microwave_package.fetch_vendor
 Skip it and everything else still works; the 3D view button just stays
 hidden.
 
+### Manufacturing files
+
+The **Manufacturing files** button (on a combination's row, and in its
+window) opens a panel listing everything a machine shop and a PCB fab
+need, grouped Box / Lid / PCB, each with its size and a short description.
+A file already made has a **Download** link; **Generate missing** makes the
+rest of a group in the background and the panel shows its progress. Files
+land in `runs/<run>/models/<combo>/manufacturing/`.
+
+| Group | Files |
+|---|---|
+| Box, Lid | STEP (already made by the run), SLDPRT with the combination's equations applied, dimensioned drawing PDF |
+| PCB (board only, never the chip) | Altium project zip (`.PcbDoc` + `.PrjPcb`), Gerber RS-274X, Excellon drill (plated and non-plated), ODB++, IPC-2581, Altium's own Gerber/drill set, board STEP, fabrication drawing PDF |
+
+The SLDPRT is a *copy* saved from `base_parts/*.SLDPRT` linked to the
+combination's own `dimensions.txt`; the base parts are never saved. The
+Gerber, drill, fab drawing and project zip are written by Python from the
+combination's `copper.txt`, so they need no program; ODB++, IPC-2581 and
+the board STEP come from an Altium Output Job
+(`design/outjob.py`, `base_parts/altium/ExportManufacturing.pas`). A
+combination drawn before this feature kept no `package.PcbDoc`, so
+generating its PCB files redraws the board in Altium first.
+
+Generating uses SolidWorks and Altium, so it is refused while a run is
+using them. Routes: `GET .../combos/<combo>/manufacturing.json`,
+`POST .../manufacturing/generate` (`{"group": "box"|"lid"|"pcb"}`),
+`GET .../manufacturing/<key>`.
+
 ### Command line
 
 ```
