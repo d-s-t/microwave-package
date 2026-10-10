@@ -38,6 +38,14 @@ target is the band above 20 GHz (17 GHz and up is where it starts to matter).
    a 600 um setback makes 17-20 GHz half clean (from 1 %); a lid relief of 200 um
    makes 10-17 GHz 75 % clean (from 50 %). Combining them is worse than either, and
    no set tried cleans 20-26 GHz.
+9. **A low-permittivity substrate removes those notches** (substrate study, 2026-10-10).
+   On RT/duroid 5880 with a 0.4 mm trace (gap 111 um) the bare board is clean for
+   99 % of 10-17 GHz and 72 % of 17-20 GHz (TMM 10i: 50 % and 1 %), and every
+   remaining notch is a box mode, which board size can move. 20-26 GHz is 2 % clean:
+   the 20.04 and 20.07 GHz box modes and a weak notch at 25.75 GHz. The traps on the
+   way, now caught by the layout check: a 0.2 mm trace needs an 86 um gap on 5880
+   and does not transmit (limit 100 um), and a lid relief channel no wider than the
+   trace shorts it (limit trace + 0.1 mm).
 
 ## How much to trust it
 
@@ -340,6 +348,57 @@ removing the chip, and a different substrate or thinner board for the lattice mo
 Next: the 30 mm degenerate solve and board lengths between 30 and 40 mm; the
 substrate (thickness and permittivity set the lattice modes); and field plots of the
 Q 550 mode on a coarser mesh to say where it lives.
+
+## Box study, substrate: RT/duroid 5880 instead of TMM 10i (2026-10-10)
+
+The lever suggested by the 25 GHz result: the via-lattice and launch notches
+are resonances of the substrate, which scale with its permittivity (TMM 10i
+9.8, RT/duroid 5880 2.2). Same bare 50 x 25 mm board, perfect-E box, corner
+screws, 2-26 GHz, 97 broad points, loose convergence. The CPW gap is solved
+for 50 ohm on the substrate, so it changes with it (trace 0.2 mm: 0.271 mm gap
+on TMM, 0.086 mm on 5880; 0.4 mm: 0.111 mm; 0.5 mm: 0.127 mm).
+
+**B12, the default 0.2 mm trace** [run_20261010_040124] and **B15** [run_20261010_071748]:
+no transmission (S11 -0.02 dB, S21 -91 dB at 2 GHz) even with the lid channel
+widened to 0.8 mm. The 86 um gap is the only difference to a working board, so
+it is refused by the layout check from now on (minimum 100 um). Cause not
+found beyond that; the model has the right material (eps 2.2, tand 0.0009) and
+the gap is drawn in the copper.
+
+**B13, 0.4 and 0.5 mm traces** [run_20261010_043508]. At 0.4 mm (gap 111 um,
+manufacturable) S21 is clean for **41 / 100 / 75 / 8 %** of 2-10 / 10-17 / 17-20 /
+20-26 GHz (TMM 10i baseline: 80 / 50 / 1 / 0). At 0.5 mm no transmission: the
+lid's relief channel is route_width = 0.5 mm wide, exactly the trace, so the lid
+lands on the trace edges and shorts it. **B15** confirms it: with route_width
+0.8 mm the 0.5 mm trace transmits, **28 / 79 / 100 / 0 %** (17-20 GHz entirely clean).
+The layout check now refuses a channel less than 0.1 mm wider than the trace.
+
+**B14, 5880 / 0.4 mm trace, eigenmodes and S21** [run_20261010_053717] (20 modes,
+fine windows at each mode): clean **38 / 99 / 72 / 2 %**. Every notch has an
+eigenmode within 41 MHz: 7.195 (mode 7.185 GHz, Q 1224), 9.945 (9.956),
+13.19 (13.175), 18.579 (18.581), 19.233 (19.274) and 20.041 GHz (20.071), plus one at
+6.0 GHz and the shallow ones at 22.5 and 25.75 GHz (-27 dB). The deep notches that
+were not box modes on TMM 10i (16.75 and about 25 GHz) are gone.
+
+**What moved, against 1/sqrt(eps).** The modes of the air cavity do not depend on the
+substrate and did not move: 7.18 / 7.19, 9.95 / 9.96, 12.38 / 12.39, 13.17 / 13.18,
+13.49 / 13.50, 15.13 / 15.13, 15.55 / 15.55, 16.95 / 16.96, 17.08 / 17.09 and
+18.58 / 18.58 GHz (TMM 10i / 5880), each within 0.01 GHz. The modes that live in the
+substrate moved up: the lowest from 2.38 to 3.04 GHz (x1.28) and the next from
+3.76 to 4.96 GHz (x1.32), and modes at 6.55, 8.30, 12.91, 13.89 and 17.41 GHz on TMM are
+replaced by others at different places. A substrate mode moves as 1/sqrt(eps_eff)
+with eps_eff a mix of the substrate and the air above it, so the factor is less than
+sqrt(9.8 / 2.2) = 2.1; 1.3 is what these two give. A notch that does not move is a
+box or air mode, and these are what remains on 5880.
+
+**Candidate design so far** (bare board, 50 x 25 mm, perfect E): RT/duroid 5880,
+`cpw_trace_width` 0.4 mm (gap 111 um), everything else default: clean
+38 / 99 / 72 / 2 % of 2-10 / 10-17 / 17-20 / 20-26 GHz, the best of the study.
+With `route_width` 0.8 mm and a 0.5 mm trace (gap 127 um) 17-20 GHz is fully clean
+and 10-17 GHz 79 %, but 2-10 GHz only 28 %. What is left are box modes, which board
+size moves (7.19, 9.96 and 13.18 GHz in 2-17 GHz, and 20.04 and 20.07 GHz at the bottom
+of the 20-26 GHz band) and the weak notch at 22.5 and 25.75 GHz. Not yet tried on
+5880: the chip, the via step and the relief, the board length.
 
 ## What to do next
 
