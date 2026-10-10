@@ -34,7 +34,8 @@ class TestPcbPermittivity(unittest.TestCase):
     def test_the_gap_orders_with_permittivity_across_the_rogers_boards(self):
         order = ("Rogers RT/duroid 5880 (tm)", "Rogers RO3003 (tm)",
                  "Rogers RO4003 (tm)", "Rogers TMM 10i (tm)")
-        gaps = [cpw.solve_gap_for_z0(0.4, 0.381, cpw.permittivity_of(m), conductor_thickness=0.035)
+        # 0.3 mm: a 0.4 mm trace is no 50 ohm CPW on TMM 10i at any slot worth drawing
+        gaps = [cpw.solve_gap_for_z0(0.3, 0.381, cpw.permittivity_of(m), conductor_thickness=0.035)
                 for m in order]
         self.assertEqual(gaps, sorted(gaps), dict(zip(order, gaps)))
 

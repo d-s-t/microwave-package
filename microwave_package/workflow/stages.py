@@ -242,7 +242,7 @@ class _AltiumStage:
         # constraints are still asked, because they are about the values.
         drawn = self._drawn.get(fingerprint) if fingerprint else None
         if drawn and not constraints.check_layout(
-            values, (self._materials or {}).get("mat_pcb")
+            values, (self._materials or {}).get("mat_pcb"), (self._materials or {}).get("mat_chip")
         ) and altium_generation.copy_layout(
             run.combo_dir(drawn), run.combo_dir(combo_id)
         ):

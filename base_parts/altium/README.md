@@ -222,9 +222,12 @@ from `default.txt` on every run and are not tracked in git. Do not hand-edit
 them — change `default.txt` or the generator.
 
 **The CPW gap is never a drawn input.** It is solved for 50 Ω in
-`eigen_mode_analyze/cpw.py`, per substrate, and arrives as `pcb_cpw_gap` and
-`chip_cpw_gap`. Copper thickness matters here more than it looks: 35 µm across a
-~112 µm gap moves the 50 Ω gap to 271 µm, so ignoring it lands you at 35 Ω.
+`microwave_package/design/cpw.py`, per substrate, and arrives as `pcb_cpw_gap` and
+`chip_cpw_gap`. Copper thickness and the lid matter here more than they look: on
+TMM 10i with a 0.2 mm trace the gap is 112 µm for zero-thickness metal, 183 µm with
+35 µm of copper (ignoring it lands you at 44 Ω), and 247 µm with the default lid's
+ceiling 0.3 mm over the trace. The board's gap is solved for that covered line; the
+chip's, which sits in the lid's pocket over the die, is open-top.
 
 **The launch is the vendor's own footprint, placed from the vendor's own
 library.** Not four pads standing where the lands are — a real component, with
