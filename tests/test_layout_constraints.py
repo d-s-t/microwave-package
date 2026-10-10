@@ -68,7 +68,7 @@ class TestCheckLayout(unittest.TestCase):
     def test_unreachable_impedance_is_reported_as_such(self):
         """A trace too wide for the substrate is microstrip-dominated and
         has no 50 ohm gap. Caught here rather than raising mid-sweep."""
-        values = dict(defaults(), cpw_trace_width=0.5)
+        values = dict(defaults(), cpw_trace_width=0.5, route_width=0.8)
         reason = constraints.check_layout(values)
         self.assertIn("50 ohm", reason)
 

@@ -245,6 +245,8 @@ CHIP_COPPER_INSET = 0.15
 # comes out a hair over 0.6 in floating point, so 0.4 mm vias, 0.2 mm
 # apart, every 0.6 mm would be refused here and built fine there.
 VIA_GAP_TOLERANCE = 0.001
+# How much wider than the trace the lid's relief channel has to be (mm).
+ROUTE_MARGIN = 0.1
 
 
 def check_via_grid(values: Dict[str, float]) -> Optional[str]:
@@ -443,6 +445,20 @@ def check_layout(values: Dict[str, float], mat_pcb: Optional[str] = None) -> Opt
     reason = check_via_grid(values)
     if reason:
         return reason
+
+    # The lid sits directly on the board's top copper, and the relief channel
+    # it has over the trace (route_width wide) is all that keeps it off the
+    # trace. A channel no wider than the trace puts the lid's walls on the
+    # trace's edges, which shorts the line to the box: the model solves, and
+    # reads as a line with no transmission (S11 0 dB, S21 -90 dB at 2 GHz).
+    route_width = get("route_width")
+    if route_width and route_width < trace + ROUTE_MARGIN:
+        return (
+            f"the lid's relief channel is route_width = {_fmt(route_width)} mm wide but the trace is "
+            f"{_fmt(trace)} mm: with less than {_fmt(ROUTE_MARGIN)} mm to spare the lid lands on the "
+            f"trace edges and shorts it -- raise route_width to at least "
+            f"{_fmt(trace + ROUTE_MARGIN)} mm or narrow cpw_trace_width"
+        )
 
     # The CPW gap is solved rather than drawn, so the first thing that
     # can fail is the solve itself: too wide a trace over a thin

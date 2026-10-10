@@ -13,7 +13,7 @@ TMM, DUROID = "Rogers TMM 10i (tm)", "Rogers RT/duroid 5880 (tm)"
 
 def values(trace):
     base = eq.get_numeric_parameters(eq.read_file(str(paths.DEFAULT_EQUATIONS_FILE)))
-    return {**base, "cpw_trace_width": trace, "no_chip": 1.0, "pedestal_depth": 0.0}
+    return {**base, "cpw_trace_width": trace, "route_width": 0.8, "no_chip": 1.0, "pedestal_depth": 0.0}
 
 
 class TestLayoutCheckUsesTheMaterial(unittest.TestCase):
