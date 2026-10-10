@@ -506,10 +506,39 @@ def create_run(sweep_params, analysis_settings: dict, parameter_defaults=None) -
     return Run.create(sweep_params, analysis_settings, parameter_defaults)
 
 
+def apply_setting_overrides(settings: dict, items) -> dict:
+    """`--setting NAME=VALUE` items laid over the settings, each coerced to the
+    type of the default it replaces. Only a setting some solver declares can be
+    named, so a typo is an error, not a silently ignored flag."""
+    defaults = registry.all_defaults()
+    for item in items or []:
+        if "=" not in item:
+            raise SystemExit(f"Invalid --setting {item!r} -- expected NAME=VALUE")
+        name, raw = item.split("=", 1)
+        name = name.strip().replace("-", "_")
+        if name not in defaults:
+            raise SystemExit(f"--setting {name!r} is not a setting of any solution type; "
+                             f"known: {', '.join(sorted(defaults))}")
+        default = defaults[name]
+        try:
+            if isinstance(default, bool):
+                value = raw.strip().lower() in ("1", "true", "yes", "on")
+            elif isinstance(default, int):
+                value = int(float(raw))
+            elif isinstance(default, float):
+                value = float(raw)
+            else:
+                value = raw
+        except ValueError:
+            raise SystemExit(f"--setting {name}: {raw!r} is not a {type(default).__name__}")
+        settings[name] = value
+    return settings
+
+
 def build_analysis_settings(args: argparse.Namespace) -> dict:
     # Every solver's defaults underneath, so a setting the command line has
     # no flag for (the fine-window ones, mostly) still takes its default.
-    return {
+    return apply_setting_overrides({
         **registry.all_defaults(),
         "run_both": getattr(args, "run_both", False),
         "fine_windows": getattr(args, "fine_windows", "auto"),
@@ -547,7 +576,7 @@ def build_analysis_settings(args: argparse.Namespace) -> dict:
             "mat_wirebond": args.mat_wirebond,
             "include_wirebonds": args.include_wirebonds,
         },
-    }
+    }, getattr(args, "setting", None))
 
 
 def parse_args() -> argparse.Namespace:
@@ -556,6 +585,12 @@ def parse_args() -> argparse.Namespace:
         "--sweep", action="append", default=[], metavar="NAME=SPEC",
         help='A parameter to sweep, e.g. --sweep pedestal_depth=0:10:2 (repeatable for '
              "multiple parameters -- combinations are the cartesian product across all of them)",
+    )
+    parser.add_argument(
+        "--setting", action="append", default=[], metavar="NAME=VALUE",
+        help="Set any analysis setting by name, e.g. --setting which_line=chip or "
+             "--setting line_tolerance_ohm=1.5 (repeatable). For the settings that have no "
+             "flag of their own, such as the line-impedance check's.",
     )
     parser.add_argument("--resume", type=str, default=None, help="Resume an existing run by its run_id instead of starting a new one")
     parser.add_argument(
