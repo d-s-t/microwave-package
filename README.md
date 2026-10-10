@@ -249,15 +249,16 @@ land in `runs/<run>/models/<combo>/manufacturing/`.
 | Group | Files |
 |---|---|
 | Box, Lid | STEP (already made by the run), SLDPRT with the combination's equations applied, dimensioned drawing PDF |
-| PCB (board only, never the chip) | Altium project zip (`.PcbDoc` + `.PrjPcb`), Gerber RS-274X, Excellon drill (plated and non-plated), ODB++, IPC-2581, Altium's own Gerber/drill set, board STEP, fabrication drawing PDF |
+| PCB (board only, never the chip) | Altium project zip (`.PcbDoc` + `.PrjPcb`, the master), **Altium's own Gerber + NC drill set (plated / non-plated) -- the one to send to a fab**, ODB++, IPC-2581, board STEP, fabrication drawing PDF; plus a Python Gerber/drill *preview* for cross-checking only |
 
 The SLDPRT is a *copy* saved from `base_parts/*.SLDPRT` linked to the
-combination's own `dimensions.txt`; the base parts are never saved. The
-Gerber, drill, fab drawing and project zip are written by Python from the
-combination's `copper.txt`, so they need no program; ODB++, IPC-2581 and
-the board STEP come from an Altium Output Job
-(`design/outjob.py`, `base_parts/altium/ExportManufacturing.pas`). A
-combination drawn before this feature kept no `package.PcbDoc`, so
+combination's own `dimensions.txt`; the base parts are never saved.
+The fab package is Altium's output (an Output Job run from
+`design/outjob.py` and `base_parts/altium/ExportManufacturing.pas`), so it
+is made from the `.PcbDoc` itself. The Python Gerber/drill zips are written
+from `copper.txt`, a simplified export, and are labelled preview /
+cross-check: they can differ from the board (keep-outs, mask, plating). The
+fab drawing PDF and project zip are also written by Python. A combination drawn before this feature kept no `package.PcbDoc`, so
 generating its PCB files redraws the board in Altium first.
 
 Generating uses SolidWorks and Altium, so it is refused while a run is

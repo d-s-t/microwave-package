@@ -75,19 +75,22 @@ CATALOG: List[Spec] = [
          "Views, sections, countersinks and overall dimensions for the machine shop.",
          "_lid_inside_drawing.pdf", "application/pdf"),
     Spec("pcb_project", "pcb", "Altium project (zip)",
-         "Native .PcbDoc and .PrjPcb, ready to open in Altium Designer.", "_pcb_altium.zip", "application/zip"),
-    Spec("pcb_gerber", "pcb", "Gerber RS-274X (zip)",
-         "Top and bottom copper and board outline (4.6 metric).", "_pcb_gerber.zip", "application/zip"),
-    Spec("pcb_drill", "pcb", "Excellon NC drill (zip)",
-         "Plated holes (vias) and non-plated holes (screw clearance), separate files.",
-         "_pcb_drill.zip", "application/zip"),
-    Spec("pcb_altium_fab", "pcb", "Gerber + drill from Altium (zip)",
-         "Altium's own output job: copper, solder mask, paste and legend Gerbers and NC drill.",
+         "Native .PcbDoc and .PrjPcb, ready to open in Altium Designer. The master design.",
+         "_pcb_altium.zip", "application/zip"),
+    Spec("pcb_altium_fab", "pcb", "Gerber + NC drill from Altium (zip)  - send this to the fab",
+         "Altium's own output job from the .PcbDoc: copper, solder mask, paste and legend Gerbers; "
+         "NC drill split plated / non-plated.",
          "_pcb_altium_fab.zip", "application/zip"),
     Spec("pcb_odb", "pcb", "ODB++ (zip)", "Complete fabrication database for CAM, exported from Altium.",
          "_pcb_odb.zip", "application/zip"),
     Spec("pcb_ipc2581", "pcb", "IPC-2581 (xml)", "Single-file fabrication format, exported from Altium.",
          "_pcb_ipc2581.xml", "application/xml"),
+    Spec("pcb_gerber", "pcb", "Gerber preview (Python cross-check)",
+         "Copper and outline redrawn from the copper export, NOT from the .PcbDoc. For comparing "
+         "against the Altium set; do not send to a fab.", "_pcb_gerber_preview.zip", "application/zip"),
+    Spec("pcb_drill", "pcb", "Drill preview (Python cross-check)",
+         "Plated / non-plated Excellon from the copper export, NOT from the .PcbDoc. For comparing "
+         "against the Altium set; do not send to a fab.", "_pcb_drill_preview.zip", "application/zip"),
     Spec("pcb_fab_drawing", "pcb", "Fabrication drawing (PDF)",
          "Outline, hole and drill tables, layer stack, finish, and minimum trace/gap.",
          "_pcb_fab_drawing.pdf", "application/pdf"),
@@ -420,8 +423,8 @@ def make_pcb(run, combo_id: str, log: Callable[[str], None]) -> None:
     fab = gerber.fab_set(values, copper, name)
     gerbers = {n: t for n, t in fab.items() if n.endswith(".gbr")}
     drills = {n: t for n, t in fab.items() if n.endswith(".drl")}
-    add_read_me(gerbers, run, combo_id, "Gerber RS-274X, 4.6 metric, top/bottom copper and outline.")
-    add_read_me(drills, run, combo_id, "Excellon drill: _PTH plated (vias), _NPTH non-plated (screw clearance).")
+    add_read_me(gerbers, run, combo_id, "PREVIEW ONLY: Gerber redrawn from copper.txt, not from the PcbDoc. Use the Altium set for fabrication.")
+    add_read_me(drills, run, combo_id, "PREVIEW ONLY: drill redrawn from copper.txt, not from the PcbDoc. Use the Altium set for fabrication.")
     write_zip(target_path(run, combo_id, "pcb_gerber"), gerbers)
     write_zip(target_path(run, combo_id, "pcb_drill"), drills)
 
