@@ -447,31 +447,59 @@ def make_pcb(run, combo_id: str, log: Callable[[str], None]) -> None:
 
 
 SUPPLEMENT_FOLDER = "supplement_from_parameters"
-SUPPLEMENT_NOTE = "\r\n".join([
-    "Altium's Gerber output has no board outline layer, and its NC drill holds only the plated",
-    "vias: the .PcbDoc defines the outline as the board shape and the screw holes as cutouts,",
-    "which the ODB++ and IPC-2581 files carry but a Gerber set does not. These two files are",
-    "written from the same parameters the board was drawn from (outline size, screw positions",
-    "and clearance diameter), not from the .PcbDoc itself -- check them against the ODB++ or the",
-    "board drawing before release.",
-    "  *_Edge_Cuts.gbr   board outline (and the through opening for the die, if any)",
-    "  *_NPTH.drl        non-plated screw clearance holes",
-    "",
-])
+
+# What Altium's own Gerber/drill set is expected to carry for this board:
+# the outline (Mechanical 2, plotted as .GM2) and the non-plated screw
+# holes (an NC drill file of their own). The generator draws both; the
+# supplement below is only a fallback for a board drawn before it did, or
+# one where Altium left them out.
+OUTLINE_SUFFIXES = (".gm2",)
 
 
-def add_outline_supplement(run, combo_id: str, values: Dict[str, float], name: str) -> None:
-    """Add the outline and the non-plated holes to the Altium fab zip, in a
-    folder of their own that says where they came from."""
+def altium_fab_gaps(zip_path: str) -> Dict[str, bool]:
+    """{"outline": missing?, "npth": missing?} for an Altium fab zip."""
+    with zipfile.ZipFile(zip_path) as archive:
+        names = [n.lower() for n in archive.namelist() if not n.lower().startswith(SUPPLEMENT_FOLDER)]
+    return {
+        "outline": not any(n.endswith(OUTLINE_SUFFIXES) for n in names),
+        "npth": not any("nonplated" in n or "npth" in n for n in names),
+    }
+
+
+def supplement_note(gaps: Dict[str, bool]) -> str:
+    lines = [
+        "Altium's own output for this board lacks the files below, so they are written from the same",
+        "parameters the board was drawn from (outline size, screw positions and clearance diameter),",
+        "not from the .PcbDoc itself -- check them against the ODB++ or the board drawing before release.",
+    ]
+    if gaps.get("outline"):
+        lines.append("  *_Edge_Cuts.gbr   board outline (and the through opening for the die, if any)")
+    if gaps.get("npth"):
+        lines.append("  *_NPTH.drl        non-plated screw clearance holes")
+    lines.append("")
+    return "\r\n".join(lines)
+
+
+def add_outline_supplement(run, combo_id: str, values: Dict[str, float], name: str) -> List[str]:
+    """Add to the Altium fab zip whatever it lacks of the outline and the
+    non-plated holes, in a folder of its own that says where it came from.
+    Returns the names added (none when Altium's set is complete -- the
+    case for a board drawn with the outline layer and the mount-hole pads)."""
     from ..design import gerber
 
     path = path_of(run, combo_id, "pcb_altium_fab")
     if path is None:
-        return
-    extra = {f"{name}_Edge_Cuts.gbr": gerber.outline_layer(values, name)}
-    npth = gerber.drill_files(values, {"via": []}).get("NPTH")
-    if npth:
-        extra[f"{name}_NPTH.drl"] = npth
+        return []
+    gaps = altium_fab_gaps(path)
+    extra: Dict[str, str] = {}
+    if gaps["outline"]:
+        extra[f"{name}_Edge_Cuts.gbr"] = gerber.outline_layer(values, name)
+    if gaps["npth"]:
+        npth = gerber.drill_files(values, {"via": []}).get("NPTH")
+        if npth:
+            extra[f"{name}_NPTH.drl"] = npth
+    if not extra:
+        return []
     with zipfile.ZipFile(path, "a", zipfile.ZIP_DEFLATED) as archive:
         existing = set(archive.namelist())
         for member, text in extra.items():
@@ -479,4 +507,5 @@ def add_outline_supplement(run, combo_id: str, values: Dict[str, float], name: s
             if arc not in existing:
                 archive.writestr(arc, text)
         if f"{SUPPLEMENT_FOLDER}/README.txt" not in existing:
-            archive.writestr(f"{SUPPLEMENT_FOLDER}/README.txt", SUPPLEMENT_NOTE)
+            archive.writestr(f"{SUPPLEMENT_FOLDER}/README.txt", supplement_note(gaps))
+    return list(extra)

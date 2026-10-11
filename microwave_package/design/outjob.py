@@ -24,6 +24,9 @@ LAYER_IDS = {
     "top_overlay": 16973830, "bottom_overlay": 16973831,
     "top_paste": 16973832, "bottom_paste": 16973833,
     "top_solder": 16973834, "bottom_solder": 16973835,
+    # Mechanical 2, where GenerateFromParams.pas draws the board outline: a
+    # Gerber set has no board shape of its own, so the outline is a layer.
+    "outline": 16908290,
 }
 
 

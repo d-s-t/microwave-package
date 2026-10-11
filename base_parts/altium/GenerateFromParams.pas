@@ -671,6 +671,43 @@ Begin
     Announce(Board, Rgn);
 End;
 
+{ The drill that goes with a screw clearance hole: a NON-PLATED pad, copper
+  no bigger than its hole, so the NC drill output lists the hole (plated
+  and non-plated come out as separate files) and a fabricator drills it
+  rather than having to read the cutout. The cutout above stays: it is
+  what the 3D view and the board outline use.
+
+  On the multilayer layer, so ExportCopper -- which keeps top and bottom
+  copper only -- never sees it and the copper the field solve is built
+  from is unchanged. }
+Procedure AddMountHole(Board : IPCB_Board; X, Y, Dia : Double);
+Var
+    Pd : IPCB_Pad;
+Begin
+    Pd := PCBServer.PCBObjectFactory(ePadObject, eNoDimension, eCreate_Default);
+    Pd.X := MMsToCoord(X);
+    Pd.Y := MMsToCoord(Y);
+    Pd.Layer := eMultiLayer;
+    Pd.TopShape := eRounded;
+    Pd.TopXSize := MMsToCoord(Dia);
+    Pd.TopYSize := MMsToCoord(Dia);
+    Pd.HoleSize := MMsToCoord(Dia);
+    Pd.Plated := False;
+    Board.AddPCBObject(Pd);
+    Announce(Board, Pd);
+End;
+
+{ A rectangle of thin tracks on Mechanical 2, which the Gerber output
+  plots as the board outline. A Gerber set has no board shape of its own:
+  the outline has to be drawn on a layer, and this is that layer. }
+Procedure AddOutlineBox(Board : IPCB_Board; HalfL, HalfS : Double);
+Begin
+    AddTrack(Board, -HalfL, -HalfS,  HalfL, -HalfS, 0.1, eMechanical2);
+    AddTrack(Board,  HalfL, -HalfS,  HalfL,  HalfS, 0.1, eMechanical2);
+    AddTrack(Board,  HalfL,  HalfS, -HalfL,  HalfS, 0.1, eMechanical2);
+    AddTrack(Board, -HalfL,  HalfS, -HalfL, -HalfS, 0.1, eMechanical2);
+End;
+
 Procedure AddVia(Board : IPCB_Board; X, Y, Dia, Hole : Double);
 Var
     V : IPCB_Via;
@@ -1805,7 +1842,40 @@ Begin
             Say('package_screw_holes=FAIL');
         End;
         PCBServer.PostProcess;
+
+        PCBServer.PreProcess;
+        Try
+            AddMountHole(Board, -ScrewU, -ScrewV, ParamOf(P, 'screw_clearance_diameter', 2.3));
+            AddMountHole(Board, -ScrewU,  ScrewV, ParamOf(P, 'screw_clearance_diameter', 2.3));
+            AddMountHole(Board,  ScrewU, -ScrewV, ParamOf(P, 'screw_clearance_diameter', 2.3));
+            AddMountHole(Board,  ScrewU,  ScrewV, ParamOf(P, 'screw_clearance_diameter', 2.3));
+            Say('package_mount_pads=4');
+        Except
+            Say('package_mount_pads=FAIL');
+        End;
+        PCBServer.PostProcess;
     End;
+
+    { The board outline, as tracks on Mechanical 2 for the Gerber output
+      (and the die's through-opening, where it goes through). }
+    PCBServer.PreProcess;
+    Try
+        Board.LayerStack_V7.LayerObject[eMechanical2].MechanicalLayerEnabled := True;
+    Except
+    End;
+    Try
+        Board.LayerStack_V7.LayerObject[eMechanical2].Name := 'Board Outline';
+    Except
+    End;
+    Try
+        AddOutlineBox(Board, HalfL, HalfS);
+        If CavThrough And (CavHalfL > 0.0) Then
+            AddOutlineBox(Board, CavHalfL, CavHalfS);
+        Say('package_outline_layer=ok');
+    Except
+        Say('package_outline_layer=FAIL');
+    End;
+    PCBServer.PostProcess;
 
     { The library is opened OUTSIDE the edit batch. PreProcess and
       PostProcess bracket edits to one board, and opening a second
