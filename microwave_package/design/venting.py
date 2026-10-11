@@ -141,7 +141,8 @@ def plan(values: Dict[str, float]) -> List[Vent]:
     """The vents for one combination's values; empty when `vents_on` is off.
 
     The pedestal vent exists only if there is a recess to vent
-    (`pedestal_depth` > 0), the screw vents only when the screws are on.
+    (`pedestal_depth` > 0, which is also what box.SLDPRT's recess follows,
+    `no_chip` or not), the screw vents only when the screws are on.
     """
     if not enabled(values):
         return []
@@ -153,7 +154,7 @@ def plan(values: Dict[str, float]) -> List[Vent]:
     outside = half_side + values.get("wall_width", 1.0) + OVERLAP
     vents: List[Vent] = []
 
-    if values.get("pedestal_depth", 0.0) > 0 and not parameter_meta.is_bare_board(values):
+    if values.get("pedestal_depth", 0.0) > 0:
         # One slot, wall to wall through the middle of the recess: both
         # ends open, so the recess breathes whichever way is clear.
         vents.append(Vent("pedestal", (0.0, -outside), (0.0, outside), width, depth))

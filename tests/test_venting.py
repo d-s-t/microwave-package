@@ -53,8 +53,9 @@ class TestThePlan(unittest.TestCase):
     def test_no_recess_no_pedestal_vent(self):
         names = [v.name for v in venting.plan(values(pedestal_depth=0))]
         self.assertNotIn("pedestal", names)
+        # the box's recess follows pedestal_depth alone, so the vent does too
         names = [v.name for v in venting.plan(values(no_chip=1))]
-        self.assertNotIn("pedestal", names)
+        self.assertIn("pedestal", names)
 
     def test_every_vent_reaches_the_side_face_past_the_wall(self):
         v = values()

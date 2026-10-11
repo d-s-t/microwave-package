@@ -32,7 +32,7 @@ across it; the 5880/TMM defaults are not what matters here, the shapes are).
 
 * **Pedestal vent:** a groove in the top of the box floor, along z through the
   middle of the recess (x = 0), through the wall, out of both side faces.
-  Created only when `pedestal_depth` > 0 and not `no_chip`.
+  Created only when `pedestal_depth` > 0 (the recess exists).
 * **Screw vents:** from each tapped hole, along z to the nearest side face
   (3.5 mm and the wall away). Created only when `screws_on` = 1.
 
