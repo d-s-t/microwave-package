@@ -38,12 +38,16 @@ FIELDS: List[Dict[str, Any]] = [
                      "are the least certain numbers in the model."},
         ],
     },
-    {"name": "section_length_mm", "label": "Section length (mm)", "kind": "float", "default": 6.0,
+    {"name": "section_length_mm", "label": "Section length (mm)", "kind": "float", "default": 3.0,
      "help": "A few millimetres is enough: the ports find the line's mode, so this is not a length "
-             "that has to resemble the board. Capped at the length of the line in the layout."},
-    {"name": "section_half_width_mm", "label": "Section half-width (mm)", "kind": "float", "default": 3.0,
+             "that has to resemble the board. Keep it under a half-wavelength at the top of the band "
+             "(about 4.5 mm at 26 GHz on 5880): at a half-wavelength the impedance cannot be derived "
+             "from the S-parameters and those points are dropped."},
+    {"name": "section_half_width_mm", "label": "Section half-width (mm)", "kind": "float", "default": 1.5,
      "help": "How far either side of the trace the section reaches. Its walls are perfect conductors, "
-             "so it must be wide enough that they do not load the line."},
+             "so it must be wide enough that they do not load the line and clear of the lid's channel; "
+             "much wider and the air and substrate beside the via fence resonate inside the band "
+             "(a 3 mm half-width collapsed the impedance above 14 GHz)."},
     {"name": "line_gap_mm", "label": "Gap by hand (mm, 0 = as the layout has it)", "kind": "float", "default": 0.0,
      "help": "Build the section with this gap instead of the layout's: to see what HFSS makes of a "
              "particular gap, or to find the one it wants. The trace and everything else are the run's."},

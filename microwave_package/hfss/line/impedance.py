@@ -28,6 +28,13 @@ from typing import Dict, Iterable, List, Optional
 DEFAULT_TARGET_OHM = 50.0
 DEFAULT_TOLERANCE_OHM = 2.5
 
+# The ABCD inversion divides by (1 - S21^2), which vanishes where the section
+# is a whole number of half-wavelengths long (S21 = +-1): there a hair of S11
+# noise becomes ohms. A 6 mm section on 5880 did this at 20 GHz (Zo read 35
+# ohm in a line that read 51 either side). Points under this are not reported;
+# the section length is chosen so none of the band is.
+ILL_CONDITIONED_BELOW = 0.1
+
 
 def s_complex(db: float, degrees: float) -> complex:
     """A complex S-parameter from its magnitude in dB and phase in degrees."""
@@ -48,6 +55,9 @@ def zc_from_sparams(s11: complex, s21: complex, z_ref: float = DEFAULT_TARGET_OH
         raise ValueError("no impedance: the section is an open or a short (denominator 0)")
     if abs(s21) < 1e-9:
         raise ValueError("no impedance: nothing is transmitted through the section")
+    if abs(1.0 - s21 ** 2) < ILL_CONDITIONED_BELOW:
+        raise ValueError("ill-conditioned: the section is about a half-wavelength long here (or a "
+                         "whole number of them), where S21 = +-1 and the impedance cannot be derived")
     zc = z_ref * cmath.sqrt(numerator / denominator)
     return zc if zc.real >= 0 else -zc
 

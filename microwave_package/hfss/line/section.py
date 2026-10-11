@@ -149,6 +149,12 @@ class Section:
                 f"the section is only {self.half_width:g} mm either side of the trace, which "
                 f"the gap ({self.gap:g} mm) already fills -- widen it"
             )
+        if self.route_width and self.half_width < self.route_width / 2.0 + 0.2 - _EPS:
+            found.append(
+                f"the section is only {self.half_width:g} mm either side of the trace, but the lid's "
+                f"relief channel is {self.route_width:g} mm wide: its side walls would be cut off by the "
+                f"section's own -- the half-width must be at least {self.route_width / 2.0 + 0.2:g} mm"
+            )
         return found
 
     # ---- the solids -------------------------------------------------------------

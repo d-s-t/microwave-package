@@ -29,7 +29,7 @@ changes in bold. Anything not listed is a default.
 |---|---|---|
 | Board | 50 x 25 mm, 381 um laminate, 35 um copper (1 oz) both sides | `pcb_length/side/width`, `copper_thickness` |
 | Laminate | **Rogers RT/duroid 5880** (eps 2.2). Default was TMM 10i | `mat_pcb` (PCB materials in the new-run form) |
-| Line | CPW, **trace 0.4 mm**, gap solved for 50 ohm (**111 um** on 5880), ground below | `cpw_trace_width`, `design/cpw.py` |
+| Line | CPW, **trace 0.45 mm**, gap solved for 50 ohm under the lid (**129 um** on 5880, 1.0 x 200 um relief), ground below | `cpw_trace_width`, `design/cpw.py` |
 | Via fence | 0.3 mm vias on a 0.8 mm lattice, fence 0.15 mm from the gap edge, drill 0.15 mm | `via_*` |
 | Lid | 1.5 mm thick, sits on the ground copper; relief channel over the line **1.0 mm wide, 200 um deep** | `lid_width`, `route_width`, `route_clearence` |
 | Box | aluminium, 1 mm walls, tapped floor 3 mm at the corners | `wall_width`, `screw_engagement` |
@@ -62,7 +62,7 @@ run that does not meet it.
 
 | # | Simulation | How | Pass |
 |---|---|---|---|
-| S1 | **Line impedance, board** | Solution type *Line impedance*, *Which line* = board, the candidate's parameters. CLI: `python -m microwave_package.pipeline --solution-type LineImpedance --mat-pcb "Rogers RT/duroid 5880 (tm)" --sweep cpw_trace_width=0.4 --sweep route_width=1.0 --sweep route_clearence=0.2` | Zo inside 50 +- 2.5 ohm at every frequency 1-26 GHz (the verdict table on the run page); the HFSS-solved gap reaches 50 ohm with the lid on |
+| S1 | **Line impedance, board** | Solution type *Line impedance*, *Which line* = board, the candidate's parameters. CLI: `python -m microwave_package.pipeline --solution-type LineImpedance --mat-pcb "Rogers RT/duroid 5880 (tm)" --sweep cpw_trace_width=0.45 --sweep route_width=1.0 --sweep route_clearence=0.2` | Zo inside 50 +- 2.5 ohm at every frequency 1-26 GHz (the verdict table on the run page); the HFSS-solved gap reaches 50 ohm with the lid on |
 | S2 | **Line impedance, chip** | the same with *Which line* = chip (`--setting which_line=chip`) | the same |
 | S3 | Gap against the analytic one | read from S1: *gap solved* vs *gap analytic* on the run page. To find the gap HFSS wants, run S1 at three gaps and interpolate (`gap_to_reach` in `hfss/line/impedance.py`) | analytic gap within the tolerance of what HFSS wants; if not, the formula is wrong for this stack-up and the solved gap must be corrected |
 | S4 | Driven Modal with the chip, whole band | *Driven Modal*, *Both*, connector reference plane, 2-26 GHz on a grid of 0.1 GHz or finer, mesh as in B20 of `RESULTS_CONCLUSIONS.md` | S21 above -3 dB across the band the experiment needs; every notch accounted for by an eigenmode (S5); S11 read too |
@@ -107,7 +107,7 @@ fabricator's real limits replace the defaults with `--fab`.
 | Surface finish | soft gold or ENEPIG on bond pads (ENIG's nickel bonds poorly) | **manual** |
 | Via fill or cap | see section 6 | **manual** |
 | Mechanical fit | holes align across lid, board and box; lid flat on the ground copper; nothing holds it off | **manual** |
-| Fab capability | confirm the fab can hold the 111 um gap, the 150 um drill and 5880's lamination and drilling | **manual** |
+| Fab capability | confirm the fab can hold the 129 um gap, the 150 um drill and 5880's lamination and drilling | **manual** |
 | Gerber / drill review | view the actual fab output, not the Altium file | **manual** |
 
 ## 4. Cryogenic checks
@@ -120,7 +120,7 @@ not sufficient.
   every thermal cycle. The preflight warns for it. Either obtain the
   fabricator's cryogenic via-reliability data for 5880, or use a
   copper-matched laminate (RO3003, RO4003, TMM 10i); the candidate's
-  0.4 mm trace and 1.0 mm lid channel were found for 5880 and would have to
+  0.45 mm trace and 1.0 mm lid channel were found for 5880 and would have to
   be re-found for another laminate.
 - **Aluminium box.** Superconducting below about 1.2 K. Perfect E is the
   default wall model and exaggerates how deep box-mode notches are
@@ -169,24 +169,24 @@ not sufficient.
   geometry, and the simulation S9 that checks the vents do not open a
   path for the box modes._
 - **Finite-conductivity run on the candidate (S6)** has not been made.
-- **Lid-aware analytic gap.** `design/cpw.py` does not see the lid; a fix
-  is under review (PR #64) along with the chip gap that comes out far too
-  wide. Until it lands the analytic gap is not authoritative and S1/S2 are.
+- **Lid-aware analytic gap.** `design/cpw.py` now solves the gap under the
+  lid (PR #64) and the die's line on its own `chip_trace_width`. S1 agrees
+  with it to within the check's accuracy; S1 and S2 remain the referee.
 
 ## 7. The candidate: status
 
-As of 2026-10-11. Preflight: 0 fail, 2 warn, 13 pass, 13 manual.
+As of 2026-10-11. Preflight: 0 fail, 1 warn, 14 pass, 13 manual.
 
 | Item | Status | Notes |
 |---|---|---|
 | Layout builds, vias placeable, geometry fits | **passed** | automatic |
-| Gap >= 100 um (111 um) | **passed** | automatic |
+| Gap >= 100 um (129 um) | **passed** | automatic; a 0.4 mm trace under the same lid solves to 94 um and is now refused |
 | Lid channel clears the trace | **passed** (preflight) / **open** (HFSS) | analytic margin only; S1 is the real check |
 | Fab limits (trace, drill, ring, spacing, pads) | **passed** against the defaults | **open**: confirm against the real fab's limits |
 | Screws, countersink, thread | **passed** | automatic |
 | Cryo: 5880 z-axis expansion | **open** | warning; fab data or change laminate |
-| S1 line impedance, board | **open** | solver written and unit-tested; not yet run in HFSS |
-| S2 line impedance, chip | **blocked** | the analytic chip gap is 29 mm (known bug, PR #64); the chip board is not valid until it is fixed |
+| S1 line impedance, board | **passed** (2026-10-11, run_20261011_125037) | Zo 50.5-51.6 ohm over 1-26 GHz, inside 50 +- 2.5; the gap Altium drew, 128.85 um, against the analytic 128.8 um. HFSS reads 1.4 ohm above the 2D Extractor's 50.17 ohm (0.9 ohm with a 6 mm section): that is the check's own accuracy |
+| S2 line impedance, chip | **open** | the chip gap bug is fixed (PR #64: `chip_trace_width` 0.2 mm gives 169 um on silicon); not yet run |
 | S4/S5/S7 driven + eigen + fine windows, with chip | **passed on the previous model** | B20: S21 above -3 dB for 99 % of 2-20 GHz and 61 % of 20-26 GHz; narrow notches at 16.94, 18.58 and 19.20 GHz; redo after the chip-gap fix |
 | S6 finite conductivity | **open** | not run |
 | S8 tolerances | **open** | one combination per setting so far |

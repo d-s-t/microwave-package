@@ -442,7 +442,7 @@ python -m microwave_package.pipeline --solution-type LineImpedance --setting whi
 ```
 
 `--setting NAME=VALUE` (repeatable) sets any analysis setting that has no flag of its
-own -- `which_line` (board or chip), `section_length_mm`, `line_f_start_ghz`,
+own -- `which_line` (board or chip), `section_length_mm` (3 mm, kept under a half-wavelength), `line_f_start_ghz`,
 `line_f_stop_ghz`, `line_z0_ohm`, `line_tolerance_ohm` and the rest. Sweeping
 `cpw_trace_width` or the gap and comparing the verdicts is how to see what HFSS
 wants against what the formula gives. It needs no SolidWorks, so a run goes

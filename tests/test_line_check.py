@@ -137,6 +137,10 @@ class TestTheSection(unittest.TestCase):
         s = sec.from_parameters(sec.BOARD, values(route_width=0.45), TMM, 9.8, 6.0, 3.0, 0.11)
         self.assertTrue(any("less than 0.1 mm wider" in p for p in s.problems()))
 
+    def test_a_section_narrower_than_the_lid_channel_is_refused(self):
+        s = sec.from_parameters(sec.BOARD, values(route_width=1.6), TMM, 9.8, 3.0, 0.8, 0.11)
+        self.assertTrue(any("side walls would be cut off" in p for p in s.problems()))
+
     def test_a_sound_section_has_no_problems(self):
         self.assertEqual(self.board_section().problems(), [])
 
@@ -176,6 +180,15 @@ class TestTheImpedanceMaths(unittest.TestCase):
         s11, s21 = self.sparams(50.0, 50.0, 1.0)
         self.assertAlmostEqual(abs(s11), 0.0, places=9)
         self.assertAlmostEqual(impedance.zc_from_sparams(s11, s21).real, 50.0)
+
+    def test_a_half_wavelength_section_is_not_ill_read(self):
+        """At theta = pi the inversion divides by nothing: a hair of S11 noise
+        read 35 ohm for a 51 ohm line. Those points are refused, not reported."""
+        s11, s21 = self.sparams(51.0, 50.0, math.pi - 0.02)
+        with self.assertRaisesRegex(ValueError, "ill-conditioned"):
+            impedance.zc_from_sparams(s11 + 0.002, s21)
+        s11, s21 = self.sparams(51.0, 50.0, 0.4)           # a short section reads fine
+        self.assertAlmostEqual(impedance.zc_from_sparams(s11, s21).real, 51.0, places=6)
 
     def test_nothing_transmitted_is_not_an_impedance(self):
         with self.assertRaises(ValueError):

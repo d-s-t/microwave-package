@@ -290,5 +290,32 @@ class TestPlottingDrivenResults(unittest.TestCase):
         self.assertIn("s21_db", options)
 
 
+class TestThePhaseColumnsAreDegrees(unittest.TestCase):
+    """pyaedt's "phase" formula is in radians. The columns are labelled
+    degrees, and the line-impedance check derives an impedance from them, so
+    a radian in a degree column put a matched 52 ohm line at 17 - 48j ohm."""
+
+    def test_a_phase_read_in_radians_is_stored_in_degrees(self):
+        import math
+
+        class Data(FakeSolutionData):
+            def get_expression_data(self, expression, formula):
+                return self.primary_sweep_values, [{"db20": -3.0, "phase": math.pi / 2}[formula]] * 2
+
+        class Post:
+            def available_report_quantities(self, solution=None):
+                return ["S(1,1)", "S(1,2)", "S(2,1)", "S(2,2)"]
+
+            def get_solution_data(self, **_kwargs):
+                return Data([1.0, 2.0], "GHz")
+
+        class Hfss:
+            post = Post()
+
+        rows = driven_results._rows_for_solution(Hfss(), FakeSetup(), "Setup_1 : Sweep_1", lambda _m: None, None)
+        self.assertAlmostEqual(rows[0]["s21_deg"], 90.0)
+        self.assertAlmostEqual(rows[0]["s11_db"], -3.0)
+
+
 if __name__ == "__main__":
     unittest.main()

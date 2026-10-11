@@ -57,8 +57,8 @@ def make_section(values: Dict[str, float], settings: Dict[str, Any], combo_dir: 
         analytic = None
         log(f"The analytic 50 ohm gap could not be solved for this line ({exc}); the check goes on "
             "without it.")
-    length = float(settings.get("section_length_mm", 6.0))
-    half_width = float(settings.get("section_half_width_mm", 3.0))
+    length = float(settings.get("section_length_mm", 3.0))
+    half_width = float(settings.get("section_half_width_mm", 1.5))
 
     built = None
     forced_gap = float(settings.get("line_gap_mm", 0.0) or 0.0)
