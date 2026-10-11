@@ -51,6 +51,34 @@ the part already has them), and the model carries them through the STEP. Past
 the board's edge the groove is inside the wall, where the vacuum body does not
 reach, so in the solve it is a dead-end slot far below cutoff.
 
+## What was added in SolidWorks (box.SLDPRT)
+
+Made by `base_parts/add_vents.py` (SolidWorks automation, rerunnable on a
+fresh copy of the part; it refuses if the features exist). Two features after
+the final `box` mirror, each sketched on the cavity floor face, cut
+`vent_depth` down:
+
+* `Sketch6` + **`Vent_Pedestal`**: one rectangle, `vent_width` x (`box_side` + 0.4),
+  centred on the origin. Suppressed by the equation
+  `IIF(vents_on > 0.5, IIF(pedestal_depth > 0, 0, 1), 1)`.
+* `Sketch7` + **`Vent_Screws`**: four rectangles, `vent_width` wide, from the
+  tap-hole centre line (`pcb_side/2 - screw_inset`) to `box_side/2 + 0.2`.
+  Suppressed by `IIF(vents_on > 0.5, IIF(screws_on > 0.5, 0, 1), 1)`.
+
+All sketch dimensions and the cut depth are equations of `default.txt`.
+`vents_on`, `vent_width` and `vent_depth` were brought into the part by
+unlinking and relinking its equation file (SolidWorks imports a file's variables only
+when it links), and placed before the equations that use them (the list is
+evaluated in order). The part's link now points at this checkout's
+`default.txt`; the pipeline re-points it per checkout anyway.
+
+Checked by rebuilding with different equation files: volume 4739.12 mm3 with
+`vents_on = 0`, 4733.79 on (5.33 mm3 removed), 4731.64 at `vent_width` 0.7,
+4730.23 at `vent_depth` 0.5; the exported STEP has the groove floors at
+y = 2.7 from the recess edge (z = 3.15) to the side face (z = 13.5), the
+screw grooves from the tap hole (z = 9.76) to z = 13.5, and the wall's roof
+intact. `lid_inside.SLDPRT` is not changed.
+
 ## For manufacturing
 
 * Mill the grooves before the box is anodised/plated; deburr the exit at the
