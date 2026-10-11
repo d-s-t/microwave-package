@@ -76,6 +76,39 @@ class TestBoxLayout(unittest.TestCase):
             self.assertGreater(view.x - width / 2 - 0.02, sd.MARGIN, view.key)
 
 
+class TestVentsOnTheBoxDrawing(unittest.TestCase):
+    def views(self, **over):
+        return {v.key: v for v in sd.box_layout({**VALUES, "vents_on": 1.0, "vent_width": 0.5,
+                                                 "vent_depth": 0.3, **over}, 4.951)}
+
+    def test_vents_get_a_section_and_an_enlarged_detail_of_it(self):
+        views = self.views()
+        self.assertEqual(views["sec_v"].section_of, "top")
+        detail = views["vent_detail"]
+        self.assertEqual(detail.detail_of, "sec_v")
+        self.assertGreater(detail.scale, views["sec_v"].scale)
+
+    def test_the_detail_dimensions_the_groove_width_and_depth(self):
+        detail = self.views(vent_width=0.6, vent_depth=0.25)["vent_detail"]
+        self.assertEqual(sorted(expected(detail)), [0.25, 0.6])
+
+    def test_the_section_cuts_across_the_pedestal_vent_clear_of_the_screw_vents(self):
+        cut = self.views()["sec_v"].section_at
+        self.assertGreater(cut, 3.15)                    # beyond the chip recess
+        self.assertLess(cut, 9.0 - 0.8)                  # short of the screw holes' row
+
+    def test_no_vents_no_vent_views(self):
+        views = {v.key: v for v in sd.box_layout({**VALUES, "vents_on": 0.0}, 4.951)}
+        self.assertNotIn("sec_v", views)
+        self.assertNotIn("vent_detail", views)
+
+    def test_the_detail_sits_inside_the_sheet_clear_of_the_title_block(self):
+        detail = self.views()["vent_detail"]
+        radius = detail.scale * detail.detail_radius / 1000.0
+        self.assertGreater(detail.y - radius, 0.05)      # above the notes
+        self.assertLess(detail.x + radius, 0.26)         # left of the title block
+
+
 class TestLidLayout(unittest.TestCase):
     def views(self, **over):
         return {v.key: v for v in sd.lid_layout({**VALUES, **over}, 1.5)}

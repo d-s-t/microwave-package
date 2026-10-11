@@ -33,6 +33,8 @@ import os
 from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional, Tuple
 
+from . import venting
+
 logger = logging.getLogger("microwave_package")
 
 # Sheet: ISO A3, landscape (metres).
@@ -72,6 +74,7 @@ class Dim:
     prefix: str = ""
     suffix: str = ""
     group: str = ""         # candidates for one unknown value: the first that measures right is kept
+    search: float = 0.0     # if the edges are not where expected, try points up to two steps of this (mm) away
 
 
 @dataclass
@@ -87,6 +90,10 @@ class View:
     section_label: str = ""
     flipped: bool = False                       # a section that comes out upside down (v -> -v)
     extent: Tuple[float, float] = (0.0, 0.0)    # width and height of the part in this view (mm)
+    detail_of: Optional[str] = None             # key of the view this is an enlarged detail of
+    detail_at: Tuple[float, float] = (0.0, 0.0)  # centre of the circle, in the parent's frame (mm)
+    detail_radius: float = 0.0                  # radius of that circle (mm)
+    detail_label: str = ""
 
 
 def pick_scale(width_mm: float, height_mm: float, room_w_mm: float, room_h_mm: float) -> float:
@@ -164,13 +171,13 @@ def box_layout(values: Dict[str, float], height_mm: float) -> List[View]:
     floor_pocket = g["floor_pocket"]
     h2 = height_mm / 2.0                 # v = Y - h2, Y measured up from the underside of the floor
     if plan is not None:
-        sec_a = View("*Top", "sec_a", 0.30, 0.215, sec_scale, section_of="top", section_at=plan.positions[0][1],
+        sec_a = View("*Top", "sec_a", 0.30, 0.238, sec_scale, section_of="top", section_at=plan.positions[0][1],
                      section_label="A", extent=(total_l, height_mm), flipped=True)
         sec_a.dims += [
             Dim("v", (-15, -h2), (-15, floor_holes - h2), "right", 0, floor_holes),
         ]
         out.append(sec_a)
-    sec_b = View("*Top", "sec_b", 0.30, 0.125, sec_scale, section_of="top", section_at=0.0,
+    sec_b = View("*Top", "sec_b", 0.30, 0.175, sec_scale, section_of="top", section_at=0.0,
                  section_label="B", extent=(total_l, height_mm), flipped=True)
     sec_b.dims += [
         Dim("h", (-body_l / 2, 4.0 - h2), (-body_l / 2 + wall, 4.0 - h2), "above", 0, wall),
@@ -183,6 +190,25 @@ def box_layout(values: Dict[str, float], height_mm: float) -> List[View]:
             Dim("v", (0, floor_pocket - h2), (-8, floor_holes - h2), "right", 1, g["pedestal"]),
         ]
     out.append(sec_b)
+    vents = venting.plan(values)
+    if vents:
+        vent = vents[0]
+        floor_top = venting.floor_top(values)
+        groove_mid = floor_top - vent.depth / 2.0       # mid-depth of the groove, from the floor's underside
+        sec_v = View("*Top", "sec_v", 0.30, 0.112, sec_scale, section_of="top", section_at=8.0,
+                     section_label="E", extent=(total_l, height_mm), flipped=True)
+        out.append(sec_v)
+        # The groove is a fraction of a millimetre: dimensioned on an enlargement of the section.
+        detail = View("*Top", "vent_detail", 0.17, 0.075, 15.0, flipped=True, extent=(2.4, 2.4),
+                      detail_of="sec_v", detail_at=(vent.start[0], groove_mid - h2), detail_radius=1.2,
+                      detail_label="F")
+        detail.dims += [
+            # the groove's bottom edge is as long as the groove is wide: one pick
+            Dim("h", (vent.width / 2, 0.0), None, "above", 0, vent.width, search=0.1),
+            # from that edge to the floor's top face, picked to the left of the groove
+            Dim("v", (vent.width / 2, 0.0), (-1.0, vent.depth), "left", 0, vent.depth, search=0.1),
+        ]
+        out.append(detail)
     return out
 
 
@@ -305,6 +331,28 @@ class _Sheet:
         self.views[view.key] = view
         self.sw_views[view.key] = sw
 
+    def add_detail(self, view: View) -> None:
+        """An enlarged circle of another view -- how a 0.3 mm groove becomes
+        something whose edges can be told apart and dimensioned."""
+        parent = self.views[view.detail_of]
+        sw_parent = self.sw_views[view.detail_of]
+        self.drw.ActivateView(sw_parent.Name)
+        sketcher = self.drw.SketchManager
+        sketcher.InsertSketch(True)
+        u, v = view.detail_at
+        if parent.flipped:
+            v = -v
+        circle = sketcher.CreateCircleByRadius(u / 1000.0, v / 1000.0, 0, view.detail_radius / 1000.0)
+        sketcher.InsertSketch(True)
+        self.drw.ClearSelection2(True)
+        circle.Select4(False, self._none)
+        sw = self.drw.CreateDetailViewAt4(view.x, view.y, 0, 0, view.scale, 1.0, view.detail_label,
+                                          0, True, False, False, 0)
+        if sw is None:
+            raise RuntimeError("SolidWorks would not create a detail view")
+        self.views[view.key] = view
+        self.sw_views[view.key] = sw
+
     # -- dimensions
     def _pt(self, view: View, point: Tuple[float, float]) -> Tuple[float, float]:
         u, v = point
@@ -316,8 +364,26 @@ class _Sheet:
         return bool(self.ext.SelectByID2("", "EDGE", x, y, 0, append, 0, self._none, 0))
 
     def dimension(self, key: str, dim: Dim) -> bool:
-        """Add `dim` to the view `key`. False (and nothing left behind) if
-        the edges could not be picked or it measured something else."""
+        """Add `dim` to the view `key`, searching around where its edges are
+        expected when `dim.search` is set (a detail view's centre is not
+        always where it was asked for). False, and nothing left behind, if
+        it could not be made to measure what it should."""
+        if not dim.search or dim.expected is None:
+            return self._dimension_at(key, dim)
+        steps = sorted(((du, dv) for du in range(-2, 3) for dv in range(-2, 3)),
+                       key=lambda t: (abs(t[0]) + abs(t[1]), t))
+        rejected = len(self.rejected)
+        for du, dv in steps:
+            moved = Dim(dim.kind, (dim.a[0] + du * dim.search, dim.a[1] + dv * dim.search),
+                        None if dim.b is None else (dim.b[0] + du * dim.search, dim.b[1] + dv * dim.search),
+                        dim.side, dim.tier, dim.expected, dim.prefix, dim.suffix)
+            if self._dimension_at(key, moved, quiet=True):
+                del self.rejected[rejected:]
+                return True
+        del self.rejected[rejected:]
+        return self._reject(key, dim, "no pair of edges near there measures " + f"{dim.expected:g}")
+
+    def _dimension_at(self, key: str, dim: Dim, quiet: bool = False) -> bool:
         view = self.views[key]
         half_w = view.scale * view.extent[0] / 2000.0
         half_h = view.scale * view.extent[1] / 2000.0
@@ -325,12 +391,12 @@ class _Sheet:
         self.drw.ClearSelection2(True)
         xa, ya = self._pt(view, dim.a)
         if not self._select(xa, ya, False):
-            return self._reject(key, dim, "first edge not found")
+            return self._reject(key, dim, "first edge not found", quiet)
         xb, yb = xa, ya
         if dim.b is not None:
             xb, yb = self._pt(view, dim.b)
             if not self._select(xb, yb, True):
-                return self._reject(key, dim, "second edge not found")
+                return self._reject(key, dim, "second edge not found", quiet)
         mid_x, mid_y = (xa + xb) / 2, (ya + yb) / 2
         if dim.side == "above":
             px, py = mid_x, view.y + half_h + out
@@ -340,6 +406,7 @@ class _Sheet:
             px, py = view.x - half_w - out, mid_y
         else:
             px, py = view.x + half_w + out, mid_y
+        before = self._count(key)
         if dim.kind == "h":
             shown = self.drw.AddHorizontalDimension2(px, py, 0)
         elif dim.kind == "v":
@@ -348,11 +415,11 @@ class _Sheet:
             shown = self.drw.AddDiameterDimension2(px, py, 0)
         self.drw.ClearSelection2(True)
         if shown is None:
-            return self._reject(key, dim, "SolidWorks made no dimension")
+            return self._reject(key, dim, "SolidWorks made no dimension", quiet)
         value = shown.GetDimension2(0).Value
         if dim.expected is not None and abs(value - dim.expected) > max(0.01, 0.002 * dim.expected):
-            self._delete(shown)
-            return self._reject(key, dim, f"measured {value:.3f}, expected {dim.expected:.3f}")
+            self._delete(shown, key, before)
+            return self._reject(key, dim, f"measured {value:.3f}, expected {dim.expected:.3f}", quiet)
         try:
             shown.ShowParenthesis = False
         except Exception:
@@ -363,17 +430,37 @@ class _Sheet:
             shown.SetText(2, dim.suffix)
         return True
 
-    def _delete(self, shown) -> None:
+    def _count(self, key: str) -> int:
+        """How many dimensions the view `key` carries."""
+        try:
+            found = self.sw_views[key].GetDisplayDimensions
+            return 0 if found is None else len(found)
+        except Exception:
+            return 0
+
+    def _delete(self, shown, key: str, before: int) -> None:
+        """Take back a dimension that measured the wrong thing. Deleting the
+        selected annotation is tried first, then undo; the count says
+        whether either worked, because a wrong dimension left behind
+        also catches the next pick."""
         try:
             shown.GetAnnotation.Select3(False, self._none)
             self.drw.EditDelete()
         except Exception as exc:
-            self.log(f"WARNING: could not remove a wrong dimension ({exc})")
+            self.log(f"WARNING: could not delete a wrong dimension ({exc})")
+        if self._count(key) > before:
+            try:
+                self.drw.EditUndo2(1)
+            except Exception as exc:
+                self.log(f"WARNING: could not undo a wrong dimension ({exc})")
+        if self._count(key) > before:
+            self.log("WARNING: a wrong dimension is still on the drawing")
 
-    def _reject(self, key: str, dim: Dim, why: str) -> bool:
+    def _reject(self, key: str, dim: Dim, why: str, quiet: bool = False) -> bool:
         message = f"{key}: {dim.kind} dimension at {dim.a}: {why}"
         self.rejected.append(message)
-        self.log("WARNING: dropped " + message)
+        if not quiet:
+            self.log("WARNING: dropped " + message)
         return False
 
     def export_png(self, path: str) -> None:
@@ -524,7 +611,12 @@ def make_pdf(app, model, part_path: str, part: str, out_pdf: str, title: str,
         scales = sorted({v.scale for v in layout})
         _title_block(sheet, part, title, material, ", ".join(f"{s:g}:1" for s in scales))
         for view in layout:
-            (sheet.add_section if view.section_of else sheet.add_view)(view)
+            if view.detail_of:
+                sheet.add_detail(view)
+            elif view.section_of:
+                sheet.add_section(view)
+            else:
+                sheet.add_view(view)
         for view in layout:
             done = set()
             for dim in view.dims:
