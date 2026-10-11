@@ -58,41 +58,50 @@ def build_vents(hfss, frame, stack, values, log=logger.info) -> Optional[List[st
 
 
 def _restore_copper_skin(hfss, frame, stack, values, vents, log) -> List[str]:
-    """Put the box back under the board's bottom copper over the pedestal vent.
+    """Put the box back under the board's bottom copper over each groove.
 
     The bottom copper is drawn growing DOWN from the board's underside, into
     the floor's top `copper_thickness`, so everywhere else it lies wholly
-    inside the box and the two do not "intersect". The groove, cut to the
-    floor's top face, would leave the copper half in metal and half over
+    inside the box and the two do not "intersect". A groove cut to the
+    floor's top face would leave the copper half in metal and half over
     air, and HFSS refuses that ("pcb_copper_bottom and box intersect").
     The copper is whole on the real board, so the groove's top
-    `copper_thickness` is given back to the box as a skin under it, from
-    the die's opening to the board's edge: the groove runs below the
-    ground plane, which is what it is meant to do. The skin floats above
-    the groove's floor, so it is joined to the box through the groove's walls.
-
-    The screw vents need none: the ground plane gives up the whole corner
-    round each screw, so no copper lies over them.
+    `copper_thickness` is given back to the box as a skin under it, wherever
+    copper lies over the groove: for the pedestal vent from the die's opening
+    to the board's edge, for a screw vent from the keep-out circle round
+    the screw to the board's edge (inside the circle there is no copper).
+    The groove runs below the ground plane, which is what it is meant to do.
+    The skin floats above the groove's floor, so it is joined to the box
+    through the groove's walls.
     """
+    from ..design import screws as screw_plan
+
     thickness = stack.copper_thickness
-    if thickness <= 0 or not any(v.name == "pedestal" for v in vents):
+    if thickness <= 0:
         return []
-    half_side = values.get("pcb_side", 25.0) / 2.0
+    reach = values.get("pcb_side", 25.0) / 2.0 + WALL_OVERLAP
     inner = cavity_plan.plan(values).half_side
-    vent = next(v for v in vents if v.name == "pedestal")
-    u_min, _, u_max, _ = vent.rectangle()
-    made: List[str] = []
+    screws = screw_plan.plan(values)
+    keepout = screws.keepout_diameter / 2.0 if screws is not None else 0.0
     modeler = hfss.modeler
-    reach = half_side + WALL_OVERLAP
-    for index, (v0, v1) in enumerate(((inner, reach), (-reach, -inner))):
-        if v1 - v0 <= 0:
-            continue
-        # a skin as wide as the groove only touches its walls edge to edge, and
-        # a union of bodies that merely touch fails; it reaches into them
-        origin, sizes = frame.box(u_min - SKIN_OVERLAP, v0, u_max + SKIN_OVERLAP, v1,
-                                  stack.pcb_bottom - thickness, thickness)
-        skin = modeler.create_box(origin=origin, sizes=sizes)
-        skin.name = f"vent_skin_{index}"
-        modeler.unite(["box", skin.name])
-        made.append(skin.name)
+    made: List[str] = []
+    for vent in vents:
+        if vent.name == "pedestal":
+            spans = ((inner, reach), (-reach, -inner))
+        else:
+            sign = 1.0 if vent.end[1] > 0 else -1.0
+            start = abs(vent.start[1]) + keepout
+            spans = (tuple(sorted((sign * start, sign * reach))),)
+        u_min, _, u_max, _ = vent.rectangle()
+        for index, (v0, v1) in enumerate(spans):
+            if v1 - v0 <= 0:
+                continue
+            # a skin as wide as the groove only touches its walls edge to edge, and
+            # a union of bodies that merely touch fails; it reaches into them
+            origin, sizes = frame.box(u_min - SKIN_OVERLAP, v0, u_max + SKIN_OVERLAP, v1,
+                                      stack.pcb_bottom - thickness, thickness)
+            skin = modeler.create_box(origin=origin, sizes=sizes)
+            skin.name = f"vent_skin_{vent.name}_{index}"
+            modeler.unite(["box", skin.name])
+            made.append(skin.name)
     return made

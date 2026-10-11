@@ -161,34 +161,43 @@ class TestTheBuilder(unittest.TestCase):
             self.assertAlmostEqual(origin[1], 3.0 - 0.3)
             self.assertAlmostEqual(sizes[1], 0.3)
 
-    def test_the_bottom_copper_keeps_its_box_under_the_pedestal_groove(self):
+    def test_the_bottom_copper_keeps_its_box_under_the_grooves(self):
         # the copper is drawn down into the floor's top 35 um; a groove to
         # the floor's top would leave it half over air and HFSS refuses that
         hfss = FakeHfss()
         vent_builder.build_vents(hfss, cg.Frame(), self.stack, values())
         skins = hfss.modeler.boxes[5:]
-        self.assertEqual(len(skins), 2)
-        self.assertEqual(hfss.modeler.unions, [("box", "vent_skin_0"), ("box", "vent_skin_1")])
+        self.assertEqual(len(skins), 2 + 4)
+        self.assertEqual([u[1] for u in hfss.modeler.unions],
+                         ["vent_skin_pedestal_0", "vent_skin_pedestal_1"] +
+                         [f"vent_skin_screw_{i}_0" for i in (1, 2, 3, 4)])
         for origin, sizes in skins:
             self.assertAlmostEqual(origin[1], 3.0 - 0.035)
             self.assertAlmostEqual(sizes[1], 0.035)
-        # from the die's opening (3.25) into the wall just past the board edge (12.5), both sides,
-        # across the groove's own width
-        spans = sorted((o[2], o[2] + s[2]) for o, s in skins)
-        self.assertAlmostEqual(spans[0][0], -12.5 - vent_builder.WALL_OVERLAP)
+        wall = vent_builder.WALL_OVERLAP
+        # pedestal: from the die's opening (3.25) into the wall past the board
+        # edge (12.5), both sides, across the groove's own width
+        spans = sorted((o[2], o[2] + s[2]) for o, s in skins[:2])
+        self.assertAlmostEqual(spans[0][0], -12.5 - wall)
         self.assertAlmostEqual(spans[0][1], -3.25)
         self.assertAlmostEqual(spans[1][0], 3.25)
-        self.assertAlmostEqual(spans[1][1], 12.5 + vent_builder.WALL_OVERLAP)
+        self.assertAlmostEqual(spans[1][1], 12.5 + wall)
         self.assertAlmostEqual(skins[0][1][0], 0.5 + 2 * vent_builder.SKIN_OVERLAP)
+        # screws: from the keep-out circle round the tap hole (9 + 1.5) to the wall
+        for origin, sizes in skins[2:]:
+            near = min(abs(origin[2]), abs(origin[2] + sizes[2]))
+            far = max(abs(origin[2]), abs(origin[2] + sizes[2]))
+            self.assertAlmostEqual(near, 9.0 + 1.5)
+            self.assertAlmostEqual(far, 12.5 + wall)
 
-    def test_no_skin_for_a_sheet_of_copper_or_without_the_pedestal_vent(self):
+    def test_no_skin_for_a_sheet_of_copper_or_without_any_vent(self):
         sheet = cg.Stack(pcb_bottom=3.0, pcb_top=3.381, chip_bottom=3.0, chip_top=3.381,
                          copper_thickness=0.0, chip_metal_thickness=0.0)
         hfss = FakeHfss()
         vent_builder.build_vents(hfss, cg.Frame(), sheet, values())
         self.assertEqual(hfss.modeler.unions, [])
         hfss = FakeHfss()
-        vent_builder.build_vents(hfss, cg.Frame(), self.stack, values(pedestal_depth=0))
+        vent_builder.build_vents(hfss, cg.Frame(), self.stack, values(pedestal_depth=0, screws_on=0))
         self.assertEqual(hfss.modeler.unions, [])
 
     def test_nothing_when_off(self):
