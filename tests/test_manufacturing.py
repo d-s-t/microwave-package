@@ -205,7 +205,7 @@ class TestListing(ManufacturingCase):
         self.assertTrue(steps["box_step"]["exists"])
         self.assertEqual(steps["box_step"]["size"], len("ISO-10303-21;"))
         self.assertFalse(steps["pcb_step"]["exists"])
-        self.assertEqual(groups["box"]["missing"], 2)
+        self.assertEqual(groups["box"]["missing"], 3)
         self.assertTrue(groups["box"]["can_generate"])
 
     def test_a_generated_file_shows_up_with_its_size(self):
@@ -521,7 +521,7 @@ class TestProducers(ManufacturingCase):
         with mock.patch.object(solidworks_manufacturing, "export_part",
                                lambda **kw: seen.append(kw)):
             manufacturing.make_cad_group(self.run, self.combo, "box", lambda m: None)
-        self.assertEqual(list(seen[0]["outputs"]), ["drawing"])
+        self.assertEqual(sorted(seen[0]["outputs"]), ["drawing", "slddrw"])    # the PDF and its drawing are made together
         self.assertEqual(seen[0]["part"], "box")
         self.assertTrue(seen[0]["equations_path"].endswith("dimensions.txt"))
 

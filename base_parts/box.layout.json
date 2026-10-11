@@ -1,0 +1,174 @@
+{
+ "dims": {
+  "front|front:v.left.0.0": {
+   "expected": 1.0,
+   "name": "RD2@Drawing View2@Draw1.Drawing"
+  },
+  "front|front:v.right.0.0": {
+   "expected": 4.951000000000001,
+   "name": "RD1@Drawing View2@Draw1.Drawing"
+  },
+  "sec_a|sec_a:v.right.0.0": {
+   "expected": 3.0,
+   "name": "RD1@Drawing View3@Draw1.Drawing"
+  },
+  "sec_b|sec_b:h.above.0.0": {
+   "expected": 1.0,
+   "name": "RD1@Drawing View4@Draw1.Drawing"
+  },
+  "sec_b|sec_b:v.left.0.0": {
+   "expected": 1.9510000000000014,
+   "name": "RD2@Drawing View4@Draw1.Drawing"
+  },
+  "sec_b|sec_b:v.right.0.0": {
+   "expected": 2.5,
+   "name": "RD3@Drawing View4@Draw1.Drawing"
+  },
+  "sec_b|sec_b:v.right.1.0": {
+   "expected": 0.5,
+   "name": "RD4@Drawing View4@Draw1.Drawing"
+  },
+  "top|top:dia.right.3.0": {
+   "expected": 1.6,
+   "name": "RD10@Drawing View1@Draw1.Drawing"
+  },
+  "top|top:h.above.0.0": {
+   "expected": 52.0,
+   "name": "RD2@Drawing View1@Draw1.Drawing"
+  },
+  "top|top:h.above.1.0": {
+   "expected": 62.0,
+   "name": "RD1@Drawing View1@Draw1.Drawing"
+  },
+  "top|top:h.below.0.0": {
+   "expected": 43.0,
+   "name": "RD8@Drawing View1@Draw1.Drawing"
+  },
+  "top|top:h.below.1.0": {
+   "expected": null,
+   "name": "RD6@Drawing View1@Draw1.Drawing"
+  },
+  "top|top:h.below.2.0": {
+   "expected": 50.0,
+   "name": "RD4@Drawing View1@Draw1.Drawing"
+  },
+  "top|top:v.left.0.0": {
+   "expected": 27.0,
+   "name": "RD3@Drawing View1@Draw1.Drawing"
+  },
+  "top|top:v.left.1.0": {
+   "expected": 18.0,
+   "name": "RD9@Drawing View1@Draw1.Drawing"
+  },
+  "top|top:v.left.2.0": {
+   "expected": null,
+   "name": "RD7@Drawing View1@Draw1.Drawing"
+  },
+  "top|top:v.right.1.0": {
+   "expected": 25.0,
+   "name": "RD5@Drawing View1@Draw1.Drawing"
+  },
+  "vent_detail|vent_detail:h.above.0.0": {
+   "expected": 0.5,
+   "name": "RD1@Drawing View6@Draw1.Drawing"
+  },
+  "vent_detail|vent_detail:v.left.0.0": {
+   "expected": 0.3,
+   "name": "RD2@Drawing View6@Draw1.Drawing"
+  }
+ },
+ "part": "box",
+ "reference": "box.SLDPRT",
+ "views": {
+  "front": {
+   "detail_at": [
+    0.0,
+    0.0
+   ],
+   "detail_of": null,
+   "detail_radius": 0.0,
+   "name": "Drawing View2",
+   "scale": 2.0,
+   "section_at": 0.0,
+   "section_axis": "h",
+   "section_of": null,
+   "x": 0.115,
+   "y": 0.125
+  },
+  "sec_a": {
+   "detail_at": [
+    0.0,
+    0.0
+   ],
+   "detail_of": null,
+   "detail_radius": 0.0,
+   "name": "Section View A-A",
+   "scale": 2.5,
+   "section_at": -9.0,
+   "section_axis": "h",
+   "section_of": "top",
+   "x": 0.3,
+   "y": 0.238
+  },
+  "sec_b": {
+   "detail_at": [
+    0.0,
+    0.0
+   ],
+   "detail_of": null,
+   "detail_radius": 0.0,
+   "name": "Section View B-B",
+   "scale": 2.5,
+   "section_at": 0.0,
+   "section_axis": "h",
+   "section_of": "top",
+   "x": 0.3,
+   "y": 0.175
+  },
+  "sec_v": {
+   "detail_at": [
+    0.0,
+    0.0
+   ],
+   "detail_of": null,
+   "detail_radius": 0.0,
+   "name": "Section View E-E",
+   "scale": 2.5,
+   "section_at": 8.0,
+   "section_axis": "h",
+   "section_of": "top",
+   "x": 0.3,
+   "y": 0.112
+  },
+  "top": {
+   "detail_at": [
+    0.0,
+    0.0
+   ],
+   "detail_of": null,
+   "detail_radius": 0.0,
+   "name": "Drawing View1",
+   "scale": 2.0,
+   "section_at": 0.0,
+   "section_axis": "h",
+   "section_of": null,
+   "x": 0.115,
+   "y": 0.215
+  },
+  "vent_detail": {
+   "detail_at": [
+    0.0,
+    0.3744999999999994
+   ],
+   "detail_of": "sec_v",
+   "detail_radius": 1.2,
+   "name": "Detail View F (15 : 1)",
+   "scale": 15.0,
+   "section_at": 0.0,
+   "section_axis": "h",
+   "section_of": null,
+   "x": 0.17,
+   "y": 0.075
+  }
+ }
+}

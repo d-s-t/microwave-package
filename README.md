@@ -305,6 +305,30 @@ expects, that dimension is dropped and logged rather than printed (see
 inside the page. Keep the runs folder path short: SolidWorks cannot save to
 a path over 259 characters (`MICROWAVE_RUNS_PATH`).
 
+**The drawings are saved SolidWorks drawings that follow the part.**
+`base_parts/box.SLDDRW` and `base_parts/lid_inside.SLDDRW` (with a
+`.layout.json` beside each naming the views and dimensions the generator
+made) are real drawings: open them in SolidWorks, move a dimension, reword a
+note, re-lay a view, commit. They are made once by the generator --
+`python -m microwave_package.design.solidworks_template box lid_inside`
+(this overwrites a hand-tuned one, so it only rebuilds what it is named) --
+and a combination's drawing is made from them: copied beside the part's
+SLDPRT copy, pointed at it (`ReplaceReferencedDocument`), rebuilt, the
+view scales refitted where the generator would now choose another scale
+(positions and any hand-set scale stay as the template has them), the
+title block set through the drawing's properties, and the PDF written; the
+filled drawing is kept as a download (`..._drawing.SLDDRW`). Every dimension
+the generator placed is read back and compared with the value this
+combination must give; one that does not apply here (no screws, no recess,
+no vents) or that reads wrong is deleted from this copy and listed in a "NOT
+SHOWN FOR THIS COMBINATION" note, never printed. A view the combination has
+no use for goes with its cutting line. Dimensions added by hand have no
+expected value and are left alone. Where the template cannot follow the part
+-- a view it does not have, or a section line or detail circle that would
+have to move (another screw inset, port space or floor thickness) -- or when
+there is no template, the drawing is built from scratch as before, and the
+log says why.
+
 The lid's relief depths set the line impedance, so they are not left to
 chance: the depth of the channel, of its deeper last millimetre and of the
 chip pocket are *measured off the part* (a ray from below the inner face

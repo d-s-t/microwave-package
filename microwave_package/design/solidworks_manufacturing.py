@@ -91,11 +91,14 @@ def _make_copy(app, part: str, base: str, equations_path: str, destination: str,
             logger.warning("Could not close %s: %s", base, exc)
 
 
-def _draw_copy(app, part: str, sldprt_path: str, pdf_path: str, title: str,
+def _draw_copy(app, part: str, sldprt_path: str, pdf_path: str, slddrw_path: str, title: str,
                values: Dict[str, float], material: str, log: Callable[[str], None]) -> None:
     """Draw the saved copy (not the base part: it holds this combination's
-    dimensions, and its name is unique) and write the PDF."""
-    from . import solidworks_drawing
+    dimensions, and its name is unique): from the saved drawing template
+    when there is one that can follow this combination, from scratch when
+    there is not. Either way the PDF is written and the drawing is kept
+    beside the part copy as an SLDDRW."""
+    from . import solidworks_drawing, solidworks_template
     import pythoncom
     import win32com.client
 
@@ -107,11 +110,24 @@ def _draw_copy(app, part: str, sldprt_path: str, pdf_path: str, title: str,
     if model is None:
         raise RuntimeError(f"could not open {sldprt_path} (SolidWorks error {errors.value})")
     try:
-        log(f"{part}: drawing and exporting the PDF")
-        dropped = solidworks_drawing.make_pdf(app, model, sldprt_path, part, pdf_path, title,
-                                              values, log, material=material)
-        if dropped:
-            log(f"WARNING: {len(dropped)} dimension(s) were left off the drawing: " + "; ".join(dropped))
+        # measured before any drawing is open (see layout_for_part)
+        layout = solidworks_drawing.layout_for_part(model, part, values, log)
+        left_off = None
+        if solidworks_template.has_template(part):
+            log(f"{part}: drawing from the saved template")
+            left_off = solidworks_template.fill_template(
+                app, part, sldprt_path, slddrw_path, pdf_path, title, values, material, layout, log)
+        if left_off is None:
+            log(f"{part}: drawing and exporting the PDF")
+            drawing, sheet, _ = solidworks_drawing.build_drawing(
+                app, model, sldprt_path, part, title, values, log, material, layout=layout)
+            ok, reason = step_generation.save_as_step(drawing, slddrw_path, SAVE_SILENT)
+            if not ok:
+                log(f"WARNING: could not keep the drawing as {os.path.basename(slddrw_path)}: {reason}")
+            solidworks_drawing.finish_pdf(app, drawing, sheet, pdf_path)
+            left_off = sheet.rejected
+        if left_off:
+            log(f"WARNING: {len(left_off)} dimension(s) were left off the drawing: " + "; ".join(left_off))
     finally:
         try:
             app.CloseDoc(os.path.basename(sldprt_path))
@@ -131,7 +147,8 @@ def export_part(
 ) -> None:
     """Make the requested files for one part.
 
-    `outputs` maps "sldprt" and/or "drawing" to the path to write. The
+    `outputs` maps "sldprt", "drawing" (the PDF) and "slddrw" (the drawing
+    itself, kept to be opened and tuned) to the path to write. The
     drawing is made from the SLDPRT copy, which is `outputs["sldprt"]`, or
     `sldprt_path` when that already exists. Raises RuntimeError, saying
     what, when a file cannot be made.
@@ -152,4 +169,5 @@ def export_part(
     if "sldprt" in outputs:
         _make_copy(app, part, base, equations_path, outputs["sldprt"], log)
     if "drawing" in outputs:
-        _draw_copy(app, part, sldprt_path, outputs["drawing"], title, values, material, log)
+        slddrw = outputs.get("slddrw") or os.path.splitext(outputs["drawing"])[0] + ".SLDDRW"
+        _draw_copy(app, part, sldprt_path, outputs["drawing"], slddrw, title, values, material, log)
