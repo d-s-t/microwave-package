@@ -42,6 +42,7 @@ SHEET_W, SHEET_H = 0.420, 0.297
 MARGIN = 0.010
 UNITS_LINEAR = 47          # swUserPreferenceIntegerValue_e.swUnitsLinear, found by probing
 UNIT_MM = 0                # swLengthUnit_e.swMM
+TOLERANCE_SYMMETRIC = 4    # swTolType_e.swTolSYMMETRIC
 # Lines sketched on the sheet come out twice the size they are asked for
 # (a frame 0.01 m in lands 0.02 m in) on the ISO template of SolidWorks 2026,
 # with the sheet at 1:1 and no view active; notes and views are placed
@@ -75,6 +76,7 @@ class Dim:
     suffix: str = ""
     group: str = ""         # candidates for one unknown value: the first that measures right is kept
     search: float = 0.0     # if the edges are not where expected, try points up to two steps of this (mm) away
+    tolerance: float = 0.0  # symmetric +- tolerance (mm) to print with the value; 0 prints none
 
 
 @dataclass
@@ -88,6 +90,7 @@ class View:
     section_of: Optional[str] = None            # key of the parent view
     section_at: float = 0.0                     # cut position in the parent (mm, across)
     section_label: str = ""
+    section_axis: str = "h"                     # "h": cut line along u at v=section_at; "v": along v at u=section_at
     flipped: bool = False                       # a section that comes out upside down (v -> -v)
     extent: Tuple[float, float] = (0.0, 0.0)    # width and height of the part in this view (mm)
     detail_of: Optional[str] = None             # key of the view this is an enlarged detail of
@@ -250,12 +253,68 @@ def lid_layout(values: Dict[str, float], thickness_mm: float) -> List[View]:
         ]
     out = [inner_face, outer_face]
     sec_scale = pick_scale(length, thickness_mm, 175, 60)
-    along = View("*Top", "sec_c", 0.30, 0.215, sec_scale, section_of="outer", section_at=0.0,
+    along = View("*Top", "sec_c", 0.30, 0.262, sec_scale, section_of="outer", section_at=0.0,
                  section_label="C", extent=(length, thickness_mm), flipped=True)
     h2 = thickness_mm / 2.0          # v = Y - h2, Y measured from the inner face; this view reads upside down
     along.dims += [Dim("v", (-length / 2 + 2, -h2), (-length / 2 + 2, h2), "left", 0, thickness_mm)]
     out.append(along)
+    out += relief_sections(values, thickness_mm, length, channel, inner, outer, side)
     return out
+
+
+# The depths the lid's relief steps are cut to. The channel and the chip
+# pocket set the line impedance over the die and the launch, so the shop is
+# given each depth with a tolerance, on a detail enlarged enough to show it.
+RELIEF_TOLERANCE = 0.02       # mm, +-
+CHANNEL_DEPTH_DEFAULT = 0.2   # route_clearence
+DEEP_DEPTH_CANDIDATES = (0.4, 0.3, 0.5, 0.6)   # the deeper steps: read off the section, not assumed
+DETAIL_SCALE = 20.0
+DETAIL_RADIUS = 1.2           # mm
+
+
+def relief_sections(values: Dict[str, float], thickness_mm: float, length: float, channel: float,
+                    inner: float, outer: float, side: float) -> List[View]:
+    """Three cross-sections of the inner (relief) face, each with an
+    enlarged detail that carries the depth, so a 0.2 mm step is not
+    dimensioned from a view where it is a few pixels:
+
+        G  across the channel, mid-way along it: its width and depth
+        H  across the channel again, in the last millimetre before the
+           connector pocket, where it is cut deeper
+        K  across the chip pocket, clear of the channel: the pocket depth
+    """
+    h2 = thickness_mm / 2.0                      # v = Y - h2, Y from the inner face; the views read upside down
+    depth = _g(values, "route_clearence", CHANNEL_DEPTH_DEFAULT)
+    scale = 2.5
+    chip = 7.5                                   # the chip pocket (measured off the drawing, see tests)
+    # key, label, axis, cut position, where the section sits on the sheet, where its detail sits
+    sections = (
+        ("sec_g", "G", "v", inner / 2.0, (0.235, 0.212), (0.225, 0.088)),
+        ("sec_h", "H", "v", inner - 0.5, (0.315, 0.212), (0.285, 0.088)),
+        ("sec_k", "K", "h", chip / 2.0, (0.330, 0.158), (0.345, 0.088)),
+    )
+    views: List[View] = []
+    for index, (key, label, axis, cut, at, detail_at) in enumerate(sections):
+        view = View("*Bottom", key, at[0], at[1], scale, section_of="inner",
+                    section_at=cut, section_axis=axis, section_label=label,
+                    extent=(side if axis == "v" else length, thickness_mm), flipped=True)
+        views.append(view)
+        detail = View("*Bottom", key + "_detail", detail_at[0], detail_at[1], DETAIL_SCALE, flipped=True,
+                      extent=(2 * DETAIL_RADIUS, 2 * DETAIL_RADIUS), detail_of=key,
+                      detail_at=(0.0 if axis == "v" else chip / 2.0, depth / 2.0 - h2),
+                      detail_radius=DETAIL_RADIUS, detail_label=chr(ord("M") + index))
+        if key == "sec_g":
+            detail.dims += [
+                Dim("h", (0.0, 0.0), None, "above", 0, channel, search=0.1),
+                Dim("v", (0.0, 0.0), (channel, -depth), "left", 0, depth, search=0.1,
+                    tolerance=RELIEF_TOLERANCE),
+            ]
+        else:
+            for candidate in DEEP_DEPTH_CANDIDATES:
+                detail.dims.append(Dim("v", (0.0, 0.0), (channel, -candidate), "left", 0, candidate,
+                                       search=0.1, tolerance=RELIEF_TOLERANCE, group="deep"))
+        views.append(detail)
+    return views
 
 
 # -- SolidWorks ----------------------------------------------------------
@@ -311,9 +370,13 @@ class _Sheet:
         self.drw.ActivateView(sw_parent.Name)
         sketcher = self.drw.SketchManager
         sketcher.InsertSketch(True)
-        reach = (parent.extent[0] / 2 + 6) / 1000.0
         cut = view.section_at / 1000.0
-        line = sketcher.CreateLine(-reach, cut, 0, reach, cut, 0)
+        if view.section_axis == "v":
+            reach = (parent.extent[1] / 2 + 6) / 1000.0
+            line = sketcher.CreateLine(cut, -reach, 0, cut, reach, 0)
+        else:
+            reach = (parent.extent[0] / 2 + 6) / 1000.0
+            line = sketcher.CreateLine(-reach, cut, 0, reach, cut, 0)
         sketcher.InsertSketch(True)
         self.drw.ClearSelection2(True)
         line.Select4(False, self._none)
@@ -376,7 +439,8 @@ class _Sheet:
         for du, dv in steps:
             moved = Dim(dim.kind, (dim.a[0] + du * dim.search, dim.a[1] + dv * dim.search),
                         None if dim.b is None else (dim.b[0] + du * dim.search, dim.b[1] + dv * dim.search),
-                        dim.side, dim.tier, dim.expected, dim.prefix, dim.suffix)
+                        dim.side, dim.tier, dim.expected, dim.prefix, dim.suffix,
+                        tolerance=dim.tolerance)
             if self._dimension_at(key, moved, quiet=True):
                 del self.rejected[rejected:]
                 return True
@@ -424,6 +488,8 @@ class _Sheet:
             shown.ShowParenthesis = False
         except Exception:
             pass
+        if dim.tolerance:
+            self._tolerate(shown, dim.tolerance)
         if dim.prefix:
             shown.SetText(1, dim.prefix)
         if dim.suffix:
@@ -437,6 +503,17 @@ class _Sheet:
             return 0 if found is None else len(found)
         except Exception:
             return 0
+
+    def _tolerate(self, shown, plus_minus: float) -> None:
+        """Print a symmetric +- tolerance beside the dimension. The lid's
+        relief depths set the line impedance, so they carry one."""
+        try:
+            tolerance = shown.GetDimension2(0).Tolerance
+            tolerance.Type = TOLERANCE_SYMMETRIC
+            # the drawing's units are millimetres (UNITS_LINEAR above)
+            tolerance.SetValues(plus_minus, plus_minus)
+        except Exception as exc:
+            self.log(f"WARNING: could not put a tolerance on a dimension ({exc})")
 
     def _delete(self, shown, key: str, before: int) -> None:
         """Take back a dimension that measured the wrong thing. Deleting the

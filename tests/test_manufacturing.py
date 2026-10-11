@@ -448,6 +448,43 @@ class TestAltiumOutputs(ManufacturingCase):
             self.assertIn("not from the .PcbDoc", z.read("supplement_from_parameters/README.txt").decode())
             self.assertIn("Gerber/package.GTL", names)     # Altium's own files untouched
 
+    def test_a_complete_altium_set_gets_no_supplement(self):
+        self.build_geometry()
+        zip_path = manufacturing.target_path(self.run, self.combo, "pcb_altium_fab")
+        manufacturing.write_zip(zip_path, {
+            "Gerber/package.GTL": "G04*", "Gerber/package.GM2": "G04*",
+            "NC Drill/package-Plated.TXT": "M48", "NC Drill/package-NonPlated.TXT": "M48"})
+        self.assertEqual(manufacturing.altium_fab_gaps(zip_path), {"outline": False, "npth": False})
+        self.assertEqual(manufacturing.add_outline_supplement(self.run, self.combo, VALUES, "n"), [])
+        with zipfile.ZipFile(zip_path) as z:
+            self.assertFalse([n for n in z.namelist() if n.startswith(manufacturing.SUPPLEMENT_FOLDER)])
+
+    def test_only_what_altium_lacks_is_supplemented(self):
+        self.build_geometry()
+        zip_path = manufacturing.target_path(self.run, self.combo, "pcb_altium_fab")
+        manufacturing.write_zip(zip_path, {"Gerber/package.GTL": "G04*", "Gerber/package.GM2": "G04*",
+                                           "NC Drill/package-Plated.TXT": "M48"})
+        added = manufacturing.add_outline_supplement(self.run, self.combo, VALUES, "n")
+        self.assertEqual(added, ["n_NPTH.drl"])
+        with zipfile.ZipFile(zip_path) as z:
+            note = z.read("supplement_from_parameters/README.txt").decode()
+        self.assertIn("NPTH", note)
+        self.assertNotIn("Edge_Cuts", note)
+
+    def test_the_outjob_plots_the_outline_layer_the_generator_draws(self):
+        from microwave_package.design import outjob
+        self.assertEqual(outjob.LAYER_IDS["outline"], 16908288 + 2)      # Mechanical 2
+        self.assertIn("16908290~1", outjob.text("C:\\out"))
+
+    def test_the_generator_draws_the_outline_and_the_mount_holes(self):
+        with open(os.path.join(os.path.dirname(paths.__file__), "..", "base_parts", "altium",
+                               "GenerateFromParams.pas"), encoding="utf-8") as f:
+            script = f.read()
+        self.assertIn("AddMountHole", script)
+        self.assertIn("Pd.Plated := False", script)
+        self.assertIn("AddOutlineBox(Board, HalfL, HalfS)", script)
+        self.assertIn("eMechanical2", script)
+
     def test_no_altium_zip_means_no_supplement(self):
         self.build_geometry()
         manufacturing.add_outline_supplement(self.run, self.combo, VALUES, "n")   # no exception

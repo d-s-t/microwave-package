@@ -142,6 +142,53 @@ class TestLidLayout(unittest.TestCase):
         self.assertFalse([d for d in self.views(screws_on=0.0)["outer"].dims if d.kind == "dia"])
 
 
+class TestLidReliefDepths(unittest.TestCase):
+    """The relief depths set the line impedance, so each is dimensioned with
+    a tolerance on a detail enlarged enough to show it."""
+
+    def views(self, **over):
+        return {v.key: v for v in sd.lid_layout({**VALUES, "route_clearence": 0.2, **over}, 1.5)}
+
+    def test_each_relief_section_has_an_enlarged_detail(self):
+        views = self.views()
+        for key in ("sec_g", "sec_h", "sec_k"):
+            detail = views[key + "_detail"]
+            self.assertEqual(detail.detail_of, key)
+            self.assertGreaterEqual(detail.scale, 10.0)          # 5:1 or more, per the review
+            self.assertGreater(detail.scale, views[key].scale)
+
+    def test_sections_across_and_along_the_features(self):
+        views = self.views()
+        self.assertEqual(views["sec_g"].section_axis, "v")
+        self.assertEqual(views["sec_k"].section_axis, "h")
+        self.assertEqual(views["sec_g"].section_of, "inner")
+
+    def test_the_channel_depth_follows_route_clearence_and_carries_a_tolerance(self):
+        detail = self.views(route_clearence=0.25)["sec_g_detail"]
+        depth = [d for d in detail.dims if d.kind == "v"][0]
+        self.assertEqual(depth.expected, 0.25)
+        self.assertEqual(depth.tolerance, sd.RELIEF_TOLERANCE)
+        width = [d for d in detail.dims if d.kind == "h"][0]
+        self.assertEqual(width.expected, 1.0)
+
+    def test_the_deeper_steps_are_read_off_the_section_with_a_tolerance_each(self):
+        for key in ("sec_h_detail", "sec_k_detail"):
+            dims = self.views()[key].dims
+            self.assertTrue(dims)
+            self.assertTrue(all(d.tolerance == sd.RELIEF_TOLERANCE for d in dims))
+            self.assertEqual({d.group for d in dims}, {"deep"})
+
+    def test_the_details_stay_on_the_sheet_clear_of_the_title_block(self):
+        for key, view in self.views().items():
+            if not key.endswith("_detail"):
+                continue
+            radius = view.scale * view.detail_radius / 1000.0
+            self.assertGreater(view.x - radius, sd.MARGIN, key)
+            self.assertLess(view.x + radius, sd.SHEET_W - sd.MARGIN, key)
+            if view.x + radius > 0.26:                            # under the title block's columns
+                self.assertGreater(view.y - radius, 0.06, key)
+
+
 class TestScaleAndPdfCheck(unittest.TestCase):
     def test_pick_scale_takes_the_largest_that_fits(self):
         self.assertEqual(sd.pick_scale(62, 27, 150, 60), 2.0)
