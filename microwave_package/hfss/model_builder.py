@@ -1366,7 +1366,16 @@ def build_model(
                 return
         else:
             log(f"Importing {step_paths['box']}...")
+            before_box = set(hfss.modeler.object_names)
             hfss.modeler.import_3d_cad(step_paths["box"])
+            # SolidWorks names a part's one solid after the LAST feature that
+            # shapes it: "box" while that is the final mirror, "Vent_Screws"
+            # once the vent cuts follow it. Everything below looks for "box".
+            box_names = [n for n in hfss.modeler.object_names if n not in before_box]
+            if len(box_names) > 1:
+                hfss.modeler.unite(box_names)
+            if box_names and box_names[0] != "box":
+                hfss.modeler[box_names[0]].name = "box"
 
             log(f"Importing {step_paths['lid_inside']}...")
             before_lid = set(hfss.modeler.object_names)
