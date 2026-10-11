@@ -633,6 +633,10 @@ def check_layout(values: Dict[str, float], mat_pcb: Optional[str] = None,
     reason = check_screws(values, gap) if not parameter_meta.is_bare_board(values) else None
     if reason:
         return reason
+    from . import venting
+    reason = venting.check(values)
+    if reason:
+        return reason
 
     # A bare board has no die: no opening, no bond fingers and nothing
     # to keep clear of them, so the room a die would need is not asked

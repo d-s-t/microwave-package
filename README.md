@@ -174,6 +174,8 @@ in memory only -- the parts are never saved back, so a run leaves no
 modified binaries in the checkout. If you re-save the parts yourself, do it
 from the checkout you work in; the stored path is then harmless either way.
 
+**Vent grooves.** `vents_on = 1` (default) cuts narrow grooves in the top of the box floor so the pedestal recess and the screw bores are not sealed pockets (`vent_width`, `vent_depth`; far below cutoff, under the board's ground plane). The audit, the geometry and what was added to `box.SLDPRT` are in `VENTING.md`; the plan is `design/venting.py`.
+
 **Corner screws.** The "Corner screws" tick (`screws_on = 1`) holds the lid,
 PCB and box together with four M2 ISO 10642 countersunk screws, `screw_inset`
 in from the PCB edge on both axes, with holes in all three parts: a clearance
