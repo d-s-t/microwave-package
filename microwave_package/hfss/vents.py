@@ -23,6 +23,9 @@ from ..design import cavity as cavity_plan, venting
 
 logger = logging.getLogger("microwave_package")
 
+# How far the copper skin reaches into the groove's walls, so it fuses with the box.
+SKIN_OVERLAP = 0.1
+
 
 def build_vents(hfss, frame, stack, values, log=logger.info) -> Optional[List[str]]:
     """Cut every vent into `box`. Returns what was cut, or None when
@@ -60,7 +63,8 @@ def _restore_copper_skin(hfss, frame, stack, values, vents, log) -> List[str]:
     The copper is whole on the real board, so the groove's top
     `copper_thickness` is given back to the box as a skin under it, from
     the die's opening to the board's edge: the groove runs below the
-    ground plane, which is what it is meant to do.
+    ground plane, which is what it is meant to do. The skin floats above
+    the groove's floor, so it is joined to the box through the groove's walls.
 
     The screw vents need none: the ground plane gives up the whole corner
     round each screw, so no copper lies over them.
@@ -77,7 +81,10 @@ def _restore_copper_skin(hfss, frame, stack, values, vents, log) -> List[str]:
     for index, (v0, v1) in enumerate(((inner, half_side), (-half_side, -inner))):
         if v1 - v0 <= 0:
             continue
-        origin, sizes = frame.box(u_min, v0, u_max, v1, stack.pcb_bottom - thickness, thickness)
+        # a skin as wide as the groove only touches its walls edge to edge, and
+        # a union of bodies that merely touch fails; it reaches into them
+        origin, sizes = frame.box(u_min - SKIN_OVERLAP, v0, u_max + SKIN_OVERLAP, v1,
+                                  stack.pcb_bottom - thickness, thickness)
         skin = modeler.create_box(origin=origin, sizes=sizes)
         skin.name = f"vent_skin_{index}"
         modeler.unite(["box", skin.name])

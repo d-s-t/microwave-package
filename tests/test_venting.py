@@ -179,7 +179,7 @@ class TestTheBuilder(unittest.TestCase):
         self.assertAlmostEqual(spans[0][1], -3.25)
         self.assertAlmostEqual(spans[1][0], 3.25)
         self.assertAlmostEqual(spans[1][1], 12.5)
-        self.assertAlmostEqual(skins[0][1][0], 0.5)
+        self.assertAlmostEqual(skins[0][1][0], 0.5 + 2 * vent_builder.SKIN_OVERLAP)
 
     def test_no_skin_for_a_sheet_of_copper_or_without_the_pedestal_vent(self):
         sheet = cg.Stack(pcb_bottom=3.0, pcb_top=3.381, chip_bottom=3.0, chip_top=3.381,
