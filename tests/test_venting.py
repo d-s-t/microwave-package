@@ -172,13 +172,13 @@ class TestTheBuilder(unittest.TestCase):
         for origin, sizes in skins:
             self.assertAlmostEqual(origin[1], 3.0 - 0.035)
             self.assertAlmostEqual(sizes[1], 0.035)
-        # from the die's opening (3.25) to the board edge (12.5), both sides,
+        # from the die's opening (3.25) into the wall just past the board edge (12.5), both sides,
         # across the groove's own width
         spans = sorted((o[2], o[2] + s[2]) for o, s in skins)
-        self.assertAlmostEqual(spans[0][0], -12.5)
+        self.assertAlmostEqual(spans[0][0], -12.5 - vent_builder.WALL_OVERLAP)
         self.assertAlmostEqual(spans[0][1], -3.25)
         self.assertAlmostEqual(spans[1][0], 3.25)
-        self.assertAlmostEqual(spans[1][1], 12.5)
+        self.assertAlmostEqual(spans[1][1], 12.5 + vent_builder.WALL_OVERLAP)
         self.assertAlmostEqual(skins[0][1][0], 0.5 + 2 * vent_builder.SKIN_OVERLAP)
 
     def test_no_skin_for_a_sheet_of_copper_or_without_the_pedestal_vent(self):

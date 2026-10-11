@@ -25,6 +25,11 @@ logger = logging.getLogger("microwave_package")
 
 # How far the copper skin reaches into the groove's walls, so it fuses with the box.
 SKIN_OVERLAP = 0.1
+# How far it runs on into the wall past the board's edge. Ending exactly at the
+# wall's inner face leaves the skin touching the wall along one edge only,
+# which AEDT's union refuses ("Error in uniting objects"); inside the wall it
+# overlaps solid metal.
+WALL_OVERLAP = 0.2
 
 
 def build_vents(hfss, frame, stack, values, log=logger.info) -> Optional[List[str]]:
@@ -78,7 +83,8 @@ def _restore_copper_skin(hfss, frame, stack, values, vents, log) -> List[str]:
     u_min, _, u_max, _ = vent.rectangle()
     made: List[str] = []
     modeler = hfss.modeler
-    for index, (v0, v1) in enumerate(((inner, half_side), (-half_side, -inner))):
+    reach = half_side + WALL_OVERLAP
+    for index, (v0, v1) in enumerate(((inner, reach), (-reach, -inner))):
         if v1 - v0 <= 0:
             continue
         # a skin as wide as the groove only touches its walls edge to edge, and
