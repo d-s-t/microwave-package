@@ -44,6 +44,17 @@ that breaks one is refused before anything is drawn:
 
 - The CPW gap is solved, never typed, and must be at least **100 um**
   (the fab's etch limit); a trace that would give less is refused.
+- The ground beside the SMP signal pad stays at least **100 um** from it.
+  The pad (0.48 mm) is wider than the trace, so a ground edge that followed
+  the trace would leave only gap - (0.48 - trace) / 2: 71 um for a 0.4 mm
+  trace with a 111 um gap, 54 um with 94 um. The layout pulls the ground
+  back to `launch_clearance` (default **0.2 mm**) off the pad and that far
+  past its end, keeps the via fence out of the notch, and refuses a
+  `launch_clearance` under 100 um where the gap alone would leave less.
+  HFSS (TMM 10i, bare board, 120 / 200 / 300 um, 2-26 GHz): below 10 GHz the
+  three give the same S11 (mean -6.9 dB) and S21 (within 0.2 dB), so 0.2 mm
+  was kept for the margin over the fab floor; 300 um is slightly worse above
+  18 GHz (mean S11 -1.35 against -1.06 dB).
 - `route_width` must be at least `cpw_trace_width` + 0.1 mm, or the lid
   shorts the trace. The preflight additionally warns when the channel does
   not clear the trace plus both gaps plus 0.2 mm.
@@ -107,6 +118,7 @@ fabricator's real limits replace the defaults with `--fab`.
 |---|---|---|
 | Narrowest line | >= fab min trace (default 100 um) | yes |
 | Narrowest gap | >= fab min gap (default 100 um) | yes |
+| Ground to SMP signal pad | >= 100 um (`launch_clearance`, default 200 um) | yes |
 | Via drill and aspect ratio | drill >= fab min (150 um); board thickness / drill <= 8:1 | yes |
 | Annular ring | (via - drill) / 2 >= 75 um | yes |
 | Via and pad spacing | `via_min_spacing` >= fab min space | yes |
