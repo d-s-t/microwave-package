@@ -32,7 +32,7 @@ across it; the 5880/TMM defaults are not what matters here, the shapes are).
 
 * **Pedestal vent:** a groove in the top of the box floor, along z through the
   middle of the recess (x = 0), through the wall, out of both side faces.
-  Created only when `pedestal_depth` > 0 (the recess exists).
+  Created only when `pedestal_depth` > 0 and the board is not a bare board (`no_chip` = 0): a bare board has no die and no opening in its bottom copper.
 * **Screw vents:** from each tapped hole, along z to the nearest side face
   (3.5 mm and the wall away). Created only when `screws_on` = 1.
 
@@ -60,7 +60,8 @@ the final `box` mirror, each sketched on the cavity floor face, cut
 
 * `Sketch6` + **`Vent_Pedestal`**: one rectangle, `vent_width` x (`box_side` + 0.4),
   centred on the origin. Suppressed by the equation
-  `IIF(vents_on > 0.5, IIF(pedestal_depth > 0, 0, 1), 1)`.
+  `IIF(vents_on > 0.5, IIF(pedestal_depth > 0, IIF(no_chip > 0.5, 1, 0), 1), 1)`
+  (the `no_chip` term was added after the first version; see the note below).
 * `Sketch7` + **`Vent_Screws`**: four rectangles, `vent_width` wide, from the
   tap-hole centre line (`pcb_side/2 - screw_inset`) to `box_side/2 + 0.2`.
   Suppressed by `IIF(vents_on > 0.5, IIF(screws_on > 0.5, 0, 1), 1)`.
@@ -111,6 +112,15 @@ under it would leave the copper half over air (HFSS: "pcb_copper_bottom and box 
 importer gives the box back as a skin two copper thicknesses deep under the copper over each groove (from the die opening
 to the wall for the pedestal vent; from just inside the keep-out circle to the wall for a screw vent).
 The skin is model bookkeeping, not part of the real part, whose grooves are open to the board's underside.
+
+**Pending, needs SolidWorks:** the `no_chip` term in `Vent_Pedestal`'s suppression is
+in `add_vents.py` and `design/venting.py` but the committed `box.SLDPRT` still has the
+first equation (`IIF(vents_on > 0.5, IIF(pedestal_depth > 0, 0, 1), 1)`). The HFSS side
+does not depend on it (`hfss/vents.py` follows `venting.plan`, and the box's own groove
+is only an unused tunnel on a bare board with a recess). To bring the part in line, with the
+tools token: `python base_parts/add_vents.py --fix-pedestal-suppression` (written, not yet
+run; if `Equation(i, text)` does not set through late-bound COM, edit the one equation by
+hand in the Equations dialog: feature `Vent_Pedestal`).
 
 ## For manufacturing
 
