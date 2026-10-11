@@ -20,11 +20,12 @@ def solvers():
 
 
 class TestWhatIsRegistered(unittest.TestCase):
-    def test_both_solvers_are_loaded_by_importing_the_package(self):
+    def test_every_solver_is_loaded_by_importing_the_package(self):
         """The registry is empty until the solvers import themselves into
         it, which importing microwave_package.hfss is what does."""
         self.assertEqual(
-            [t["value"] for t in registry.solution_types()], [EIGENMODE, DRIVEN_MODAL]
+            [t["value"] for t in registry.solution_types()],
+            [EIGENMODE, DRIVEN_MODAL, "LineImpedance"],
         )
 
     def test_eigenmode_is_the_default(self):

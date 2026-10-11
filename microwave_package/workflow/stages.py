@@ -41,7 +41,7 @@ import threading
 from typing import Callable, Dict, List, Optional
 
 from ..design import altium_generation, constraints, equations as eq, step_generation
-from ..hfss import model_builder
+from ..hfss import model_builder, registry
 from . import resilient_io
 
 logger = logging.getLogger("microwave_package")
@@ -441,14 +441,27 @@ def run_local_stages(
         log("Altium is off for this run -- building the SolidWorks-only geometry, "
             "with no copper.")
 
-    solidworks = _SolidWorksStage(
-        run, original_content, parameter_defaults, equations_path, part_paths,
-        _prefixed(log, "SolidWorks"),
-    )
-    upstream.append(_Lane(
-        "SolidWorks", solidworks.build, close=solidworks.close,
-        stop_event=stop_event, abort=abort,
-    ))
+    if registry.for_settings(analysis_settings).needs_solid:
+        solidworks = _SolidWorksStage(
+            run, original_content, parameter_defaults, equations_path, part_paths,
+            _prefixed(log, "SolidWorks"),
+        )
+        upstream.append(_Lane(
+            "SolidWorks", solidworks.build, close=solidworks.close,
+            stop_event=stop_event, abort=abort,
+        ))
+    else:
+        # The solver draws its own model: no solid to rebuild, and the
+        # per-combination equations snapshot the SolidWorks stage would
+        # have written is written here, because the AEDT stage reads it.
+        log("This solution type draws its own model -- SolidWorks is not used.")
+        for combo_id in buildable:
+            eq.write_file(
+                os.path.join(run.combo_dir(combo_id), "dimensions.txt"),
+                eq.with_values(original_content, parameter_defaults or {}, combos[combo_id]["params"]),
+            )
+            if combos[combo_id].get("step_status") != "done":
+                run.update_combo(combo_id, step_status="done", step_paths={})
 
     aedt = _AedtStage(run, analysis_settings, handoff, _prefixed(log, "AEDT"))
     aedt_lane = _Lane("AEDT", aedt.build, stop_event=stop_event, abort=abort)
@@ -458,14 +471,19 @@ def run_local_stages(
 
     lanes = [*upstream, aedt_lane]
     programs = [lane.program for lane in lanes]
-    log(f"{len(buildable)} combination(s) to prepare. "
-        f"{', '.join(programs[:-1])} and {programs[-1]} work at the same time, "
-        "each on its own combination.")
+    if len(programs) > 1:
+        log(f"{len(buildable)} combination(s) to prepare. "
+            f"{', '.join(programs[:-1])} and {programs[-1]} work at the same time, "
+            "each on its own combination.")
+    else:
+        log(f"{len(buildable)} combination(s) to prepare, in {programs[0]}.")
 
     for lane in lanes:
         lane.start()
     try:
         for combo_id in buildable:
+            if not upstream:
+                aedt_lane.submit(combo_id)      # nothing to wait for
             for lane in upstream:
                 lane.submit(combo_id)
         for lane in upstream:

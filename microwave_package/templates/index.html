@@ -522,8 +522,11 @@
   function sync() {
     var chosen = document.querySelector('input[name="solution_type"]:checked');
     if (!chosen) { return; }
-    var both = document.getElementById('run-both');
-    both = both && both.checked;
+    var bothBox = document.getElementById('run-both');
+    // A line-impedance check is its own question, not half of a pair.
+    var line = chosen.value === 'LineImpedance';
+    if (bothBox) { bothBox.disabled = line; if (line) { bothBox.checked = false; } }
+    var both = bothBox && bothBox.checked;
     panels.forEach(function (panel) {
       panel.hidden = !both && panel.dataset.solutionType !== chosen.value;
     });

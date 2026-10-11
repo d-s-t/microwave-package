@@ -14,7 +14,7 @@ Altium draws combination 5's boards while SolidWorks rebuilds
 combination 4's solid and AEDT imports combination 3's STEP. A
 combination reaches AEDT once both of its halves have landed.
 
-A run asks HFSS one of two questions, chosen per run:
+A run asks HFSS one of three questions, chosen per run:
 
 - **Eigenmode** -- what does this cavity resonate at? Source-free, no
   ports; the answer is a frequency and a Q per mode.
@@ -22,8 +22,18 @@ A run asks HFSS one of two questions, chosen per run:
   two SMP ports over a frequency sweep; the answer is S11 and S21 across
   the band, plus a Touchstone file per combination.
 
-By default a run does **both**, on the same geometry (see
+- **Line impedance** -- is the CPW really 50 ohm? A short straight section
+  of the line as built (substrate, trace, solved gap, ground, via posts,
+  the lid with its relief channel), wave ports at both ends; the answer is
+  Zo against frequency with a pass/fail against 50 +- 2.5 ohm. An
+  independent check of the analytic gap calculation, cheap to run. See
+  [Line impedance](#line-impedance).
+
+By default an Eigenmode or Driven run does **both**, on the same geometry (see
 [Eigenmode and Driven together](#eigenmode-and-driven-together)).
+
+What has to be checked before a board is ordered, and the command that does
+the automatic part, is in [PRE_MANUFACTURING.md](PRE_MANUFACTURING.md).
 
 They share the same geometry and differ only in what is solved on it.
 Each is a solver plugged into [`hfss/registry.py`](microwave_package/hfss/registry.py),
@@ -459,6 +469,45 @@ gives the box and lid a finite-conductivity boundary of *Box conductivity*
 3.8e7 at room temperature), with no thickness -- an Eigenmode design
 refuses one on that boundary. The setting is `box_conductivity` in a run's
 `materials`, and is listed on the comparison page.
+
+## Line impedance
+
+The third solution type checks the CPW rather than the package. It builds
+only a few millimetres of the line from the run's own copper layout (or from
+the parameters when there is none), including the lid sitting on the
+ground copper with its relief channel, which the analytic 50 ohm gap
+(`design/cpw.py`) does not see, puts a wave port on each end face, and sweeps
+the band. Zo is derived from the section's S-parameters (and the port's own
+Zo is shown when HFSS reports it); the run page shows PASS/FAIL against the
+target and tolerance, the Zo range, the gap solved and the analytic gap.
+
+From the web form pick *Line impedance*; from the command line:
+
+```
+python -m microwave_package.pipeline --solution-type LineImpedance --sweep cpw_trace_width=0.4 --mat-pcb "Rogers RT/duroid 5880 (tm)"
+python -m microwave_package.pipeline --solution-type LineImpedance --setting which_line=chip --sweep cpw_trace_width=0.4
+```
+
+`--setting NAME=VALUE` (repeatable) sets any analysis setting that has no flag of its
+own -- `which_line` (board or chip), `section_length_mm` (3 mm, kept under a half-wavelength), `line_f_start_ghz`,
+`line_f_stop_ghz`, `line_z0_ohm`, `line_tolerance_ohm` and the rest. Sweeping
+`cpw_trace_width` or the gap and comparing the verdicts is how to see what HFSS
+wants against what the formula gives. It needs no SolidWorks, so a run goes
+straight from the Altium step to AEDT, and it is never paired with an Eigenmode run.
+
+The chip line (`which_line = chip`) rests on two numbers that are the least
+certain in the model -- the air under the die and the lid's cover over it.
+
+## Preflight
+
+```
+python -m microwave_package.preflight --candidate --out preflight_report.md
+```
+
+Runs every pre-manufacturing check that needs no simulation (layout, CPW gap,
+fabricator limits, screws, cryogenic expansion) and lists the ones that do as
+manual with how to do each. Options and the checklist itself are in
+[PRE_MANUFACTURING.md](PRE_MANUFACTURING.md).
 
 ## Output
 
