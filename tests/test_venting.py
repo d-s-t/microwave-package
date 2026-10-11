@@ -172,8 +172,9 @@ class TestTheBuilder(unittest.TestCase):
                          ["vent_skin_pedestal_0", "vent_skin_pedestal_1"] +
                          [f"vent_skin_screw_{i}_0" for i in (1, 2, 3, 4)])
         for origin, sizes in skins:
-            self.assertAlmostEqual(origin[1], 3.0 - 0.035)
-            self.assertAlmostEqual(sizes[1], 0.035)
+            # twice the copper's depth, so the skin's underside is not the copper's
+            self.assertAlmostEqual(origin[1], 3.0 - 2 * 0.035)
+            self.assertAlmostEqual(sizes[1], 2 * 0.035)
         wall = vent_builder.WALL_OVERLAP
         # pedestal: from the die's opening (3.25) into the wall past the board
         # edge (12.5), both sides, across the groove's own width

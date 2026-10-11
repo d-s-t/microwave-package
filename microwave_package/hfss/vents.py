@@ -30,6 +30,11 @@ SKIN_OVERLAP = 0.1
 # which AEDT's union refuses ("Error in uniting objects"); inside the wall it
 # overlaps solid metal.
 WALL_OVERLAP = 0.2
+# The skin is this many copper thicknesses deep. One would end exactly on the
+# copper's own underside, and AEDT's validation calls two bodies whose faces
+# coincide like that intersecting (the copper wholly inside the box, with no
+# face in common, passes).
+SKIN_DEPTH = 2.0
 
 
 def build_vents(hfss, frame, stack, values, log=logger.info) -> Optional[List[str]]:
@@ -66,7 +71,7 @@ def _restore_copper_skin(hfss, frame, stack, values, vents, log) -> List[str]:
     floor's top face would leave the copper half in metal and half over
     air, and HFSS refuses that ("pcb_copper_bottom and box intersect").
     The copper is whole on the real board, so the groove's top
-    `copper_thickness` is given back to the box as a skin under it, wherever
+    two copper thicknesses are given back to the box as a skin under it, wherever
     copper lies over the groove: for the pedestal vent from the die's opening
     to the board's edge, for a screw vent from the keep-out circle round
     the screw to the board's edge (inside the circle there is no copper).
@@ -99,7 +104,7 @@ def _restore_copper_skin(hfss, frame, stack, values, vents, log) -> List[str]:
             # a skin as wide as the groove only touches its walls edge to edge, and
             # a union of bodies that merely touch fails; it reaches into them
             origin, sizes = frame.box(u_min - SKIN_OVERLAP, v0, u_max + SKIN_OVERLAP, v1,
-                                      stack.pcb_bottom - thickness, thickness)
+                                      stack.pcb_bottom - SKIN_DEPTH * thickness, SKIN_DEPTH * thickness)
             skin = modeler.create_box(origin=origin, sizes=sizes)
             skin.name = f"vent_skin_{vent.name}_{index}"
             modeler.unite(["box", skin.name])
