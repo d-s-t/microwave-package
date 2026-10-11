@@ -668,15 +668,20 @@ def hide_sketches(model) -> None:
     model.ClearSelection2(True)
 
 
-PROPERTIES = ("RunCombo", "Material", "Date", "Scales", "Omitted")
+OMITTED_LINES = 3
+PROPERTIES = ("RunCombo", "Material", "Date", "Scales") + tuple(f"Omitted{i}" for i in range(1, OMITTED_LINES + 1))
 
 
-def title_properties(title: str, material: str, scales: str, omitted: str = "") -> Dict[str, str]:
+def title_properties(title: str, material: str, scales: str, omitted: Optional[List[str]] = None) -> Dict[str, str]:
     """The text the title block and notes show, as the drawing's custom
     properties: a drawing kept as a template has its notes point at them
     (`$PRP:"Name"`), so filling it for a combination is setting these."""
-    return {"RunCombo": title, "Material": f"MATERIAL: {material or 'see order'}",
-            "Date": f"{_dt.date.today().isoformat()}  UNITS: mm", "Scales": scales, "Omitted": omitted}
+    lines = list(omitted or [])[:OMITTED_LINES]
+    lines += [""] * (OMITTED_LINES - len(lines))
+    props = {"RunCombo": title, "Material": f"MATERIAL: {material or 'see order'}",
+             "Date": f"{_dt.date.today().isoformat()}  UNITS: mm", "Scales": scales}
+    props.update({f"Omitted{i + 1}": line for i, line in enumerate(lines)})
+    return props
 
 
 def _title_block(sheet: "_Sheet", part: str, props: Dict[str, str]) -> None:
@@ -709,7 +714,8 @@ def _title_block(sheet: "_Sheet", part: str, props: Dict[str, str]) -> None:
     for i, line in enumerate(notes):
         sheet.text(x1 + 0.006, y1 + 0.040 - i * 0.0065, line)
     # dimensions a combination does not have are listed here, never printed
-    sheet.text(x1 + 0.006, y1 + 0.052, '$PRP:"Omitted"')
+    for i in range(OMITTED_LINES):
+        sheet.text(x1 + 0.006, y1 + 0.052 + (OMITTED_LINES - 1 - i) * 0.0065, f'$PRP:"Omitted{i + 1}"')
 
 
 def measure_relief(model, inner: float) -> Dict[str, float]:

@@ -65,6 +65,12 @@ class TestDimensionIds(unittest.TestCase):
 
 
 class TestSidecar(unittest.TestCase):
+    def test_it_records_where_the_generator_put_each_view(self):
+        layout = box()
+        data = sidecar_of("box", layout)
+        top = data["views"]["top"]
+        self.assertEqual((top["scale"], top["x"], top["y"]), (layout[0].scale, layout[0].x, layout[0].y))
+
     def test_it_records_each_view_and_each_placed_dimension_by_name(self):
         layout = box()
         data = sidecar_of("box", layout)
@@ -194,10 +200,18 @@ class TestChecks(unittest.TestCase):
         self.assertTrue(tpl.is_right(123.0, None))
 
     def test_the_note_lists_what_was_left_off_and_is_empty_when_nothing_was(self):
-        self.assertEqual(tpl.omitted_note([]), "")
-        note = tpl.omitted_note(["a (b)", "c (d)"])
-        self.assertIn("NOT SHOWN", note)
-        self.assertIn("a (b); c (d)", note)
+        self.assertEqual(tpl.omitted_lines([]), [])
+        lines = tpl.omitted_lines(["a (b)", "c (d)"])
+        self.assertEqual(len(lines), 1)
+        self.assertIn("NOT SHOWN", lines[0])
+        self.assertIn("a (b); c (d)", lines[0])
+
+    def test_a_long_note_is_wrapped_to_the_sheet_and_cut_off_with_dots(self):
+        items = [f"v.left.{i}.0 on top (not in this combination)" for i in range(12)]
+        lines = tpl.omitted_lines(items, width=100)
+        self.assertEqual(len(lines), sd.OMITTED_LINES)
+        self.assertTrue(all(len(line) <= 100 for line in lines))
+        self.assertTrue(lines[-1].endswith("..."))
 
     def test_a_description_names_the_dimension_and_the_view(self):
         text = tpl.describe("top|dia.right.3.0", "not in this combination")
@@ -224,11 +238,12 @@ class TestFallback(unittest.TestCase):
 
 class TestTitleProperties(unittest.TestCase):
     def test_what_changes_per_combination_is_a_property(self):
-        props = sd.title_properties("run / combo", "aluminium", "2:1, 2.5:1", "x")
+        props = sd.title_properties("run / combo", "aluminium", "2:1, 2.5:1", ["x"])
         self.assertEqual(sorted(props), sorted(sd.PROPERTIES))
         self.assertEqual(props["RunCombo"], "run / combo")
         self.assertIn("aluminium", props["Material"])
-        self.assertEqual(props["Omitted"], "x")
+        self.assertEqual(props["Omitted1"], "x")
+        self.assertEqual(props["Omitted2"], "")        # a line with nothing in it is blank, not left from before
 
     def test_the_title_block_notes_read_those_properties(self):
         class Sheet:

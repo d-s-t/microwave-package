@@ -95,10 +95,11 @@ def make_sidecar(part: str, reference: str, layout: List[sd.View], view_names: D
                 dims[key_of(view.key, dim.id)] = {"name": name, "expected": dim.expected}
     return {
         "part": part,
-        "reference": reference,
+        "reference": os.path.basename(reference),     # a file name, not this machine's path
         "views": {
             view.key: {
                 "name": view_names.get(view.key),
+                "scale": view.scale, "x": view.x, "y": view.y,
                 "section_of": view.section_of, "section_at": view.section_at, "section_axis": view.section_axis,
                 "detail_of": view.detail_of, "detail_at": list(view.detail_at),
                 "detail_radius": view.detail_radius,
@@ -165,9 +166,27 @@ def is_right(measured: float, expected: Optional[float]) -> bool:
     return expected is None or abs(measured - expected) <= max(TOLERANCE_MM, 0.002 * abs(expected))
 
 
-def omitted_note(items: List[str]) -> str:
-    """The note listing what was left off, or "" when nothing was."""
-    return ("NOT SHOWN FOR THIS COMBINATION: " + "; ".join(items)) if items else ""
+def omitted_lines(items: List[str], width: int = 110, lines: int = sd.OMITTED_LINES) -> List[str]:
+    """The note listing what was left off, as at most `lines` lines of at
+    most `width` characters, or [] when nothing was. A list too long for
+    them ends in "...": the log has all of it."""
+    if not items:
+        return []
+    words = ("NOT SHOWN FOR THIS COMBINATION: " + "; ".join(items)).split(" ")
+    out: List[str] = []
+    current = ""
+    for word in words:
+        trial = (current + " " + word).strip()
+        if len(trial) <= width or not current:
+            current = trial
+        else:
+            out.append(current)
+            current = word
+    out.append(current)
+    if len(out) > lines:
+        out = out[:lines]
+        out[-1] = out[-1][: width - 3].rstrip() + "..."
+    return out
 
 
 def describe(key: str, why: str) -> str:
@@ -233,6 +252,13 @@ def build_template(app, part: str, log: Callable[[str], None] = logger.info) -> 
 
 # -- filling a template for one combination (SolidWorks) ---------------------
 
+def short_name(full: str) -> str:
+    """A dimension's name without the document it is in -- "RD2@Drawing
+    View2" of "RD2@Drawing View2@Draw1.Drawing" -- since a drawing is
+    called something else once it is saved under a new name."""
+    return "@".join(str(full).split("@")[:2])
+
+
 def _views_by_name(drawing) -> Dict[str, object]:
     found = {}
     view = drawing.GetFirstView
@@ -252,28 +278,66 @@ def _dimensions_by_name(views: Dict[str, object]) -> Dict[str, object]:
             shown = None
         for display in (shown or []):
             try:
-                found[str(display.GetDimension2(0).FullName)] = display
+                found[short_name(display.GetDimension2(0).FullName)] = display
             except Exception:
                 continue
     return found
 
 
-def _hide(drawing, display) -> bool:
-    """Take a dimension off the drawing: hidden if SolidWorks will hide it,
-    deleted if it will not."""
+def _hide(drawing, display, none) -> bool:
+    """Take a dimension off this combination's drawing. Deleted: a dimension
+    only hidden still shows when the drawing is opened to be tuned, and
+    this copy is made for this combination alone, so nothing is lost -- the
+    template keeps the dimension. Selected by its full name, which is what
+    SolidWorks will select a dimension by (selecting its annotation does
+    nothing); hidden if it will not be deleted."""
     try:
-        annotation = display.GetAnnotation
-        annotation.Visible = 0
-        if not annotation.Visible:
+        full = display.GetDimension2(0).FullName
+        drawing.ClearSelection2(True)
+        if drawing.Extension.SelectByID2(full, "DIMENSION", 0, 0, 0, False, 0, none, 0):
+            drawing.EditDelete()
             return True
     except Exception:
         pass
     try:
-        display.GetAnnotation.Select3(False, None)
-        drawing.EditDelete()
+        annotation = display.GetAnnotation
+        annotation.Visible = 0
         return True
     except Exception:
         return False
+
+
+def _delete_cut_line(drawing, views: Dict[str, object], sidecar: dict, recorded: dict, none) -> None:
+    """Take the cutting line (and its arrows) of a section that has gone off
+    the sheet, or the plan view is left showing a cut to nowhere. Found
+    where the line is: in the parent view, at the cut's offset along it."""
+    parent = views.get(sidecar["views"].get(recorded["section_of"], {}).get("name"))
+    if parent is None:
+        return
+    try:
+        x0, y0 = parent.Position
+        offset = float(parent.ScaleDecimal) * float(recorded.get("section_at", 0.0)) / 1000.0
+        x, y = (x0 + offset, y0) if recorded.get("section_axis") == "v" else (x0, y0 + offset)
+        drawing.ClearSelection2(True)
+        if drawing.Extension.SelectByID2("", "SECTIONLINE", x, y, 0, False, 0, none, 0):
+            drawing.EditDelete()
+    except Exception as exc:
+        logger.warning("Could not take a section line off the drawing (%s)", exc)
+
+
+def current_reference(app, drawing_path: str, part_file: str) -> Optional[str]:
+    """The path the drawing at `drawing_path` has stored for its part,
+    which is what ReplaceReferencedDocument has to be given -- the checkout
+    the template was made in is not the one it is used in. Asked of
+    SolidWorks rather than read out of the sidecar for that reason."""
+    try:
+        dependencies = app.GetDocumentDependencies2(drawing_path, False, True, False)
+    except Exception:
+        return None
+    for entry in (dependencies or []):
+        if str(entry).lower().endswith(part_file.lower()) and os.sep in str(entry):
+            return str(entry)
+    return None
 
 
 def fill_template(app, part: str, sldprt_copy: str, out_drawing: str, out_pdf: str, title: str,
@@ -296,7 +360,8 @@ def fill_template(app, part: str, sldprt_copy: str, out_drawing: str, out_pdf: s
         return None
 
     shutil.copyfile(template_path(part), out_drawing)
-    if not app.ReplaceReferencedDocument(out_drawing, sidecar["reference"], sldprt_copy):
+    old_reference = current_reference(app, out_drawing, os.path.basename(str(paths.SOLIDWORKS_PART_FILES[part])))
+    if not old_reference or not app.ReplaceReferencedDocument(out_drawing, old_reference, sldprt_copy):
         os.remove(out_drawing)
         log(f"{part}: not using the drawing template (could not point it at {os.path.basename(sldprt_copy)})")
         return None
@@ -319,53 +384,66 @@ def fill_template(app, part: str, sldprt_copy: str, out_drawing: str, out_pdf: s
 
         # views this combination has no use for go first, children before parents
         for key in reversed(plan["views_gone"]):
-            name = sidecar["views"][key].get("name")
+            recorded = sidecar["views"][key]
+            name = recorded.get("name")
             view = views.pop(name, None)
             if view is not None:
                 drawing.ClearSelection2(True)
                 drawing.Extension.SelectByID2(name, "DRAWINGVIEW", 0, 0, 0, False, 0, sheet._none, 0)
                 drawing.EditDelete()
                 omitted.append(f"{key} view (not in this combination)")
+                if recorded.get("section_of"):
+                    _delete_cut_line(drawing, views, sidecar, recorded, sheet._none)
 
-        # refit what is left to the sheet: this board's scale and place
+        # refit what is left to the sheet: where the generator would now choose a different
+        # scale (a bigger or smaller board), scale the view by the same ratio about where it
+        # stands. Positions, and any scale a person set by hand, are left as the template has
+        # them -- a hand-tuned template is the point.
         for view in layout:
-            sw = views.get(sidecar["views"][view.key]["name"])
-            if sw is None:
+            recorded = sidecar["views"][view.key]
+            sw = views.get(recorded["name"])
+            if sw is None or not recorded.get("scale"):
                 continue
-            sw.UseSheetScale = False
-            sw.ScaleDecimal = view.scale
-            sw.Position = win32com.client.VARIANT(pythoncom.VT_ARRAY | pythoncom.VT_R8, (view.x, view.y))
+            ratio = view.scale / float(recorded["scale"])
+            if abs(ratio - 1.0) > 1e-6:
+                where = sw.Position
+                sw.UseSheetScale = False
+                sw.ScaleDecimal = float(sw.ScaleDecimal) * ratio
+                sw.Position = win32com.client.VARIANT(pythoncom.VT_ARRAY | pythoncom.VT_R8, tuple(where))
         drawing.ForceRebuild3(False)
         views = _views_by_name(drawing)
         shown = _dimensions_by_name(views)
 
         # check every dimension the generator placed; keep the right ones
         for key, expected in plan["check"].items():
-            name = sidecar["dims"][key]["name"]
+            name = short_name(sidecar["dims"][key]["name"])
             display = shown.get(name)
             if display is None:
                 omitted.append(describe(key, "gone from the drawing"))
                 continue
             try:
-                dangling = bool(display.GetAnnotation.IsDangling())
+                dangling = bool(display.GetAnnotation.IsDangling)       # a property, not a method
             except Exception:
                 dangling = False
             value = None if dangling else float(display.GetDimension2(0).Value)
             if dangling or not is_right(value, expected):
-                _hide(drawing, display)
+                _hide(drawing, display, sheet._none)
                 omitted.append(describe(key, "dangling" if dangling else f"read {value:.3f}, expected {expected:g}"))
         for key in plan["absent"]:
-            display = shown.get(sidecar["dims"][key]["name"])
+            display = shown.get(short_name(sidecar["dims"][key]["name"]))
             if display is not None:
-                _hide(drawing, display)
+                _hide(drawing, display, sheet._none)
             omitted.append(describe(key, "not in this combination"))
 
         scales = ", ".join(f"{sc:g}:1" for sc in sorted({v.scale for v in layout}))
-        sheet.set_properties(sd.title_properties(title, material, scales, omitted_note(omitted)))
+        sheet.set_properties(sd.title_properties(title, material, scales, omitted_lines(omitted)))
         drawing.ForceRebuild3(False)
-        ok, reason = step_generation.save_as_step(drawing, out_drawing, 1)       # keep the filled drawing
-        if not ok:
-            log(f"WARNING: could not save {out_drawing}: {reason}")
+        try:
+            save_errors = win32com.client.VARIANT(pythoncom.VT_BYREF | pythoncom.VT_I4, 0)
+            save_warnings = win32com.client.VARIANT(pythoncom.VT_BYREF | pythoncom.VT_I4, 0)
+            drawing.Save3(1, save_errors, save_warnings)                         # keep the filled drawing, in place
+        except Exception as exc:
+            log(f"WARNING: could not save {out_drawing}: {exc}")
         if preview:
             sheet.export_png(preview)
         sheet.save_pdf(out_pdf)

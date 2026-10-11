@@ -1,0 +1,211 @@
+{
+ "dims": {
+  "inner|inner:h.above.0.0": {
+   "expected": 5.1,
+   "name": "RD5@Drawing View1@Draw2.Drawing"
+  },
+  "inner|inner:h.above.0.1": {
+   "expected": null,
+   "name": "RD8@Drawing View1@Draw2.Drawing"
+  },
+  "inner|inner:h.above.1.0": {
+   "expected": 50.0,
+   "name": "RD1@Drawing View1@Draw2.Drawing"
+  },
+  "inner|inner:h.below.0.0": {
+   "expected": 27.8,
+   "name": "RD3@Drawing View1@Draw2.Drawing"
+  },
+  "inner|inner:h.below.1.0": {
+   "expected": 38.0,
+   "name": "RD4@Drawing View1@Draw2.Drawing"
+  },
+  "inner|inner:v.left.0.0": {
+   "expected": 25.0,
+   "name": "RD2@Drawing View1@Draw2.Drawing"
+  },
+  "inner|inner:v.right.0.0": {
+   "expected": 1.2,
+   "name": "RD7@Drawing View1@Draw2.Drawing"
+  },
+  "inner|inner:v.right.1.0": {
+   "expected": 5.1,
+   "name": "RD6@Drawing View1@Draw2.Drawing"
+  },
+  "outer|outer:dia.right.4.0": {
+   "expected": 2.3,
+   "name": "RD3@Drawing View2@Draw2.Drawing"
+  },
+  "outer|outer:h.below.0.0": {
+   "expected": 43.0,
+   "name": "RD1@Drawing View2@Draw2.Drawing"
+  },
+  "outer|outer:v.left.0.0": {
+   "expected": 18.0,
+   "name": "RD2@Drawing View2@Draw2.Drawing"
+  },
+  "sec_c|sec_c:v.left.0.0": {
+   "expected": 1.5,
+   "name": "RD1@Drawing View3@Draw2.Drawing"
+  },
+  "sec_g_detail|sec_g_detail:h.above.0.0": {
+   "expected": 0.3,
+   "name": "RD2@Drawing View5@Draw2.Drawing"
+  },
+  "sec_g_detail|sec_g_detail:v.left.0.0": {
+   "expected": 1.2,
+   "name": "RD1@Drawing View5@Draw2.Drawing"
+  },
+  "sec_h_detail|sec_h_detail:deep": {
+   "expected": 0.4,
+   "name": "RD2@Drawing View7@Draw2.Drawing"
+  },
+  "sec_h_detail|sec_h_detail:v.left.0.0": {
+   "expected": 1.2,
+   "name": "RD1@Drawing View7@Draw2.Drawing"
+  },
+  "sec_k_detail|sec_k_detail:deep": {
+   "expected": 0.4,
+   "name": "RD1@Drawing View9@Draw2.Drawing"
+  }
+ },
+ "part": "lid_inside",
+ "reference": "lid_inside.SLDPRT",
+ "views": {
+  "inner": {
+   "detail_at": [
+    0.0,
+    0.0
+   ],
+   "detail_of": null,
+   "detail_radius": 0.0,
+   "name": "Drawing View1",
+   "scale": 2.0,
+   "section_at": 0.0,
+   "section_axis": "h",
+   "section_of": null,
+   "x": 0.115,
+   "y": 0.215
+  },
+  "outer": {
+   "detail_at": [
+    0.0,
+    0.0
+   ],
+   "detail_of": null,
+   "detail_radius": 0.0,
+   "name": "Drawing View2",
+   "scale": 2.0,
+   "section_at": 0.0,
+   "section_axis": "h",
+   "section_of": null,
+   "x": 0.115,
+   "y": 0.125
+  },
+  "sec_c": {
+   "detail_at": [
+    0.0,
+    0.0
+   ],
+   "detail_of": null,
+   "detail_radius": 0.0,
+   "name": "Section View C-C",
+   "scale": 3.0,
+   "section_at": 0.0,
+   "section_axis": "h",
+   "section_of": "outer",
+   "x": 0.3,
+   "y": 0.262
+  },
+  "sec_g": {
+   "detail_at": [
+    0.0,
+    0.0
+   ],
+   "detail_of": null,
+   "detail_radius": 0.0,
+   "name": "Section View G-G",
+   "scale": 2.5,
+   "section_at": 6.95,
+   "section_axis": "v",
+   "section_of": "inner",
+   "x": 0.235,
+   "y": 0.212
+  },
+  "sec_g_detail": {
+   "detail_at": [
+    0.45,
+    0.0
+   ],
+   "detail_of": "sec_g",
+   "detail_radius": 1.2,
+   "name": "Detail View M (15 : 1)",
+   "scale": 15.0,
+   "section_at": 0.0,
+   "section_axis": "h",
+   "section_of": null,
+   "x": 0.225,
+   "y": 0.098
+  },
+  "sec_h": {
+   "detail_at": [
+    0.0,
+    0.0
+   ],
+   "detail_of": null,
+   "detail_radius": 0.0,
+   "name": "Section View H-H",
+   "scale": 2.5,
+   "section_at": 13.4,
+   "section_axis": "v",
+   "section_of": "inner",
+   "x": 0.315,
+   "y": 0.212
+  },
+  "sec_h_detail": {
+   "detail_at": [
+    0.45,
+    0.0
+   ],
+   "detail_of": "sec_h",
+   "detail_radius": 1.2,
+   "name": "Detail View N (15 : 1)",
+   "scale": 15.0,
+   "section_at": 0.0,
+   "section_axis": "h",
+   "section_of": null,
+   "x": 0.29,
+   "y": 0.098
+  },
+  "sec_k": {
+   "detail_at": [
+    0.0,
+    0.0
+   ],
+   "detail_of": null,
+   "detail_radius": 0.0,
+   "name": "Section View K-K",
+   "scale": 2.5,
+   "section_at": 2.0,
+   "section_axis": "h",
+   "section_of": "inner",
+   "x": 0.33,
+   "y": 0.158
+  },
+  "sec_k_detail": {
+   "detail_at": [
+    -3.75,
+    -0.45
+   ],
+   "detail_of": "sec_k",
+   "detail_radius": 1.2,
+   "name": "Detail View O (15 : 1)",
+   "scale": 15.0,
+   "section_at": 0.0,
+   "section_axis": "h",
+   "section_of": null,
+   "x": 0.355,
+   "y": 0.098
+  }
+ }
+}
