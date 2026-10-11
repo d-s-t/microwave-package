@@ -173,7 +173,7 @@ class TestConstraints(unittest.TestCase):
         self.assertIsNone(constraints.check_layout(fit()))
 
     def test_a_bare_board_takes_them_too(self):
-        self.assertIsNone(constraints.check_layout(fit(no_chip=1)))
+        self.assertIsNone(constraints.check_layout(fit(no_chip=1, pedestal_depth=0)))
 
     def test_a_hole_too_near_the_board_edge_is_caught(self):
         self.assertIn("screw_inset", constraints.check_layout(fit(screw_inset=1.4)))

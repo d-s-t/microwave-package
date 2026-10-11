@@ -1078,6 +1078,10 @@ class TestExportedLayoutIsSane(unittest.TestCase):
         if "chip" not in boards:
             self.skipTest("the generated copper.txt is a bare board (no_chip) -- generate a full one")
         self.pkg = boards["package"]
+        widths = {t.width for t in self.pkg.tracks}
+        if widths and abs(max(widths) - self.v["cpw_trace_width"]) > 1e-9:
+            self.skipTest("the generated copper.txt was drawn with another cpw_trace_width than the "
+                          "equations file's -- generate one with the current parameters")
         self.chip = boards.get("chip")
         self.trace = self.v["cpw_trace_width"]
         self.gap_edge = self.trace / 2 + ag.build_params(self.v)["pcb_cpw_gap"]

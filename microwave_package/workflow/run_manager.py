@@ -236,6 +236,11 @@ def _skip_reason(values: Dict[str, float], use_altium: bool) -> Optional[str]:
     return reason
 
 
+def equation_file_values() -> Dict[str, float]:
+    """The equations file's own numbers (what a run layers its values over)."""
+    return _equation_file_values()
+
+
 def parameter_values_for(name: str, sweep_params, parameter_defaults) -> List[float]:
     """Every value `name` takes across the combinations a run would build.
 

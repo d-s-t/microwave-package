@@ -363,6 +363,29 @@
 </table>
 </details>
 
+{% if line_checks %}
+<h2>Line impedance</h2>
+<p class="muted">An HFSS solve of a short section of the line as it is built (lid included), against
+  the target. It passes when the impedance is inside the tolerance at every frequency.</p>
+<table>
+  <thead><tr><th>Combination</th><th>Line</th><th>Verdict</th><th>Zo min &ndash; max (ohm)</th>
+    <th>Worst</th><th>Gap solved / analytic (mm)</th><th>Geometry from</th></tr></thead>
+  <tbody>
+  {% for c in line_checks %}
+  <tr>
+    <td>{{ c.combo_id }}</td><td>{{ c.line }}</td>
+    <td><span class="pill {{ 'ok' if c.passed else 'bad' }}">{{ 'PASS' if c.passed else 'FAIL' }}</span></td>
+    <td>{% if c.min_ohm is defined %}{{ "%.1f"|format(c.min_ohm) }} &ndash; {{ "%.1f"|format(c.max_ohm) }}
+        (target {{ "%.0f"|format(c.target_ohm) }} &plusmn; {{ "%.1f"|format(c.tolerance_ohm) }}){% else %}&ndash;{% endif %}</td>
+    <td>{% if c.worst_ohm is defined %}{{ "%.1f"|format(c.worst_ohm) }} at {{ "%.1f"|format(c.worst_freq_ghz) }} GHz{% endif %}</td>
+    <td>{{ c.gap_mm }} / {{ "%.4g"|format(c.analytic_gap_mm) if c.analytic_gap_mm is not none else "&ndash;" }}</td>
+    <td>{{ c.geometry_from }}</td>
+  </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+
 {% if plot_exists %}
 <h2>Results</h2>
 {% if axis_options %}
