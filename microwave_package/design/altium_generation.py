@@ -605,12 +605,23 @@ def build_params(
     rather than recomputed downstream, so the run keeps a record of the
     geometry it actually built.
 
+    The board's gap is solved for the line under the lid: the relief
+    channel's depth is the ceiling over the trace (`constraints.lid_cover`).
+    The chip's is not -- its line sits in the lid's pocket over the die,
+    whose ceiling is not one of the relief parameters -- so it stays open-top.
+
+    The die's line has its own width (`chip_trace_width`, the board's
+    `cpw_trace_width` when a set of values has none): the same trace on a 0.381
+    mm silicon die is a different line from the one on the board, and a width
+    that suits the board (0.4 mm on RT/duroid 5880) is not a CPW on silicon at
+    all. It is recorded in the result, since the generator draws the die with it.
+
     Adds the die's opening too -- its size, its depth, and whether it
     goes through. Decided here rather than in the DelphiScript so that
     the script only draws, and so that HFSS, which asks `cavity.plan`
     the same question, cannot get a different answer.
     """
-    from . import cavity, cpw, smp
+    from . import cavity, constraints, cpw, smp
 
     out = dict(values)
     # The connector land pattern travels with the parameters so the
@@ -618,6 +629,8 @@ def build_params(
     # the DelphiScript.
     out.update(smp.as_parameters())
     trace = values["cpw_trace_width"]
+    chip_trace = constraints.chip_trace(values)
+    out["chip_trace_width"] = chip_trace
 
     out["pcb_cpw_gap"] = cpw.solve_gap_for_z0(
         trace_width=trace,
@@ -625,6 +638,7 @@ def build_params(
         eps_r=cpw.permittivity_of(mat_pcb),
         z0=target_z0,
         conductor_thickness=values.get("copper_thickness", 0.0),
+        **constraints.lid_cover(values),
     )
     if values.get("no_chip", 0.0) > 0.5:
         # A bare board has no die, so there is no chip line to solve a gap
@@ -633,7 +647,7 @@ def build_params(
         out["chip_cpw_gap"] = out["pcb_cpw_gap"]
     else:
         out["chip_cpw_gap"] = cpw.solve_gap_for_z0(
-            trace_width=trace,
+            trace_width=chip_trace,
             substrate_height=values["chip_width"],
             eps_r=cpw.permittivity_of(mat_chip),
             z0=target_z0,
@@ -743,7 +757,7 @@ def generate_for_combo(
     # Cheaper to refuse here than to let Altium build a board that is
     # quietly wrong -- and the message names the parameter to change.
     materials = materials or {}
-    reason = constraints.check_layout(values, materials.get("mat_pcb"))
+    reason = constraints.check_layout(values, materials.get("mat_pcb"), materials.get("mat_chip"))
     if reason:
         return False, f"layout cannot be built: {reason}"
     try:
@@ -782,7 +796,7 @@ def generate_for_combo(
         os.makedirs(paths.ALTIUM_OUT_DIR, exist_ok=True)
         bond_layout.write_file(
             str(paths.ALTIUM_BONDS_FILE),
-            bond_layout.layout(values, params["pcb_cpw_gap"]),
+            bond_layout.layout(values, params["pcb_cpw_gap"], params["chip_cpw_gap"]),
         )
 
         ok, report = run_script(
@@ -882,7 +896,7 @@ def board_fingerprint(values: Dict[str, float],
             mat_pcb=materials.get("mat_pcb", "Rogers TMM 10i (tm)"),
             mat_chip=materials.get("mat_chip", "silicon"),
         )
-        bond_list = bond_layout.layout(values, params["pcb_cpw_gap"])
+        bond_list = bond_layout.layout(values, params["pcb_cpw_gap"], params["chip_cpw_gap"])
     except Exception:
         return None
     identity = {

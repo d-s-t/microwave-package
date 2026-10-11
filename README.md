@@ -210,6 +210,29 @@ to build without screws: both hole features are suppressed by an equation,
 screws are not made. The box's tap-drill diameter follows
 `screw_tap_diameter`.
 
+**The lid is part of the CPW.** The lid rests on the board's top copper, and
+all that is over the trace is the relief channel cut in it (`route_width`
+wide, `route_clearence` deep), so the line is a conductor-backed CPW with a
+metal ceiling `route_clearence` over it, not an open-top one. On a
+low-permittivity board the ceiling is most of the capacitance. The 50 ohm gap
+is therefore solved for the covered line (`design/cpw.py`: conformal mapping
+with a ceiling, and the sidewalls of the copper as a parallel-plate term;
+`base_parts/cpw_fd_check.py` solves the real cross-section as a 2-D field
+problem to check it against, `base_parts/cpw_bem_check.py` is a second, gridless
+solver for the open top, `base_parts/cpw_q2d_check.py` runs AEDT's own 2D Extractor on the same
+sections, and `tests/test_cpw_field_check.py` keeps them together). The layout check refuses a lid that cannot carry the line: a relief
+so shallow that the line stays under 50 ohm at any gap, or a channel that does
+not clear the CPW (trace + 2 gaps) with its walls 0.1 mm, or half the depth,
+outside the slots -- a wall over the slot pulls the line a fifth or more under
+50 ohm. The message gives the width or depth that does. A sweep of
+`route_clearence` or `route_width` re-solves the gap for every combination, so
+each stays 50 ohm. The chip's line is solved open-top: it sits in the lid's
+pocket over the die, not under the relief. It also has a trace of its own,
+`chip_trace_width` (0.2 mm): the board's trace (0.4 mm on RT/duroid 5880) is no
+50 ohm CPW on a 0.381 mm silicon die, and the layout check refuses a die trace that
+is not, or a die too small for its ground bonds. The solve looks no wider than two
+substrate thicknesses and calls anything beyond that unreachable.
+
 Reading fields back from a solved project is limited by the student licence:
 a project whose solved mesh is over its element limit (the default 50 x 25 mm
 board with screws is about a million elements) cannot have its field

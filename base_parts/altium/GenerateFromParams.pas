@@ -1594,7 +1594,7 @@ Var
     OutDir       : String;
     BondPath     : String;
     HalfL, HalfS, Trace, Gap : Double;
-    ChipHalfL, ChipHalfS, ChipGap : Double;
+    ChipHalfL, ChipHalfS, ChipGap, ChipTrace : Double;
     ViaDia, ViaMaxSpacing, ViaClear, ViaMinSpacing, Corridor, FenceY, TraceHalfL : Double;
     VoidR : Double;
     PadW, PadH : Double;
@@ -1626,6 +1626,10 @@ Begin
     ChipHalfL := ParamOf(P, 'chip_length', 6.3) / 2.0;
     ChipHalfS := ParamOf(P, 'chip_side', 6.3) / 2.0;
     ChipGap   := ParamOf(P, 'chip_cpw_gap', 0.17);
+    { The die's own line: a width that suits the board is not necessarily a
+      CPW on the silicon (Python solves ChipGap for this width). Without the
+      parameter, the board's, as before. }
+    ChipTrace := ParamOf(P, 'chip_trace_width', Trace);
     ViaDia    := ParamOf(P, 'via_diameter', 0.3);
     ViaMaxSpacing := ParamOf(P, 'via_max_spacing', 0.8);
     ViaClear  := ParamOf(P, 'via_gnd_clearance', 0.15);
@@ -1938,7 +1942,7 @@ Begin
               than its copper extent leaves the fill unbuilt. }
             BuildBoard(Board, ChipHalfL, ChipHalfS,
                        ChipHalfL - ChipCopperInset, ChipHalfS - ChipCopperInset,
-                       Trace, ChipGap,
+                       ChipTrace, ChipGap,
                        ChipHalfL - ChipCopperInset, ChipHalfL,
                        { no connector on the die, so no anti-pad either --
                          its ground planes stay plain rectangles }
@@ -1954,7 +1958,7 @@ Begin
 
         PCBServer.PreProcess;
         Try
-            nBonds := AddBondPads(Board, BondPath, PadW, PadH, Trace, True);
+            nBonds := AddBondPads(Board, BondPath, PadW, PadH, ChipTrace, True);
             Say('chip_bond_pads=' + IntToStr(nBonds));
         Except
             Say('chip_bond_pads=FAIL');
