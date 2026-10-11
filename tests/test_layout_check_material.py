@@ -13,12 +13,13 @@ TMM, DUROID = "Rogers TMM 10i (tm)", "Rogers RT/duroid 5880 (tm)"
 
 def values(trace):
     base = eq.get_numeric_parameters(eq.read_file(str(paths.DEFAULT_EQUATIONS_FILE)))
-    return {**base, "cpw_trace_width": trace, "route_width": 0.8, "no_chip": 1.0, "pedestal_depth": 0.0}
+    return {**base, "cpw_trace_width": trace, "no_chip": 1.0, "pedestal_depth": 0.0}
 
 
 class TestLayoutCheckUsesTheMaterial(unittest.TestCase):
     def test_a_wide_trace_is_refused_on_tmm_and_buildable_on_5880(self):
-        self.assertIn("no 50 ohm geometry", constraints.check_layout(values(0.5), TMM))
+        # under the default lid a 0.5 mm trace cannot reach 50 ohm on TMM 10i at any gap
+        self.assertIn("50 ohm", constraints.check_layout(values(0.5), TMM))
         self.assertIsNone(constraints.check_layout(values(0.5), DUROID))
 
     def test_without_a_material_it_is_the_old_default(self):
@@ -28,7 +29,7 @@ class TestLayoutCheckUsesTheMaterial(unittest.TestCase):
     def test_the_generator_asks_with_the_runs_material(self):
         seen = []
 
-        def spy(vals, mat_pcb=None):
+        def spy(vals, mat_pcb=None, mat_chip=None):
             seen.append(mat_pcb)
             return "stop here"
 

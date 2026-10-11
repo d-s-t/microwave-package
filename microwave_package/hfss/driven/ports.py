@@ -567,7 +567,8 @@ def _gap_ports(hfss, layout, impedance: float, inner_edge: float,
     the two gap ports `port_N_a` and `port_N_b`.
     """
     frame, stack = layout.frame, layout.stack
-    trace_width = layout.values.get("cpw_trace_width", 0.2)
+    # the die's own trace, not the board's: they are different lines
+    trace_width = layout.values.get("chip_trace_width") or layout.values.get("cpw_trace_width", 0.2)
     count = int(layout.values.get("port_count", 2))
     gap = ground_offset - trace_width / 2.0
     if gap <= 0:

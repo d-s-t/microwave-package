@@ -1403,9 +1403,10 @@ class TestExportedLayoutIsSane(unittest.TestCase):
         """Otherwise the CPW corridor runs bare to the board edge,
         leaving a slot in the ground behind the connector."""
         half_l = self.v["pcb_length"] / 2
+        # 1e-5: the export rounds coordinates to five decimals, which can land 5e-6 outside the exact edge
         fills = [r for r in self.pkg.regions
                  if r.layer == "top"
-                 and max(abs(p[1]) for p in r.points) <= self.gap_edge + 1e-6]
+                 and max(abs(p[1]) for p in r.points) <= self.gap_edge + 1e-5]
         self.assertEqual(len(fills), 2, "expected one ground fill behind each launch")
         for r in fills:
             xs = [p[0] for p in r.points]
@@ -1416,7 +1417,7 @@ class TestExportedLayoutIsSane(unittest.TestCase):
         live inside the CPW corridor."""
         return [r for r in self.pkg.regions
                 if r.layer == "top"
-                and max(abs(p[1]) for p in r.points) <= self.gap_edge + 1e-6]
+                and max(abs(p[1]) for p in r.points) <= self.gap_edge + 1e-5]
 
     def _signal_reach(self):
         """How far out signal copper extends -- the trace plus the

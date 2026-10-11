@@ -6,9 +6,9 @@
 
 "wall_width"= 1 	' minimal width from the box walls
 
-"route_width"= 0.5	' The width of the trace on the lid for not touching the signal roates.
+"route_width"= 1.2	' Width of the relief channel cut in the lid over the signal trace, so the lid does not touch it. It has to clear the whole CPW (trace + 2 gaps) with the walls well outside it; the layout check says how wide for the line in hand.
 
-"route_clearence"= 0.04	' The clearence depth of the trace on the lid for not touching the signal roates.
+"route_clearence"= 0.3	' Depth of that relief channel: the lid's ceiling stands this high over the trace, and the 50 ohm gap is solved with it there (a shallower relief loads the line and cannot reach 50 ohm on a 0.2 mm trace on TMM 10i).
 
 "route_chip_clearence"= 0
 
@@ -72,7 +72,9 @@
 
 "distortion_y" = 0.8
 
-"cpw_trace_width"= 0.2	' width of the CPW signal trace (the gap is solved for 50 ohm, not typed)
+"cpw_trace_width"= 0.2	' width of the CPW signal trace on the PCB (the gap is solved for 50 ohm, not typed)
+
+"chip_trace_width"= 0.2	' width of the CPW signal trace on the die, with its own gap solved for 50 ohm on the silicon; a width that suits the PCB (0.4 mm on RT/duroid 5880) is not a CPW on a 0.381 mm die, so the die's does not follow cpw_trace_width
 
 "via_diameter"= 0.3	' finished diameter of the stitching and shielding vias
 

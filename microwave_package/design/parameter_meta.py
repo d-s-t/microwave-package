@@ -46,6 +46,7 @@ LABELS: Dict[str, str] = {
     "wing_width": "Mounting wing width",
     # transmission line, shielding and bonds
     "cpw_trace_width": "CPW trace width",
+    "chip_trace_width": "Chip CPW trace width",
     "via_diameter": "Via diameter",
     "via_max_spacing": "Maximum via spacing",
     "via_gnd_clearance": "Via fence setback from gap",
@@ -177,7 +178,9 @@ GROUPS: List[dict] = [
     {
         "title": "Ports and clearances",
         "hint": "Coupling apertures and the local features around the chip and the "
-                "signal routes.",
+                "signal routes. The lid's relief channel (width and depth) is part of the "
+                "CPW: the gap is solved for the line with the lid's ceiling over it, and a "
+                "channel too shallow or too narrow for that line is refused.",
         "collapsed": False,
         "names": [
             "port_count", "port_length", "port_width", "port_space",
@@ -189,11 +192,11 @@ GROUPS: List[dict] = [
         "title": "Transmission line and shielding",
         "hint": "The CPW itself, the vias that shield its fence and stitch the ground planes "
                 "elsewhere, and the bonds across to the chip. The CPW gap is absent on purpose: "
-                "it is solved for 50 ohm from the trace width, substrate and copper thickness "
-                "rather than typed.",
+                "it is solved for 50 ohm from the trace width, substrate, copper thickness and "
+                "the lid's relief depth rather than typed.",
         "collapsed": False,
         "names": [
-            "cpw_trace_width",
+            "cpw_trace_width", "chip_trace_width",
             "via_diameter", "via_max_spacing", "via_gnd_clearance", "via_min_spacing",
             "bond_pad_length", "bond_pad_width", "bond_pad_pitch",
             "bond_height", "bond_wire_diameter",
@@ -202,7 +205,7 @@ GROUPS: List[dict] = [
     {
         "title": "Metallisation",
         "hint": "Conductor thicknesses. These matter more than they look: 35 um of copper "
-                "across a ~100 um gap pulls the CPW impedance down by more than 10 ohm, "
+                "across a ~100 um gap pulls the CPW impedance down by about 10 ohm, "
                 "which is why the 50 ohm gap is solved with the thickness rather than "
                 "without it.",
         "collapsed": False,
