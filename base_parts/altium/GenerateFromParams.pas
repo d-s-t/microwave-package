@@ -141,6 +141,17 @@ Var
       numbers each. }
     ScrewU, ScrewV, ScrewKeepR : Double;
 
+    { The ground keep-out round the SMP signal pad (launch_clearance).
+      The pad is wider than the trace, so a ground edge that follows the
+      trace (GndInner) comes within gap - (pad - trace) / 2 of it, which
+      for a narrow gap is under what a fab can etch. Between the
+      connector land's edge and PullReach from the launch axis the plane
+      therefore starts at PullEdge instead: the pad's half-width plus the
+      clearance, and the step back to GndInner is the clearance past the
+      pad's end. PullEdge <= 0 means no keep-out. Held here, like the
+      screws', so AddGroundPlane and TryVia need no extra arguments. }
+    PullEdge, PullReach : Double;
+
     { The copper round each screw hole is drawn as pieces, not as a plane
       with a hole in it (see AddScrewBlocks). ScrewBlockS is the half-size
       of the square, centred on the screw and running out to the board's
@@ -336,7 +347,7 @@ Var
     XOut, XSlot : Double;
     A1, A2, Ang : Double;
     i          : Integer;
-    HasLaunch, HasCavity : Boolean;
+    HasLaunch, HasCavity, HasPull : Boolean;
 Begin
     Rgn := PCBServer.PCBObjectFactory(eRegionObject, eNoDimension, eCreate_Default);
     C := PCBServer.PCBContourFactory;
@@ -355,6 +366,14 @@ Begin
     HasCavity := (CavHalfL > 0.0) And (CavHalfS > GndInner)
                  And (CavHalfS < CopperHalfS) And (CavHalfL < CopperHalfL);
     If HasLaunch And (CavHalfL >= LaunchX - LandHalf) Then
+        HasCavity := False;
+
+    { The keep-out only exists where it is a step: further out than the
+      gap edge, still inside the vendor's slot, and ending between the
+      land's edge and the launch's far side. }
+    HasPull := HasLaunch And (PullEdge > GndInner) And (PullEdge < SlotHalf)
+               And (PullReach > LandHalf) And (PullReach < LaunchX);
+    If HasPull And HasCavity And (CavHalfL >= LaunchX - PullReach) Then
         HasCavity := False;
 
     C.AddPoint(MMsToCoord(-CopperHalfL), MMsToCoord(Side * GndInner));
@@ -379,7 +398,15 @@ Begin
                        MMsToCoord(Side * VoidR * Sin(Ang)));
         End;
         C.AddPoint(MMsToCoord(-LaunchX + LandHalf), MMsToCoord(Side * SlotHalf));
-        C.AddPoint(MMsToCoord(-LaunchX + LandHalf), MMsToCoord(Side * GndInner));
+        If HasPull Then
+        Begin
+            { back off the signal pad, then in to the gap edge }
+            C.AddPoint(MMsToCoord(-LaunchX + LandHalf), MMsToCoord(Side * PullEdge));
+            C.AddPoint(MMsToCoord(-LaunchX + PullReach), MMsToCoord(Side * PullEdge));
+            C.AddPoint(MMsToCoord(-LaunchX + PullReach), MMsToCoord(Side * GndInner));
+        End
+        Else
+            C.AddPoint(MMsToCoord(-LaunchX + LandHalf), MMsToCoord(Side * GndInner));
     End;
 
     { the die's opening, out and back along the inner edge }
@@ -394,7 +421,14 @@ Begin
     If HasLaunch Then
     Begin
         { and the launch nearer +x, the same shape mirrored }
-        C.AddPoint(MMsToCoord(LaunchX - LandHalf), MMsToCoord(Side * GndInner));
+        If HasPull Then
+        Begin
+            C.AddPoint(MMsToCoord(LaunchX - PullReach), MMsToCoord(Side * GndInner));
+            C.AddPoint(MMsToCoord(LaunchX - PullReach), MMsToCoord(Side * PullEdge));
+            C.AddPoint(MMsToCoord(LaunchX - LandHalf), MMsToCoord(Side * PullEdge));
+        End
+        Else
+            C.AddPoint(MMsToCoord(LaunchX - LandHalf), MMsToCoord(Side * GndInner));
         C.AddPoint(MMsToCoord(LaunchX - LandHalf), MMsToCoord(Side * SlotHalf));
         For i := 0 To VoidSteps Do
         Begin
@@ -955,6 +989,18 @@ Begin
         Reach := VoidR + Dia / 2.0 + MinGap - GapTolerance;
         If ((X - LaunchX) * (X - LaunchX) + Y * Y < Reach * Reach) Or
            ((X + LaunchX) * (X + LaunchX) + Y * Y < Reach * Reach) Then Exit;
+    End;
+    If (PullEdge > 0.0) And (LaunchX > 0.0) Then
+    Begin
+        { The keep-out beside the signal pad is a bite out of the plane,
+          like the void: no primitive marks it. A via has to be on
+          copper, MinGap clear of the rim, so it keeps out of the
+          rectangle from the pad's far end to the launch axis (inboard
+          side only; behind the launch the plane is solid) and from
+          the centre line out to the rim. }
+        If (Abs(X) < LaunchX)
+           And (LaunchX - Abs(X) < PullReach + Dia / 2.0 + MinGap - GapTolerance)
+           And (Abs(Y) < PullEdge + Dia / 2.0 + MinGap - GapTolerance) Then Exit;
     End;
     If ScrewKeepR > 0.0 Then
     Begin
@@ -1633,7 +1679,7 @@ Var
     HalfL, HalfS, Trace, Gap : Double;
     ChipHalfL, ChipHalfS, ChipGap, ChipTrace : Double;
     ViaDia, ViaMaxSpacing, ViaClear, ViaMinSpacing, Corridor, FenceY, TraceHalfL : Double;
-    VoidR : Double;
+    VoidR, LaunchClear : Double;
     PadW, PadH : Double;
     PortCount, PortSpace : Double;
     SmpOrigin, BondSpan : Double;
@@ -1677,6 +1723,16 @@ Begin
     PortSpace := ParamOf(P, 'port_space', 1.5);
     BondSpan    := ParamOf(P, 'bonding_clearence', 0.4);
     VoidR     := ParamOf(P, 'smp_void_r', 2.25);
+    { Default MUST MATCH constraints.DEFAULT_LAUNCH_CLEARANCE. }
+    LaunchClear := ParamOf(P, 'launch_clearance', 0.2);
+    PullEdge  := 0.0;
+    PullReach := 0.0;
+    If ParamOf(P, 'smp_sig_half_w', 0.0) > 0.0 Then
+    Begin
+        PullEdge  := ParamOf(P, 'smp_sig_half_w', 0.24) + LaunchClear;
+        PullReach := ParamOf(P, 'smp_sig_v', 2.9) + ParamOf(P, 'smp_sig_half_l', 0.7)
+                     + LaunchClear;
+    End;
     OutDir    := P.Values['out_dir'];
     BondPath  := OutDir + '\bonds.txt';
 
@@ -1726,6 +1782,7 @@ Begin
     { Placed so the outermost land sits port_space from the board edge. }
     SmpOrigin := HalfL - PortSpace + ParamOf(P, 'smp_outer_v', -2.6);
 
+    Say('launch_clearance_um=' + FloatToStr(LaunchClear * 1000));
     Say('pcb_gap_um=' + FloatToStr(Gap * 1000));
     Say('chip_gap_um=' + FloatToStr(ChipGap * 1000));
     If CavThrough Then
