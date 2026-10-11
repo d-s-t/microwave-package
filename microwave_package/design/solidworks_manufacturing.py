@@ -28,6 +28,7 @@ logger = logging.getLogger("microwave_package")
 
 SAVE_SILENT = 1
 SAVE_COPY = 2
+MAX_PATH = 260
 
 
 def _open_title(app, path: str) -> bool:
@@ -43,44 +44,28 @@ def _open_title(app, path: str) -> bool:
 def save_part_copy(model, destination: str) -> None:
     """Write `model` as an SLDPRT at `destination` without renaming the
     open document. Raises RuntimeError if no file came out."""
+    if len(destination) >= MAX_PATH:
+        raise RuntimeError(
+            f"the path is {len(destination)} characters, too long for SolidWorks to save "
+            f"({MAX_PATH - 1} at most): keep the runs folder shorter (MICROWAVE_RUNS_PATH).")
     ok, reason = step_generation.save_as_step(model, destination, options=SAVE_SILENT | SAVE_COPY)
     if not ok:
         raise RuntimeError(f"could not save {os.path.basename(destination)}: {reason}")
 
 
-def export_part(
-    part: str,
-    equations_path: str,
-    outputs: Dict[str, str],
-    title: str,
-    values: Dict[str, float],
-    log: Callable[[str], None] = logger.info,
-) -> None:
-    """Make the requested files for one part.
-
-    `outputs` maps "sldprt" and/or "drawing" to the path to write. Raises
-    RuntimeError, saying what, when a file cannot be made.
-    """
-    base = str(paths.SOLIDWORKS_PART_FILES[part])
-    if not os.path.isfile(base):
-        raise RuntimeError(f"base part not found: {base}")
-    if not os.path.isfile(equations_path):
-        raise RuntimeError(f"this combination's equations file is missing: {equations_path}")
-
-    app, err = step_generation.connect_solidworks()
-    if not app:
-        raise RuntimeError(f"could not connect to SolidWorks ({err})")
+def _make_copy(app, part: str, base: str, equations_path: str, destination: str,
+               log: Callable[[str], None]) -> None:
+    """Open the base part, apply the combination's equations, save a copy
+    that no longer depends on the equations file, and close the base
+    unsaved."""
     if _open_title(app, base):
         raise RuntimeError(
             f"{os.path.basename(base)} is open in SolidWorks (a run may be using it) -- "
             "close it there, or wait for the run to finish, and try again.")
-
-    opened = []
     try:
         model, err = step_generation.open_and_activate_part(app, base)
         if not model:
             raise RuntimeError(f"could not open {base}: {err}")
-        opened.append(base)
         log(f"{part}: applying this combination's equations")
         step_generation.link_equations(model, equations_path, log=log)
         # link_equations repoints only when the link differs; a part that
@@ -90,18 +75,81 @@ def export_part(
         except Exception:
             pass
         step_generation.rebuild_model(model)
-
-        if "sldprt" in outputs:
-            log(f"{part}: saving the SolidWorks part")
-            save_part_copy(model, outputs["sldprt"])
-        if "drawing" in outputs:
-            from . import solidworks_drawing
-
-            log(f"{part}: drawing and exporting the PDF")
-            solidworks_drawing.make_pdf(app, model, base, part, outputs["drawing"], title, values, log)
+        # Cut the link to the equations file before copying: the values
+        # stay in the part as ordinary equations, so the file opens
+        # anywhere without hunting for a text file on this machine.
+        try:
+            model.GetEquationMgr.LinkToFile = False
+        except Exception as exc:
+            log(f"WARNING: could not unlink the equations ({exc}); the part will ask for its file.")
+        log(f"{part}: saving the SolidWorks part")
+        save_part_copy(model, destination)
     finally:
-        for path in opened:
-            try:
-                app.CloseDoc(os.path.basename(path))
-            except Exception as exc:
-                logger.warning("Could not close %s: %s", path, exc)
+        try:
+            app.CloseDoc(os.path.basename(base))
+        except Exception as exc:
+            logger.warning("Could not close %s: %s", base, exc)
+
+
+def _draw_copy(app, part: str, sldprt_path: str, pdf_path: str, title: str,
+               values: Dict[str, float], material: str, log: Callable[[str], None]) -> None:
+    """Draw the saved copy (not the base part: it holds this combination's
+    dimensions, and its name is unique) and write the PDF."""
+    from . import solidworks_drawing
+    import pythoncom
+    import win32com.client
+
+    if _open_title(app, sldprt_path):
+        raise RuntimeError(f"{os.path.basename(sldprt_path)} is open in SolidWorks -- close it and try again.")
+    errors = win32com.client.VARIANT(pythoncom.VT_BYREF | pythoncom.VT_I4, 0)
+    warnings = win32com.client.VARIANT(pythoncom.VT_BYREF | pythoncom.VT_I4, 0)
+    model = app.OpenDoc6(sldprt_path, 1, 1, "", errors, warnings)
+    if model is None:
+        raise RuntimeError(f"could not open {sldprt_path} (SolidWorks error {errors.value})")
+    try:
+        log(f"{part}: drawing and exporting the PDF")
+        dropped = solidworks_drawing.make_pdf(app, model, sldprt_path, part, pdf_path, title,
+                                              values, log, material=material)
+        if dropped:
+            log(f"WARNING: {len(dropped)} dimension(s) were left off the drawing: " + "; ".join(dropped))
+    finally:
+        try:
+            app.CloseDoc(os.path.basename(sldprt_path))
+        except Exception as exc:
+            logger.warning("Could not close %s: %s", sldprt_path, exc)
+
+
+def export_part(
+    part: str,
+    equations_path: str,
+    outputs: Dict[str, str],
+    title: str,
+    values: Dict[str, float],
+    log: Callable[[str], None] = logger.info,
+    sldprt_path: Optional[str] = None,
+    material: str = "",
+) -> None:
+    """Make the requested files for one part.
+
+    `outputs` maps "sldprt" and/or "drawing" to the path to write. The
+    drawing is made from the SLDPRT copy, which is `outputs["sldprt"]`, or
+    `sldprt_path` when that already exists. Raises RuntimeError, saying
+    what, when a file cannot be made.
+    """
+    base = str(paths.SOLIDWORKS_PART_FILES[part])
+    if "sldprt" in outputs:
+        sldprt_path = outputs["sldprt"]
+    if not os.path.isfile(base):
+        raise RuntimeError(f"base part not found: {base}")
+    if not os.path.isfile(equations_path):
+        raise RuntimeError(f"this combination's equations file is missing: {equations_path}")
+    if "drawing" in outputs and (not sldprt_path or ("sldprt" not in outputs and not os.path.isfile(sldprt_path))):
+        raise RuntimeError("a drawing needs the SLDPRT copy of the part")
+
+    app, err = step_generation.connect_solidworks()
+    if not app:
+        raise RuntimeError(f"could not connect to SolidWorks ({err})")
+    if "sldprt" in outputs:
+        _make_copy(app, part, base, equations_path, outputs["sldprt"], log)
+    if "drawing" in outputs:
+        _draw_copy(app, part, sldprt_path, outputs["drawing"], title, values, material, log)

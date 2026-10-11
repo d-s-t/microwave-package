@@ -380,8 +380,8 @@ def make_cad_group(run, combo_id: str, group: str, log: Callable[[str], None]) -
     from ..design import solidworks_manufacturing
 
     part = PART_OF_GROUP[group]
-    wanted = {"sldprt": target_path(run, combo_id, f"{group}_sldprt"),
-              "drawing": target_path(run, combo_id, f"{group}_drawing")}
+    sldprt = target_path(run, combo_id, f"{group}_sldprt")
+    wanted = {"sldprt": sldprt, "drawing": target_path(run, combo_id, f"{group}_drawing")}
     missing = {k: v for k, v in wanted.items() if not os.path.isfile(v)}
     if not missing:
         log("already made")
@@ -393,6 +393,8 @@ def make_cad_group(run, combo_id: str, group: str, log: Callable[[str], None]) -
         title=f"{run.run_id} / {combo_id}",
         values=combo_values(run, combo_id),
         log=log,
+        sldprt_path=sldprt,
+        material=str(combo_materials(run).get("mat_box", "")),
     )
 
 
