@@ -553,6 +553,14 @@ def check_layout(values: Dict[str, float], mat_pcb: Optional[str] = None,
     half_length = get("pcb_length") / 2.0
     via_dia = get("via_diameter")
 
+    # A bare board has no die, so its bottom ground plane has no opening for
+    # the pedestal recess under the die to sit in: the recess would run into
+    # a whole plane (AEDT: "pcb_copper_bottom and box intersect").
+    if parameter_meta.is_bare_board(values) and get("pedestal_depth") > 0:
+        return (f"pedestal_depth {_fmt(get('pedestal_depth'))} mm cuts a recess in the box floor "
+                f"under the die, but a bare board (no_chip) has no die and a whole bottom ground "
+                f"plane for it to run into -- set pedestal_depth to 0")
+
     # Already checked when the run was created. Checked again here so
     # a run from before that check, or a combination that reaches the
     # generator some other way, still cannot quietly build a sparse grid.

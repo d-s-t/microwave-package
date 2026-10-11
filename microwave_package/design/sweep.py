@@ -65,6 +65,36 @@ def split_swept_and_fixed(
     return swept, fixed
 
 
+def pin_bare_board_pedestal(
+    sweep_params: List[SweepParameter],
+    parameter_defaults: Optional[Dict[str, float]],
+    base_values: Dict[str, float],
+) -> Dict[str, float]:
+    """`parameter_defaults`, with `pedestal_depth` pinned to 0 when every
+    combination of the run is a bare board and nothing says otherwise.
+
+    The pedestal is a recess in the box floor under the die, where an
+    ordinary board's bottom ground plane has its opening. A bare board has
+    no die and its plane is whole, so a recess would run into it (AEDT: "box
+    and pcb_copper_bottom intersect"). Zero is the value the box rebuilds
+    cleanly with. A value typed or swept for it still wins, and a run that
+    mixes bare and ordinary boards (`no_chip` swept) is left alone: the
+    layout check refuses the bare ones that kept a pedestal, saying why.
+    `base_values` is the equations file's own numbers.
+    """
+    defaults = dict(parameter_defaults or {})
+    if "pedestal_depth" not in base_values or "pedestal_depth" in defaults:
+        return defaults
+    if any(p.name == "pedestal_depth" for p in sweep_params):
+        return defaults
+    no_chip = next((list(p.values) for p in sweep_params if p.name == "no_chip"), None)
+    if no_chip is None:
+        no_chip = [defaults.get("no_chip", base_values.get("no_chip", 0.0))]
+    if no_chip and all(float(v) > 0.5 for v in no_chip):
+        defaults["pedestal_depth"] = 0.0
+    return defaults
+
+
 def combinations(
     sweep_params: List[SweepParameter],
     parameter_defaults: Optional[Dict[str, float]] = None,

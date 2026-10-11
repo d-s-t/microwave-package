@@ -167,10 +167,11 @@ automated: the SolidWorks parts. `box.SLDPRT` and `lid_inside.SLDPRT` are
 binaries driven by the chip parameters, so a bare-board STEP still
 carries whatever the pedestal and chip lid features make from
 `pedestal_depth`, `chip_length`, `chip_side` and `bonding_clearence`.
-The form also pins `pedestal_depth = 0` for a bare-board run (the pedestal
-stands where an ordinary board's bottom ground plane has its opening, so
-on a whole plane AEDT rejects the model as intersecting); a value typed
-into the form still wins. Started any other way, set it by hand. Eigenmode
+Run creation, for the command line and the form alike, pins `pedestal_depth = 0`
+for a bare-board run (the pedestal stands where an ordinary board's bottom ground
+plane has its opening, so on a whole plane AEDT rejects the model as
+intersecting); a value typed or swept for it still wins, and the layout check
+refuses a bare board that keeps a pedestal, saying why. Eigenmode
 runs solve normally, but the chip-field columns come back flagged
 "object 'chip' not found", since there is no chip to measure.
 
