@@ -529,6 +529,8 @@ def index():
         no_chip_ticked=_ticked("no_chip", values, parameters),
         screws_ticked=_ticked("screws_on", values, parameters),
         has_screws_param=parameter_meta.SCREWS_PARAM in parameters,
+        vents_ticked=_ticked("vents_on", values, parameters),
+        has_vents_param=parameter_meta.VENTS_PARAM in parameters,
         distortion_mode=distortion_mode,
         distortion_group=_distortion_group(parameters),
         distortion_limits=_distortion_limits(parameters, values),
@@ -613,6 +615,12 @@ def new_run():
         requested.append(SweepParameter(
             name=parameter_meta.SCREWS_PARAM,
             values=[1.0 if "screws_on" in request.form else 0.0]))
+
+    # Same for the vent grooves: on in the equation file, so unticked says 0.
+    if parameter_meta.VENTS_PARAM in available:
+        requested.append(SweepParameter(
+            name=parameter_meta.VENTS_PARAM,
+            values=[1.0 if "vents_on" in request.form else 0.0]))
 
     sweep_params, parameter_defaults = split_swept_and_fixed(requested)
     if not sweep_params and not parameter_defaults:

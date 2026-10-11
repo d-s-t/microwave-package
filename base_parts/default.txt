@@ -60,6 +60,12 @@
 
 "screw_length" = 0 ' length of the screw as cut, head top to tip; 0 means work it out from the stack (lid + board + floor, so the tip is flush with the underside of the box)
 
+"vents_on" = 1 ' (boolean) when set to 1, narrow vent grooves in the top of the box floor let the air trapped under the die (the pedestal recess) and in the screw bores out of the side of the box. 0 builds without them.
+
+"vent_width" = 0.5 ' width of each vent groove (a 0.5 mm groove has a 300 GHz cutoff, over ten times the 26 GHz band top)
+
+"vent_depth" = 0.3 ' depth of each vent groove, down from the top face of the box floor (the face the PCB rests on)
+
 "distortion_radius" = 0.6
 
 "distortion_x" = 0.0

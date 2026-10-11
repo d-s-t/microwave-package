@@ -842,6 +842,13 @@ def build_layout(hfss, combo_dir: str, dimensions_txt_content: str,
     except ValueError as exc:
         raise RuntimeError(f"Corner screws: {exc}") from exc
 
+    from . import vents as vent_builder
+
+    try:
+        vent_builder.build_vents(hfss, frame, stack, v, log=log)
+    except ValueError as exc:
+        raise RuntimeError(f"Vents: {exc}") from exc
+
     ground_offset = None
     if chip is not None:
         edges = [abs(across) for region in chip.regions if region.layer == "top"
