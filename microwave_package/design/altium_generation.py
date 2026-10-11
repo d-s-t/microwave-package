@@ -53,7 +53,7 @@ import subprocess
 import threading
 import time
 from pathlib import Path
-from typing import Callable, Dict, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 import psutil
 
@@ -1060,56 +1060,70 @@ def export_manufacturing(pcbdoc: str, out_dir: str, name: str,
         if not ok:
             raise RuntimeError(_describe(report, "Altium fabrication export"))
 
-    results = collect_outputs(os.path.join(work, "out"), out_dir, name)
+    results = collect_outputs(work, out_dir, name)
     for key, state in results.items():
         log(f"Altium {key}: {state}")
     shutil.rmtree(work, ignore_errors=True)
     return results
 
 
-def collect_outputs(produced: str, out_dir: str, name: str) -> Dict[str, str]:
-    """Sort what the Output Job wrote under `produced` into the named
-    files in `out_dir`. Returns {format: "ok" or "not written"}."""
+def collect_outputs(work: str, out_dir: str, name: str) -> Dict[str, str]:
+    """Sort what the Output Job wrote under `work` into the named files in
+    `out_dir`. Returns {format: "ok" or "not written"}.
+
+    Altium puts each output in its own folder under "Project Outputs for
+    <project>" next to the project (whatever folder the job names is not
+    used): ExportSTEP, Gerber, IPC2581, NC Drill and ODB.
+    """
     import zipfile
 
-    found = {"step": [], "ipc2581": [], "odb": [], "fab": []}
-    for root, _dirs, files in os.walk(produced):
-        for file in files:
-            full = os.path.join(root, file)
-            lower = file.lower()
-            relative = os.path.relpath(full, produced).lower()
-            if lower.endswith((".step", ".stp")):
-                found["step"].append(full)
-            elif lower.endswith(".xml") and "ipc" in (relative + _head(full)).lower():
-                found["ipc2581"].append(full)
-            elif "odb" in relative and not lower.endswith(".xml"):
-                found["odb"].append(full)
-            else:
-                found["fab"].append(full)
+    root = work
+    for entry in os.listdir(work):
+        if entry.lower().startswith("project outputs") and os.path.isdir(os.path.join(work, entry)):
+            root = os.path.join(work, entry)
+    sections = {entry.lower(): os.path.join(root, entry) for entry in os.listdir(root)
+                if os.path.isdir(os.path.join(root, entry))}
+
+    def files_in(section: str) -> List[str]:
+        folder = sections.get(section)
+        found = []
+        if folder:
+            for base, _dirs, names in os.walk(folder):
+                found += [os.path.join(base, n) for n in names]
+        return found
+
+    def zip_of(destination: str, folders: List[str]) -> bool:
+        members = []
+        for folder in folders:
+            for walked, _dirs, names in os.walk(folder):
+                members += [os.path.join(walked, n) for n in names]
+        if not members:
+            return False
+        temporary = destination + ".part"
+        with zipfile.ZipFile(temporary, "w", zipfile.ZIP_DEFLATED) as archive:
+            for full in members:
+                archive.write(full, os.path.relpath(full, root))
+        os.replace(temporary, destination)
+        return True
 
     results: Dict[str, str] = {}
-    for key, final in (("step", f"{name}_pcb.STEP"), ("ipc2581", f"{name}_pcb_ipc2581.xml")):
-        if found[key]:
-            shutil.copyfile(max(found[key], key=os.path.getsize), os.path.join(out_dir, final))
-            results[key] = "ok"
-        else:
-            results[key] = "not written"
-    for key, final, folder_hint in (("odb", f"{name}_pcb_odb.zip", "odb"),
-                                    ("fab", f"{name}_pcb_altium_fab.zip", None)):
-        files = found[key]
-        # an ODB++ output that is already one archive is passed through
-        if key == "odb" and len(files) == 1 and zipfile.is_zipfile(files[0]):
-            shutil.copyfile(files[0], os.path.join(out_dir, final))
-            results[key] = "ok"
-        elif files:
-            temporary = os.path.join(out_dir, final + ".part")
-            with zipfile.ZipFile(temporary, "w", zipfile.ZIP_DEFLATED) as archive:
-                for full in files:
-                    archive.write(full, os.path.relpath(full, produced))
-            os.replace(temporary, os.path.join(out_dir, final))
-            results[key] = "ok"
-        else:
-            results[key] = "not written"
+    steps = [f for f in files_in("exportstep") if f.lower().endswith((".step", ".stp"))]
+    if steps:
+        shutil.copyfile(max(steps, key=os.path.getsize), os.path.join(out_dir, f"{name}_pcb.STEP"))
+    results["step"] = "ok" if steps else "not written"
+
+    ipc = files_in("ipc2581")
+    if ipc:
+        shutil.copyfile(max(ipc, key=os.path.getsize), os.path.join(out_dir, f"{name}_pcb_ipc2581.xml"))
+    results["ipc2581"] = "ok" if ipc else "not written"
+
+    odb_folder = sections.get("odb")
+    results["odb"] = "ok" if odb_folder and zip_of(os.path.join(out_dir, f"{name}_pcb_odb.zip"),
+                                                    [odb_folder]) else "not written"
+
+    fab = [sections[k] for k in ("gerber", "nc drill") if k in sections]
+    results["fab"] = "ok" if fab and zip_of(os.path.join(out_dir, f"{name}_pcb_altium_fab.zip"),
+                                             fab) else "not written"
     return results
 
 

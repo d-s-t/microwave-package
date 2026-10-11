@@ -274,8 +274,24 @@ land in `runs/<run>/models/<combo>/manufacturing/`.
 | Box, Lid | STEP (already made by the run), SLDPRT with the combination's equations applied, dimensioned drawing PDF |
 | PCB (board only, never the chip) | Altium project zip (`.PcbDoc` + `.PrjPcb`, the master), **Altium's own Gerber + NC drill set (plated / non-plated) -- the one to send to a fab**, ODB++, IPC-2581, board STEP, fabrication drawing PDF; plus a Python Gerber/drill *preview* for cross-checking only |
 
-The SLDPRT is a *copy* saved from `base_parts/*.SLDPRT` linked to the
-combination's own `dimensions.txt`; the base parts are never saved.
+The SLDPRT is a *copy* saved from `base_parts/*.SLDPRT` with the
+combination's own `dimensions.txt` applied and then unlinked from it (the
+values stay in the part as ordinary equations), so it opens anywhere; the
+base parts are never saved. The drawing PDF is made in SolidWorks from that
+copy, on an ISO A3 sheet: plan and side views and two sections (the box:
+through the tap holes, and through the chip recess; the lid: along the feed
+line), the outer dimensions, hole positions, the `4X Ø1.6 THRU (M2 TAP
+DRILL)` and `4X Ø2.3 THRU, CSK Ø4.28 X 90°` callouts, the cavity, the chip
+recess, the relief pockets and channel, and a title block (run, combination,
+date, material, units) with the general tolerance and edge-break notes.
+Every dimension is added by picking the edges it measures and is checked
+after: if SolidWorks measures something other than what the layout
+expects, that dimension is dropped and logged rather than printed (see
+`design/solidworks_drawing.py`; the layout itself, `box_layout` and
+`lid_layout`, is unit-tested). The finished PDF is also checked to lie
+inside the page. Keep the runs folder path short: SolidWorks cannot save to
+a path over 259 characters (`MICROWAVE_RUNS_PATH`).
+
 The fab package is Altium's output (an Output Job run from
 `design/outjob.py` and `base_parts/altium/ExportManufacturing.pas`), so it
 is made from the `.PcbDoc` itself. The Python Gerber/drill zips are written

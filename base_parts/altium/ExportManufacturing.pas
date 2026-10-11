@@ -39,6 +39,8 @@ Var
     Doc        : IServerDocument;
     Workspace  : IWorkspace;
     Project    : IProject;
+    Kinds      : TStringList;
+    i          : Integer;
 Begin
     Rpt := TStringList.Create;
     Rpt.Add('stage=start');
@@ -72,20 +74,38 @@ Begin
         Say('project_open=FAIL');
     End;
 
+    { The kind name of an Output Job document is not documented, so each
+      likely spelling is tried in turn and the one that works is reported. }
     Say('trying=open the output job');
     Doc := Nil;
-    Try
-        Doc := Client.OpenDocument('OUTJOB', JobPath);
+    Kinds := TStringList.Create;
+    Kinds.Add('OUTPUTJOB');
+    Kinds.Add('OUTJOB');
+    Kinds.Add('OutJob');
+    Kinds.Add('Output Job');
+    Kinds.Add('OUTPUT JOB');
+    Kinds.Add('');
+    For i := 0 To Kinds.Count - 1 Do
+    Begin
+        If Doc <> Nil Then Break;
+        Say('trying_kind=' + Kinds[i]);
+        Try
+            Doc := Client.OpenDocument(Kinds[i], JobPath);
+        Except
+            Doc := Nil;
+        End;
         If Doc <> Nil Then
         Begin
-            Client.ShowDocument(Doc);
-            Say('outjob_open=ok');
-        End
-        Else
-            Say('outjob_open=NIL');
-    Except
-        Say('outjob_open=FAIL');
+            Say('outjob_kind=' + Kinds[i]);
+            Try
+                Client.ShowDocument(Doc);
+                Say('outjob_open=ok');
+            Except
+                Say('outjob_show=FAIL');
+            End;
+        End;
     End;
+    If Doc = Nil Then Say('outjob_open=NIL');
 
     If Doc <> Nil Then
     Begin

@@ -439,7 +439,44 @@ def make_pcb(run, combo_id: str, log: Callable[[str], None]) -> None:
     write_zip(target_path(run, combo_id, "pcb_project"), project)
 
     # -- the formats only Altium writes
-    log("exporting ODB++, IPC-2581 and STEP from Altium")
+    log("exporting Gerber, drill, ODB++, IPC-2581 and STEP from Altium")
     altium_generation.export_manufacturing(
         pcbdoc, output_dir(run, combo_id), name, log=log,
     )
+    add_outline_supplement(run, combo_id, values, name)
+
+
+SUPPLEMENT_FOLDER = "supplement_from_parameters"
+SUPPLEMENT_NOTE = "\r\n".join([
+    "Altium's Gerber output has no board outline layer, and its NC drill holds only the plated",
+    "vias: the .PcbDoc defines the outline as the board shape and the screw holes as cutouts,",
+    "which the ODB++ and IPC-2581 files carry but a Gerber set does not. These two files are",
+    "written from the same parameters the board was drawn from (outline size, screw positions",
+    "and clearance diameter), not from the .PcbDoc itself -- check them against the ODB++ or the",
+    "board drawing before release.",
+    "  *_Edge_Cuts.gbr   board outline (and the through opening for the die, if any)",
+    "  *_NPTH.drl        non-plated screw clearance holes",
+    "",
+])
+
+
+def add_outline_supplement(run, combo_id: str, values: Dict[str, float], name: str) -> None:
+    """Add the outline and the non-plated holes to the Altium fab zip, in a
+    folder of their own that says where they came from."""
+    from ..design import gerber
+
+    path = path_of(run, combo_id, "pcb_altium_fab")
+    if path is None:
+        return
+    extra = {f"{name}_Edge_Cuts.gbr": gerber.outline_layer(values, name)}
+    npth = gerber.drill_files(values, {"via": []}).get("NPTH")
+    if npth:
+        extra[f"{name}_NPTH.drl"] = npth
+    with zipfile.ZipFile(path, "a", zipfile.ZIP_DEFLATED) as archive:
+        existing = set(archive.namelist())
+        for member, text in extra.items():
+            arc = f"{SUPPLEMENT_FOLDER}/{member}"
+            if arc not in existing:
+                archive.writestr(arc, text)
+        if f"{SUPPLEMENT_FOLDER}/README.txt" not in existing:
+            archive.writestr(f"{SUPPLEMENT_FOLDER}/README.txt", SUPPLEMENT_NOTE)

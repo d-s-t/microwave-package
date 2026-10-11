@@ -387,6 +387,72 @@ class TestRoutes(ManufacturingCase):
         self.assertIn("mfg-open", page)
 
 
+class TestAltiumOutputs(ManufacturingCase):
+    """What the Output Job leaves behind, sorted into the named files."""
+
+    def build_tree(self):
+        from microwave_package.design import altium_generation  # noqa: F401
+        work = tempfile.mkdtemp()
+        root = os.path.join(work, "Project Outputs for export")
+        files = {
+            "ExportSTEP/package.step": b"ISO-10303-21;" + b"x" * 100,
+            "Gerber/package.GTL": b"G04*", "Gerber/package.GBL": b"G04*",
+            "Gerber/package.GTS": b"G04*",
+            "NC Drill/package-Plated.TXT": b"M48", "NC Drill/package.DRR": b"report",
+            "IPC2581/package.cvg": b"<IPC-2581 revision='B'/>",
+            "ODB/odb/steps/package/layers/top/features": b"#", "ODB/odb/matrix/matrix": b"#",
+        }
+        for relative, data in files.items():
+            path = os.path.join(root, *relative.split("/"))
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "wb") as f:
+                f.write(data)
+        return work
+
+    def test_each_format_lands_in_its_own_named_file(self):
+        from microwave_package.design import altium_generation
+        out = tempfile.mkdtemp()
+        results = altium_generation.collect_outputs(self.build_tree(), out, "n")
+        self.assertEqual(results, {"step": "ok", "ipc2581": "ok", "odb": "ok", "fab": "ok"})
+        self.assertEqual(sorted(os.listdir(out)), ["n_pcb.STEP", "n_pcb_altium_fab.zip",
+                                                   "n_pcb_ipc2581.xml", "n_pcb_odb.zip"])
+        with zipfile.ZipFile(os.path.join(out, "n_pcb_altium_fab.zip")) as z:
+            self.assertEqual(sorted(z.namelist()), ["Gerber/package.GBL", "Gerber/package.GTL",
+                                                    "Gerber/package.GTS", "NC Drill/package-Plated.TXT",
+                                                    "NC Drill/package.DRR"])
+        with zipfile.ZipFile(os.path.join(out, "n_pcb_odb.zip")) as z:
+            self.assertIn("ODB/odb/matrix/matrix", z.namelist())
+
+    def test_a_missing_format_is_reported_not_raised(self):
+        import shutil
+        from microwave_package.design import altium_generation
+        work = self.build_tree()
+        shutil.rmtree(os.path.join(work, "Project Outputs for export", "IPC2581"))
+        out = tempfile.mkdtemp()
+        results = altium_generation.collect_outputs(work, out, "n")
+        self.assertEqual(results["ipc2581"], "not written")
+        self.assertEqual(results["step"], "ok")
+        self.assertNotIn("n_pcb_ipc2581.xml", os.listdir(out))
+
+    def test_outline_and_screw_holes_are_added_to_the_altium_zip_with_their_origin_stated(self):
+        self.build_geometry()
+        zip_path = manufacturing.target_path(self.run, self.combo, "pcb_altium_fab")
+        manufacturing.write_zip(zip_path, {"Gerber/package.GTL": "G04*"})
+        manufacturing.add_outline_supplement(self.run, self.combo, VALUES, "n")
+        manufacturing.add_outline_supplement(self.run, self.combo, VALUES, "n")   # idempotent
+        with zipfile.ZipFile(zip_path) as z:
+            names = z.namelist()
+            self.assertEqual(len(names), len(set(names)))
+            self.assertIn("supplement_from_parameters/n_Edge_Cuts.gbr", names)
+            self.assertIn("supplement_from_parameters/n_NPTH.drl", names)
+            self.assertIn("not from the .PcbDoc", z.read("supplement_from_parameters/README.txt").decode())
+            self.assertIn("Gerber/package.GTL", names)     # Altium's own files untouched
+
+    def test_no_altium_zip_means_no_supplement(self):
+        self.build_geometry()
+        manufacturing.add_outline_supplement(self.run, self.combo, VALUES, "n")   # no exception
+
+
 class TestProducers(ManufacturingCase):
     def test_pcb_producer_writes_the_python_files_and_asks_altium_for_the_rest(self):
         self.build_geometry()
