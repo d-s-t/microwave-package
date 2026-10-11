@@ -78,6 +78,7 @@ class Dim:
     search: float = 0.0     # if the edges are not where expected, try points up to `steps` of this (mm) away
     steps: int = 2          # how many steps of `search` either side to try, on each axis
     tolerance: float = 0.0  # symmetric +- tolerance (mm) to print with the value; 0 prints none
+    id: str = ""            # what the dimension is, stable between combinations (see assign_ids)
 
 
 @dataclass
@@ -99,6 +100,27 @@ class View:
     detail_at: Tuple[float, float] = (0.0, 0.0)  # centre of the circle, in the parent's frame (mm)
     detail_radius: float = 0.0                  # radius of that circle (mm)
     detail_label: str = ""
+
+
+def assign_ids(views: List["View"]) -> List["View"]:
+    """Give every dimension a name that means the same thing in every
+    combination: a candidate group is named for the group, anything else
+    for its kind, side and tier and how many like it came before in its
+    view. Dimensions that exist only in some combinations (the screws', the
+    chip recess's, the vents') have a kind/side/tier of their own, so the
+    ones that are always there keep their names whichever of those are
+    left out. A drawing kept as a template finds its dimensions by these
+    names, and tells which no longer apply by their absence."""
+    for view in views:
+        seen: Dict[str, int] = {}
+        for dim in view.dims:
+            if dim.group:
+                dim.id = f"{view.key}:{dim.group}"
+                continue
+            stem = f"{dim.kind}.{dim.side}.{dim.tier}"
+            dim.id = f"{view.key}:{stem}.{seen.get(stem, 0)}"
+            seen[stem] = seen.get(stem, 0) + 1
+    return views
 
 
 def pick_scale(width_mm: float, height_mm: float, room_w_mm: float, room_h_mm: float) -> float:
@@ -214,7 +236,7 @@ def box_layout(values: Dict[str, float], height_mm: float) -> List[View]:
             Dim("v", (vent.width / 2, 0.0), (-1.0, vent.depth), "left", 0, vent.depth, search=0.1),
         ]
         out.append(detail)
-    return out
+    return assign_ids(out)
 
 
 def lid_layout(values: Dict[str, float], thickness_mm: float,
@@ -262,7 +284,7 @@ def lid_layout(values: Dict[str, float], thickness_mm: float,
     along.dims += [Dim("v", (-length / 2 + 2, -h2), (-length / 2 + 2, h2), "left", 0, thickness_mm)]
     out.append(along)
     out += relief_sections(values, thickness_mm, length, channel, inner, outer, side, measured)
-    return out
+    return assign_ids(out)
 
 
 # The depths the lid's relief steps are cut to. The channel and the chip
@@ -377,6 +399,7 @@ class _Sheet:
         self.sw_views: Dict[str, object] = {}
         self.rejected: List[str] = []
         self._found_at: Dict[str, Tuple[float, float]] = {}   # view key -> offset (mm) that worked last
+        self.placed: Dict[Tuple[str, str], str] = {}          # (view key, dimension id) -> its name in the drawing
 
     def _byref(self):
         import pythoncom
@@ -475,7 +498,7 @@ class _Sheet:
             moved = Dim(dim.kind, (dim.a[0] + du, dim.a[1] + dv),
                         None if dim.b is None else (dim.b[0] + du, dim.b[1] + dv),
                         dim.side, dim.tier, dim.expected, dim.prefix, dim.suffix,
-                        tolerance=dim.tolerance)
+                        tolerance=dim.tolerance, id=dim.id)
             if self._dimension_at(key, moved, quiet=True):
                 self._found_at[key] = (du, dv)
                 del self.rejected[rejected:]
@@ -522,6 +545,10 @@ class _Sheet:
             return self._reject(key, dim, f"measured {value:.3f}, expected {dim.expected:.3f}", quiet)
         try:
             shown.ShowParenthesis = False
+        except Exception:
+            pass
+        try:
+            self.placed[(key, dim.id)] = str(shown.GetDimension2(0).FullName)
         except Exception:
             pass
         if dim.tolerance:
@@ -613,6 +640,12 @@ class _Sheet:
                                               x2 * SKETCH_FACTOR, y2 * SKETCH_FACTOR, 0)
         self.drw.SketchManager.InsertSketch(True)
 
+    def set_properties(self, props: Dict[str, str]) -> None:
+        """Set the drawing's custom properties (what `$PRP:"Name"` shows)."""
+        manager = self.drw.Extension.CustomPropertyManager("")
+        for name, value in props.items():
+            manager.Add3(name, 30, value, 1)          # swCustomInfoText, replace if present
+
     def save_pdf(self, path: str) -> None:
         if os.path.exists(path):
             os.remove(path)
@@ -635,8 +668,21 @@ def hide_sketches(model) -> None:
     model.ClearSelection2(True)
 
 
-def _title_block(sheet: "_Sheet", part: str, title: str, material: str, scale_note: str) -> None:
-    """Frame, general notes and the title block, in sheet coordinates (m)."""
+PROPERTIES = ("RunCombo", "Material", "Date", "Scales", "Omitted")
+
+
+def title_properties(title: str, material: str, scales: str, omitted: str = "") -> Dict[str, str]:
+    """The text the title block and notes show, as the drawing's custom
+    properties: a drawing kept as a template has its notes point at them
+    (`$PRP:"Name"`), so filling it for a combination is setting these."""
+    return {"RunCombo": title, "Material": f"MATERIAL: {material or 'see order'}",
+            "Date": f"{_dt.date.today().isoformat()}  UNITS: mm", "Scales": scales, "Omitted": omitted}
+
+
+def _title_block(sheet: "_Sheet", part: str, props: Dict[str, str]) -> None:
+    """Frame, general notes and the title block, in sheet coordinates (m).
+    What changes from one combination to the next is a property (see
+    `title_properties`), not text typed into a note."""
     x1, y1, x2, y2 = MARGIN, MARGIN, SHEET_W - MARGIN, SHEET_H - MARGIN
     block_w, block_h = 0.150, 0.050
     bx, by = x2 - block_w, y1
@@ -646,21 +692,24 @@ def _title_block(sheet: "_Sheet", part: str, title: str, material: str, scale_no
         (bx, by + 0.034, x2, by + 0.034), (bx, by + 0.018, x2, by + 0.018),
         (bx + 0.085, by, bx + 0.085, by + 0.018),
     ])
+    sheet.set_properties(props)
     name = {"box": "BOX", "lid_inside": "LID"}.get(part, part.upper())
     sheet.text(bx + 0.004, by + 0.040, f"{name} - MANUFACTURING DRAWING")
-    sheet.text(bx + 0.004, by + 0.024, title)
-    sheet.text(bx + 0.004, by + 0.009, f"MATERIAL: {material or 'see order'}")
-    sheet.text(bx + 0.089, by + 0.009, f"{_dt.date.today().isoformat()}  UNITS: mm")
+    sheet.text(bx + 0.004, by + 0.024, '$PRP:"RunCombo"')
+    sheet.text(bx + 0.004, by + 0.009, '$PRP:"Material"')
+    sheet.text(bx + 0.089, by + 0.009, '$PRP:"Date"')
     notes = [
         "NOTES",
         "1. ALL DIMENSIONS IN MILLIMETRES.",
         "2. GENERAL TOLERANCE ISO 2768-m UNLESS STATED.",
         "3. BREAK SHARP EDGES 0.1 TO 0.2.",
         "4. SURFACE ROUGHNESS Ra 3.2 EXCEPT WHERE STATED.",
-        f"5. VIEW SCALES AS SHOWN ({scale_note}).",
+        '5. VIEW SCALES AS SHOWN ($PRP:"Scales").',
     ]
     for i, line in enumerate(notes):
         sheet.text(x1 + 0.006, y1 + 0.040 - i * 0.0065, line)
+    # dimensions a combination does not have are listed here, never printed
+    sheet.text(x1 + 0.006, y1 + 0.052, '$PRP:"Omitted"')
 
 
 def measure_relief(model, inner: float) -> Dict[str, float]:
@@ -729,44 +778,48 @@ def check_pdf(path: str) -> None:
             f"on a {page_w:.0f} x {page_h:.0f} mm sheet")
 
 
-def make_pdf(app, model, part_path: str, part: str, out_pdf: str, title: str,
-             values: Dict[str, float], log: Callable[[str], None] = logger.info,
-             material: str = "", preview: str = "") -> List[str]:
-    """Draw `part` (open as `model`, saved at `part_path`) and write the PDF.
-
-    `preview`, if given, is a path to write a PNG of the sheet to (for
-    looking at it without a PDF reader).
-
-    Returns the dimensions that were dropped because they did not measure
-    what the layout expected (empty when the drawing is complete). Raises
-    RuntimeError when no PDF comes out.
-    """
+def layout_for_part(model, part: str, values: Dict[str, float],
+                    log: Callable[[str], None] = logger.info) -> List["View"]:
+    """The views and dimensions for one combination of `part` (open as
+    `model`). Everything that has to be measured off the part is measured
+    here, so it must be called before a drawing is open: a ray picked in the
+    part makes the part's window the active one, and a drawing sketched in
+    meanwhile goes astray."""
     hide_sketches(model)
     box = model.GetPartBox(True)
     height_mm = (box[4] - box[1]) * 1000.0     # along the part's own Y
-    measured: Dict[str, float] = {}
-    if part != "box":
-        # Before the drawing exists: a ray picked in the part makes the part's
-        # window the active one, and a drawing sketched in meanwhile goes astray.
-        inner_edge = (_g(values, "pcb_length", 50.0) / 2 - _g(values, "port_space", 6.0)
-                      - _g(values, "port_length", 5.1))
-        measured = measure_relief(model, inner_edge)
-        log(f"lid relief depths measured off the part: {measured}")
+    if part == "box":
+        return box_layout(values, height_mm)
+    inner_edge = (_g(values, "pcb_length", 50.0) / 2 - _g(values, "port_space", 6.0)
+                  - _g(values, "port_length", 5.1))
+    measured = measure_relief(model, inner_edge)
+    log(f"lid relief depths measured off the part: {measured}")
+    return lid_layout(values, height_mm, measured)
+
+
+def build_drawing(app, model, part_path: str, part: str, title: str, values: Dict[str, float],
+                  log: Callable[[str], None] = logger.info, material: str = "",
+                  layout: Optional[List["View"]] = None):
+    """Draw `part` (open as `model`, saved at `part_path`) from scratch.
+
+    Returns (drawing, sheet, layout) with the drawing left open for the
+    caller to export or save. Dimensions that did not measure what the
+    layout expected are in `sheet.rejected`, never on the drawing. `layout`
+    may be passed if the caller has made it already (see `layout_for_part`).
+    """
+    if layout is None:
+        layout = layout_for_part(model, part, values, log)
     drawing = app.NewDocument(find_template(), 12, SHEET_W, SHEET_H)
     if drawing is None:
         raise RuntimeError("SolidWorks would not create a drawing")
     sheet = _Sheet(app, drawing, part_path, log)
     try:
         sheet.ext.SetUserPreferenceInteger(UNITS_LINEAR, 0, UNIT_MM)
-        if part == "box":
-            layout = box_layout(values, height_mm)
-        else:
-            layout = lid_layout(values, height_mm, measured)
         # The sheet's own furniture goes in before any view exists: once a
         # view has been worked on it stays the active one, and anything
         # sketched afterwards lands in it, at its scale.
-        scales = sorted({v.scale for v in layout})
-        _title_block(sheet, part, title, material, ", ".join(f"{s:g}:1" for s in scales))
+        scales = ", ".join(f"{sc:g}:1" for sc in sorted({v.scale for v in layout}))
+        _title_block(sheet, part, title_properties(title, material, scales))
         for view in layout:
             if view.detail_of:
                 sheet.add_detail(view)
@@ -781,15 +834,43 @@ def make_pdf(app, model, part_path: str, part: str, out_pdf: str, title: str,
                     continue
                 if sheet.dimension(view.key, dim) and dim.group:
                     done.add(dim.group)
+    except Exception:
+        try:
+            app.CloseDoc(drawing.GetTitle)
+        except Exception:
+            pass
+        raise
+    return drawing, sheet, layout
+
+
+def finish_pdf(app, drawing, sheet, out_pdf: str, preview: str = "") -> None:
+    """Write the PDF of an open drawing, check it, and close the drawing."""
+    try:
         if preview:
             sheet.export_png(preview)
         sheet.save_pdf(out_pdf)
         if not os.path.isfile(out_pdf) or os.path.getsize(out_pdf) < 1000:
             raise RuntimeError("SolidWorks wrote no PDF")
         check_pdf(out_pdf)
-        return sheet.rejected
     finally:
         try:
             app.CloseDoc(drawing.GetTitle)
         except Exception:
             pass
+
+
+def make_pdf(app, model, part_path: str, part: str, out_pdf: str, title: str,
+             values: Dict[str, float], log: Callable[[str], None] = logger.info,
+             material: str = "", preview: str = "") -> List[str]:
+    """Draw `part` from scratch and write the PDF.
+
+    `preview`, if given, is a path to write a PNG of the sheet to (for
+    looking at it without a PDF reader).
+
+    Returns the dimensions that were dropped because they did not measure
+    what the layout expected (empty when the drawing is complete). Raises
+    RuntimeError when no PDF comes out.
+    """
+    drawing, sheet, _layout = build_drawing(app, model, part_path, part, title, values, log, material)
+    finish_pdf(app, drawing, sheet, out_pdf, preview)
+    return sheet.rejected

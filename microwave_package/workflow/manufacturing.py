@@ -67,6 +67,9 @@ CATALOG: List[Spec] = [
     Spec("box_drawing", "box", "Box - dimensioned drawing (PDF)",
          "Views, sections, hole callouts and overall dimensions for the machine shop.",
          "_box_drawing.pdf", "application/pdf"),
+    Spec("box_slddrw", "box", "Box - SolidWorks drawing",
+         "The drawing itself, saved against the part above, to open and tune in SolidWorks.",
+         "_box_drawing.SLDDRW", _OCTET),
     Spec("lid_step", "lid", "Lid - STEP", "3D solid, neutral CAD exchange format (AP214).",
          "_lid_inside.STEP", "model/step"),
     Spec("lid_sldprt", "lid", "Lid - SolidWorks part",
@@ -74,6 +77,9 @@ CATALOG: List[Spec] = [
     Spec("lid_drawing", "lid", "Lid - dimensioned drawing (PDF)",
          "Views, sections, countersinks and overall dimensions for the machine shop.",
          "_lid_inside_drawing.pdf", "application/pdf"),
+    Spec("lid_slddrw", "lid", "Lid - SolidWorks drawing",
+         "The drawing itself, saved against the part above, to open and tune in SolidWorks.",
+         "_lid_inside_drawing.SLDDRW", _OCTET),
     Spec("pcb_project", "pcb", "Altium project (zip)",
          "Native .PcbDoc and .PrjPcb, ready to open in Altium Designer. The master design.",
          "_pcb_altium.zip", "application/zip"),
@@ -381,8 +387,12 @@ def make_cad_group(run, combo_id: str, group: str, log: Callable[[str], None]) -
 
     part = PART_OF_GROUP[group]
     sldprt = target_path(run, combo_id, f"{group}_sldprt")
-    wanted = {"sldprt": sldprt, "drawing": target_path(run, combo_id, f"{group}_drawing")}
+    wanted = {"sldprt": sldprt, "drawing": target_path(run, combo_id, f"{group}_drawing"),
+              "slddrw": target_path(run, combo_id, f"{group}_slddrw")}
     missing = {k: v for k, v in wanted.items() if not os.path.isfile(v)}
+    if "drawing" in missing or "slddrw" in missing:
+        # the PDF and the drawing it came from are made together
+        missing["drawing"], missing["slddrw"] = wanted["drawing"], wanted["slddrw"]
     if not missing:
         log("already made")
         return
