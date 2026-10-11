@@ -184,11 +184,11 @@ class TestTheBuilder(unittest.TestCase):
         self.assertAlmostEqual(spans[1][0], 3.25)
         self.assertAlmostEqual(spans[1][1], 12.5 + wall)
         self.assertAlmostEqual(skins[0][1][0], 0.5 + 2 * vent_builder.SKIN_OVERLAP)
-        # screws: from the keep-out circle round the tap hole (9 + 1.5) to the wall
+        # screws: from just inside the keep-out circle round the tap hole (9 + 1.5) to the wall
         for origin, sizes in skins[2:]:
             near = min(abs(origin[2]), abs(origin[2] + sizes[2]))
             far = max(abs(origin[2]), abs(origin[2] + sizes[2]))
-            self.assertAlmostEqual(near, 9.0 + 1.5)
+            self.assertAlmostEqual(near, 9.0 + 1.5 - vent_builder.KEEPOUT_SLACK)
             self.assertAlmostEqual(far, 12.5 + wall)
 
     def test_no_skin_for_a_sheet_of_copper_or_without_any_vent(self):

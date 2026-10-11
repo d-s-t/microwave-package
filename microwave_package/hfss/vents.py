@@ -35,6 +35,10 @@ WALL_OVERLAP = 0.2
 # coincide like that intersecting (the copper wholly inside the box, with no
 # face in common, passes).
 SKIN_DEPTH = 2.0
+# The keep-out circle in the copper is a polygon whose chords lie a few microns
+# inside the true circle, so copper starts a hair before the circle's radius.
+# The screw skin starts this much earlier so none of it is left over air.
+KEEPOUT_SLACK = 0.2
 
 
 def build_vents(hfss, frame, stack, values, log=logger.info) -> Optional[List[str]]:
@@ -95,7 +99,7 @@ def _restore_copper_skin(hfss, frame, stack, values, vents, log) -> List[str]:
             spans = ((inner, reach), (-reach, -inner))
         else:
             sign = 1.0 if vent.end[1] > 0 else -1.0
-            start = abs(vent.start[1]) + keepout
+            start = abs(vent.start[1]) + keepout - KEEPOUT_SLACK
             spans = (tuple(sorted((sign * start, sign * reach))),)
         u_min, _, u_max, _ = vent.rectangle()
         for index, (v0, v1) in enumerate(spans):
