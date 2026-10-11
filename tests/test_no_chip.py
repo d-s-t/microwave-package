@@ -37,7 +37,8 @@ def defaults():
 
 
 def bare(**overrides):
-    return dict(defaults(), no_chip=1, **overrides)
+    # no pedestal: a bare board has no die and a whole bottom plane (see test_bare_board_pedestal)
+    return dict(defaults(), no_chip=1, **{"pedestal_depth": 0, **overrides})
 
 
 class TestTheParameter(unittest.TestCase):
