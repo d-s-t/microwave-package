@@ -1307,7 +1307,7 @@ def build_model(
     hfss = Hfss(
         project=project_path,
         version=aedt_version_for(aedt_version),
-        solution_type=solver.value,
+        solution_type=solver.hfss_type,
         new_desktop=False,
         student_version=student_version,
         non_graphical=not graphical,
@@ -1351,60 +1351,74 @@ def build_model(
             except Exception:
                 pass
 
-        log(f"Importing {step_paths['box']}...")
-        before_box = set(hfss.modeler.object_names)
-        hfss.modeler.import_3d_cad(step_paths["box"])
-        # SolidWorks names a part's one solid after the LAST feature that
-        # shapes it: "box" while that is the final mirror, "Vent_Screws"
-        # once the vent cuts follow it. Everything below looks for "box".
-        box_names = [n for n in hfss.modeler.object_names if n not in before_box]
-        if len(box_names) > 1:
-            hfss.modeler.unite(box_names)
-        if box_names and box_names[0] != "box":
-            hfss.modeler[box_names[0]].name = "box"
+        if solver.build_model is not None:
+            # A solver that draws its own model (the line-impedance check):
+            # nothing of the package is imported or rebuilt.
+            from ..workflow import companion
+            try:
+                object_names, port_names = solver.build_model(
+                    hfss, combo_id, combo_dir, dimensions_txt_content, run,
+                    companion.settings_with_modes(run, combo_id, analysis_settings, log=log),
+                    log=log,
+                )
+            except registry.PortPlacementError as exc:
+                log(f"{combo_id}: {exc} Not saving or queueing this combination.")
+                return
+        else:
+            log(f"Importing {step_paths['box']}...")
+            before_box = set(hfss.modeler.object_names)
+            hfss.modeler.import_3d_cad(step_paths["box"])
+            # SolidWorks names a part's one solid after the LAST feature that
+            # shapes it: "box" while that is the final mirror, "Vent_Screws"
+            # once the vent cuts follow it. Everything below looks for "box".
+            box_names = [n for n in hfss.modeler.object_names if n not in before_box]
+            if len(box_names) > 1:
+                hfss.modeler.unite(box_names)
+            if box_names and box_names[0] != "box":
+                hfss.modeler[box_names[0]].name = "box"
 
-        log(f"Importing {step_paths['lid_inside']}...")
-        before_lid = set(hfss.modeler.object_names)
-        hfss.modeler.import_3d_cad(step_paths["lid_inside"])
-        lid_inside_names = [n for n in hfss.modeler.object_names if n not in before_lid]
+            log(f"Importing {step_paths['lid_inside']}...")
+            before_lid = set(hfss.modeler.object_names)
+            hfss.modeler.import_3d_cad(step_paths["lid_inside"])
+            lid_inside_names = [n for n in hfss.modeler.object_names if n not in before_lid]
 
-        # The boards are not in the STEP in any usable form -- Altium's
-        # export drops copper, and the substrates are rebuilt here so the
-        # die can be pocketed into the board and everything shares one
-        # frame. Must happen BEFORE materials are assigned, or the new
-        # bodies exist without any. lid_inside is placed and the vacuum
-        # fill built in here too -- see build_layout's docstring.
-        layout = build_layout(
-            hfss, combo_dir, dimensions_txt_content, lid_inside_names,
-            include_wirebonds=analysis_settings["materials"].get("include_wirebonds", True),
-            log=log,
-        )
-
-        objects_dict = assign_materials_and_boundaries(
-            hfss, analysis_settings["materials"], log=log,
-            sheets=layout.sheets if layout else None,
-        )
-        carve_vacuum(hfss, objects_dict, log=log)
-        object_names = {key: obj.name for key, obj in objects_dict.items()}
-
-        # After the carve, not before: a boolean renumbers the faces of
-        # everything it touches, and a port is attached to a face id.
-        try:
-            port_names = solver.place_ports(hfss, layout, analysis_settings, log=log)
-        except registry.PortPlacementError as exc:
-            log(
-                f"{combo_id}: {exc} Not saving or queueing this combination -- a driven "
-                "model with no ports has nothing to excite and no S-matrix to read."
+            # The boards are not in the STEP in any usable form -- Altium's
+            # export drops copper, and the substrates are rebuilt here so the
+            # die can be pocketed into the board and everything shares one
+            # frame. Must happen BEFORE materials are assigned, or the new
+            # bodies exist without any. lid_inside is placed and the vacuum
+            # fill built in here too -- see build_layout's docstring.
+            layout = build_layout(
+                hfss, combo_dir, dimensions_txt_content, lid_inside_names,
+                include_wirebonds=analysis_settings["materials"].get("include_wirebonds", True),
+                log=log,
             )
-            return
 
-        # A driven run paired with an Eigenmode run gets that run's modes for
-        # this combination, to put fine frequency windows around.
-        from ..workflow import companion
-        solver.create_setup(
-            hfss, dimensions_txt_content,
-            companion.settings_with_modes(run, combo_id, analysis_settings, log=log), log=log,
-        )
+            objects_dict = assign_materials_and_boundaries(
+                hfss, analysis_settings["materials"], log=log,
+                sheets=layout.sheets if layout else None,
+            )
+            carve_vacuum(hfss, objects_dict, log=log)
+            object_names = {key: obj.name for key, obj in objects_dict.items()}
+
+            # After the carve, not before: a boolean renumbers the faces of
+            # everything it touches, and a port is attached to a face id.
+            try:
+                port_names = solver.place_ports(hfss, layout, analysis_settings, log=log)
+            except registry.PortPlacementError as exc:
+                log(
+                    f"{combo_id}: {exc} Not saving or queueing this combination -- a driven "
+                    "model with no ports has nothing to excite and no S-matrix to read."
+                )
+                return
+
+            # A driven run paired with an Eigenmode run gets that run's modes for
+            # this combination, to put fine frequency windows around.
+            from ..workflow import companion
+            solver.create_setup(
+                hfss, dimensions_txt_content,
+                companion.settings_with_modes(run, combo_id, analysis_settings, log=log), log=log,
+            )
 
         hfss.save_project(project_path)
         closed = close_project_safely(hfss, log=log)
@@ -1423,7 +1437,7 @@ def build_model(
             log(f"{combo_id}'s project unlocked despite that close error -- queueing it anyway.")
 
         problem = validate_saved_model(
-            project_path, solver.value, aedt_version, student_version, graphical,
+            project_path, solver.hfss_type, aedt_version, student_version, graphical,
             vacuum=object_names.get("vacuum"), log=log,
         )
         if problem:
@@ -1730,7 +1744,7 @@ def queue_model(
         # passing it through lets the worker skip auto-detecting it
         # from the AEDT session when it reopens the project. See
         # queue_common.build_task()'s docstring for why that matters.
-        solution_type=solver.value,
+        solution_type=solver.hfss_type,
         # Named, or PyAEDT does not find it: it matches the saved design
         # against the solution type, and a driven design saves as "HFSS
         # Modal Network", which PyAEDT 1.0.0 does not take for
@@ -1741,6 +1755,9 @@ def queue_model(
         post_processing=solver.post_processing_ops(analysis_settings),
         metadata={
             "combo_id": combo_id,
+            # Which solver this task is for, when HFSS cannot tell: the
+            # line-impedance check is a "DrivenModal" design to the worker.
+            "solver": solver.value,
             "params": run.state["combos"][combo_id]["params"],
             "source_step_files": {k: os.path.abspath(p) for k, p in step_paths.items()},
         },

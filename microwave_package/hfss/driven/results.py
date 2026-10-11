@@ -165,6 +165,9 @@ def _rows_for_solution(hfss, setup, solution: str, log, out_dir: Optional[str]) 
         for formula, suffix in (("db20", "db"), ("phase", "deg")):
             _, values = data.get_expression_data(expression=expression, formula=formula)
             values = list(values)
+            if formula == "phase":
+                # pyaedt's "phase" is in radians; the column says degrees.
+                values = [math.degrees(float(v)) for v in values]
             if len(values) != len(frequencies):
                 log(
                     f"WARNING: {expression} came back with {len(values)} value(s) for "
