@@ -96,6 +96,8 @@ def _restore_copper_skin(hfss, frame, stack, values, vents, log) -> List[str]:
     made: List[str] = []
     for vent in vents:
         if vent.name == "pedestal":
+            if inner <= 0:      # no die opening to start from: nothing is over this groove
+                continue
             spans = ((inner, reach), (-reach, -inner))
         else:
             sign = 1.0 if vent.end[1] > 0 else -1.0

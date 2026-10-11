@@ -11,7 +11,7 @@ down into the floor:
 
     Vent_Pedestal   one slot across the whole box at x = 0, `vent_width`
                     wide, through the pedestal recess and out of both side
-                    faces. Suppressed unless vents_on = 1 and pedestal_depth > 0.
+                    faces. Suppressed unless vents_on = 1, pedestal_depth > 0 and no_chip = 0.
     Vent_Screws     four slots, from each tapped hole to the nearest side
                     face. Suppressed unless vents_on = 1 and screws_on = 1.
 
@@ -36,6 +36,10 @@ from microwave_package.design import step_generation as sg  # noqa: E402
 INPUT_DIM_ON_CREATE = 10   # swInputDimValOnCreate: the Modify box that blocks automation
 OUT = '"box_side" / 2 + 0.2'    # past the wall's outer face (venting.OVERLAP)
 MM = 0.001
+# 1 suppresses the feature. Same condition as design.venting.plan: a recess
+# under a die, so not on a bare board (no_chip).
+PEDESTAL_SUPPRESS = ('IIF ( "vents_on" > 0.5 , IIF ( "pedestal_depth" > 0 , '
+                     'IIF ( "no_chip" > 0.5 , 1 , 0 ) , 1 ) , 1 )')
 
 
 def null():
@@ -112,9 +116,29 @@ class Builder:
         return feat
 
 
+def fix_pedestal_suppression(m, save=True):
+    """Rewrite the part's `"Vent_Pedestal"=...` equation as PEDESTAL_SUPPRESS."""
+    em = m.GetEquationMgr
+    for i in range(em.GetCount):
+        if em.Equation(i).replace(" ", "").startswith('"Vent_Pedestal"='):
+            em.Equation(i, '"Vent_Pedestal"=' + PEDESTAL_SUPPRESS)
+            break
+    else:
+        sys.exit("no Vent_Pedestal suppression equation in the part")
+    m.ForceRebuild3(False)
+    print("Vent_Pedestal suppression is now:", em.Equation(i))
+    if save:
+        err = win32com.client.VARIANT(pythoncom.VT_BYREF | pythoncom.VT_I4, 0)
+        warn = win32com.client.VARIANT(pythoncom.VT_BYREF | pythoncom.VT_I4, 0)
+        print("saved", m.Save3(1, err, warn), err.value, warn.value)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--no-save", action="store_true")
+    ap.add_argument("--fix-pedestal-suppression", action="store_true",
+                    help="on a part that already has the vent features, change Vent_Pedestal's "
+                         "suppression equation to the current one (adds the no_chip term) and save")
     args = ap.parse_args()
     root = os.path.dirname(os.path.abspath(__file__))
     part = os.path.join(root, "box.SLDPRT")
@@ -133,7 +157,12 @@ def main():
             names.append(f.Name)
             f = f.GetNextFeature
         if "Vent_Pedestal" in names:
+            if args.fix_pedestal_suppression:
+                fix_pedestal_suppression(m)
+                return
             sys.exit("box.SLDPRT already has the vent features")
+        if args.fix_pedestal_suppression:
+            sys.exit("box.SLDPRT has no Vent_Pedestal feature to fix")
         # The part imports the file's variables only when it is linked, so
         # the three new ones are not in it yet. Unlinking and linking again
         # brings them in (appended after the old ones). They must exist
@@ -156,7 +185,7 @@ def main():
         b.rectangle(-0.25, -13.7, 0.25, 13.7,
                     ['"vent_width" / 2', OUT, '"vent_width" / 2', OUT])
         b.cut(name, "Vent_Pedestal",
-              'IIF ( "vents_on" > 0.5 , IIF ( "pedestal_depth" > 0 , 0 , 1 ) , 1 )')
+              PEDESTAL_SUPPRESS)
         print("volume after pedestal", m.Extension.CreateMassProperty.Volume * 1e9)
 
         sk = b.new_sketch_on_floor()

@@ -53,9 +53,13 @@ class TestThePlan(unittest.TestCase):
     def test_no_recess_no_pedestal_vent(self):
         names = [v.name for v in venting.plan(values(pedestal_depth=0))]
         self.assertNotIn("pedestal", names)
-        # the box's recess follows pedestal_depth alone, so the vent does too
-        names = [v.name for v in venting.plan(values(no_chip=1))]
-        self.assertIn("pedestal", names)
+
+    def test_a_bare_board_has_no_pedestal_vent_but_keeps_its_screw_vents(self):
+        # no die, no opening in the bottom copper: the skin over the pedestal
+        # vent had nothing to start from and the box and copper intersected
+        for extra in (dict(no_chip=1), dict(no_chip=1, pedestal_depth=0.5), dict(no_chip=1, pedestal_depth=0)):
+            names = [v.name for v in venting.plan(values(**extra))]
+            self.assertEqual(names, ["screw_1", "screw_2", "screw_3", "screw_4"], extra)
 
     def test_every_vent_reaches_the_side_face_past_the_wall(self):
         v = values()
@@ -200,6 +204,14 @@ class TestTheBuilder(unittest.TestCase):
         hfss = FakeHfss()
         vent_builder.build_vents(hfss, cg.Frame(), self.stack, values(pedestal_depth=0, screws_on=0))
         self.assertEqual(hfss.modeler.unions, [])
+
+    def test_bare_board_cuts_and_skins_only_the_screw_vents(self):
+        hfss = FakeHfss()
+        names = vent_builder.build_vents(hfss, cg.Frame(), self.stack, values(no_chip=1))
+        self.assertEqual(names, ["screw_1", "screw_2", "screw_3", "screw_4"])
+        self.assertEqual(len(hfss.modeler.cuts), 4)
+        self.assertEqual([u[1] for u in hfss.modeler.unions],
+                         [f"vent_skin_screw_{i}_0" for i in (1, 2, 3, 4)])
 
     def test_nothing_when_off(self):
         hfss = FakeHfss()
