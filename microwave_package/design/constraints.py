@@ -258,6 +258,60 @@ ROUTE_MARGIN = 0.1
 # the planes around the launch, not the vias, pads or die. The 86 um board is
 # very likely the same failure with the checks not yet there to catch it.
 MIN_CPW_GAP = 0.1
+# How far the ground is pulled back from the SMP signal pad when the equations
+# file does not say (mm) -- MUST MATCH the `launch_clearance` default in
+# GenerateFromParams.pas. Chosen from the HFSS sweep in PRE_MANUFACTURING.md.
+DEFAULT_LAUNCH_CLEARANCE = 0.2
+
+
+def launch_clearance(values: Dict[str, float]) -> float:
+    """The ground keep-out round the SMP signal pad, `launch_clearance`."""
+    return values.get("launch_clearance", DEFAULT_LAUNCH_CLEARANCE)
+
+
+def pad_ground_edge(values: Dict[str, float], gap: float) -> float:
+    """How far from the line's axis the top ground starts beside the SMP signal
+    pad: the CPW's own gap edge, or `launch_clearance` off the pad's edge when
+    that is further out. The pad is wider than the trace, so the gap edge alone
+    leaves only gap - (pad - trace) / 2 of copper-to-copper clearance."""
+    from . import smp
+
+    return max(values.get("cpw_trace_width", 0.0) / 2.0 + gap,
+               smp.SIGNAL_HALF_W + launch_clearance(values))
+
+
+def pad_ground_clearance(values: Dict[str, float], gap: float) -> float:
+    """The copper-to-copper distance from the SMP signal pad to the ground
+    beside it, as the generator draws it (keep-out included)."""
+    from . import smp
+
+    return pad_ground_edge(values, gap) - smp.SIGNAL_HALF_W
+
+
+def check_launch_clearance(values: Dict[str, float], gap: float) -> Optional[str]:
+    """Why the ground beside the SMP signal pad is too close to it, or None.
+
+    The pad is wider than the trace, and the ground edge follows the trace, so
+    without a keep-out the clearance is the line's gap minus half the
+    difference (71 um for a 0.4 mm trace with a 111 um gap on the 0.48 mm pad).
+    The generator pulls the ground back to `launch_clearance` off the pad; that
+    has to be at least MIN_CPW_GAP, the same floor as the line's own gap.
+    """
+    from . import smp
+
+    clearance = pad_ground_clearance(values, gap)
+    if clearance < MIN_CPW_GAP - VIA_GAP_TOLERANCE / 10.0:
+        trace = values.get("cpw_trace_width", 0.0)
+        bare = gap - (2.0 * smp.SIGNAL_HALF_W - trace) / 2.0
+        return (
+            f"the ground beside the {_fmt(2.0 * smp.SIGNAL_HALF_W)} mm SMP signal pad is only "
+            f"{clearance * 1000.0:.0f} um from it (launch_clearance = "
+            f"{launch_clearance(values) * 1000.0:.0f} um; without a keep-out the {gap * 1000.0:.0f} um "
+            f"gap of a {_fmt(trace)} mm trace would leave {bare * 1000.0:.0f} um), under the "
+            f"{_fmt(MIN_CPW_GAP * 1000.0)} um minimum -- raise launch_clearance to at least "
+            f"{_fmt(MIN_CPW_GAP)} mm"
+        )
+    return None
 
 
 def lid_cover(values: Dict[str, float]) -> Dict[str, float]:
@@ -612,6 +666,10 @@ def check_layout(values: Dict[str, float], mat_pcb: Optional[str] = None,
             f"widen cpw_trace_width"
         )
 
+    reason = check_launch_clearance(values, gap)
+    if reason:
+        return reason
+
     # The fence sits outside the gap, and needs its own diameter of room
     # before the board edge -- plus via_min_spacing, because the generator
     # keeps a via that far from the edge as it does from everything else
@@ -726,7 +784,8 @@ def check_layout(values: Dict[str, float], mat_pcb: Optional[str] = None,
 
     finger_x = (get("chip_length") / 2.0
                 + finger_offset(get("bonding_clearence"), get("cavity_clearance")))
-    launch_inner = smp.launch_inner_edge(half_length, get("port_space"))
+    # The ground keep-out round the signal pad reaches launch_clearance past it.
+    launch_inner = smp.launch_inner_edge(half_length, get("port_space")) - launch_clearance(values)
     if finger_x >= launch_inner:
         return (
             f"the bond fingers reach {_fmt(finger_x)} mm but the SMP launch starts at "

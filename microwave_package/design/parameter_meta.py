@@ -51,6 +51,7 @@ LABELS: Dict[str, str] = {
     "via_max_spacing": "Maximum via spacing",
     "via_gnd_clearance": "Via fence setback from gap",
     "via_min_spacing": "Minimum via spacing",
+    "launch_clearance": "Ground clearance round the SMP pad",
     "bond_pad_length": "Bond pad length",
     "bond_pad_width": "Bond pad width",
     "bond_pad_pitch": "Bond pad pitch",
@@ -83,6 +84,7 @@ MICRON_PARAMETERS = {
     "pcb_width", "chip_width", "route_clearence", "chip_leg",
     "copper_thickness", "chip_metal_thickness",
     "via_gnd_clearance", "via_min_spacing", "bond_wire_diameter", "cavity_clearance",
+    "launch_clearance",
 }
 
 # Counts rather than lengths: no unit at all.
@@ -198,6 +200,7 @@ GROUPS: List[dict] = [
         "names": [
             "cpw_trace_width", "chip_trace_width",
             "via_diameter", "via_max_spacing", "via_gnd_clearance", "via_min_spacing",
+            "launch_clearance",
             "bond_pad_length", "bond_pad_width", "bond_pad_pitch",
             "bond_height", "bond_wire_diameter",
         ],

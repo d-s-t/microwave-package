@@ -391,6 +391,12 @@ LENGTH = INNER_V - OUTER_V
 # Where the centre conductor ends, measured from the outer edge inward.
 SIGNAL_V = SIGNAL_PAD[1]
 
+# The signal pad's half-width across the line and half-length along it. The
+# ground beside it is pulled back from these (constraints.pad_ground_edge),
+# and its length is how far the pad reaches back onto the board past SIGNAL_V.
+SIGNAL_HALF_W = SIGNAL_PAD[2] / 2.0
+SIGNAL_HALF_L = SIGNAL_PAD[3] / 2.0
+
 
 def as_parameters() -> Dict[str, float]:
     """What the DelphiScript needs to draw the board AROUND the launch.
@@ -411,6 +417,8 @@ def as_parameters() -> Dict[str, float]:
         "smp_land_half": GROUND_LAND_HALF,
         "smp_void_r": VOID_RADIUS,
         "smp_slot_half": SLOT_HALF_U,
+        "smp_sig_half_w": SIGNAL_HALF_W,
+        "smp_sig_half_l": SIGNAL_HALF_L,
     }
 
 

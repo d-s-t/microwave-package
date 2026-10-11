@@ -84,6 +84,8 @@
 
 "via_min_spacing"= 0.2	' minimum clearance a placed via must keep from any pad, track, other via or the board edge
 
+"launch_clearance"= 0.2	' ground pulled back this far from the SMP signal pad (and past its end) at each launch; at least 0.1 mm
+
 "bond_pad_length"= 0.3	' bonding pad size along the feedline
 
 "bond_pad_width"= 0.15	' bonding pad size across the feedline
