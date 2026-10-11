@@ -77,6 +77,15 @@ connectors and no SolidWorks, in minutes. Run S1 and S2 first and after
 every change to the trace, the laminate or the lid; the full-package runs
 (S4-S8) only when those pass.
 
+Accuracy of the check: against AEDT's 2D Extractor (50.17 ohm for the
+candidate) the 3-D section reads 1.4 ohm high with a 3 mm section and 0.9 ohm
+high with a 6 mm one, so the offset depends a little on the section length
+and the ports. It is well inside the +- 2.5 ohm tolerance, which is why that
+is the default; read a result near the edge of the window with it in mind.
+The section is kept under a half-wavelength at the top of the band (3 mm):
+at a half-wavelength the impedance cannot be derived from S-parameters, and
+those points are dropped.
+
 Reading S1 and S2: the page shows a PASS/FAIL pill, the minimum and
 maximum Zo over the band, the worst frequency, the gap solved and the
 analytic gap, and where the geometry came from (the run's copper layout,
