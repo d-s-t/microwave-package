@@ -75,7 +75,8 @@ class Dim:
     prefix: str = ""
     suffix: str = ""
     group: str = ""         # candidates for one unknown value: the first that measures right is kept
-    search: float = 0.0     # if the edges are not where expected, try points up to two steps of this (mm) away
+    search: float = 0.0     # if the edges are not where expected, try points up to `steps` of this (mm) away
+    steps: int = 2          # how many steps of `search` either side to try, on each axis
     tolerance: float = 0.0  # symmetric +- tolerance (mm) to print with the value; 0 prints none
 
 
@@ -92,6 +93,7 @@ class View:
     section_label: str = ""
     section_axis: str = "h"                     # "h": cut line along u at v=section_at; "v": along v at u=section_at
     flipped: bool = False                       # a section that comes out upside down (v -> -v)
+    rotated: bool = False                       # a lengthwise cut: thickness runs across the sheet, the cut's width up it
     extent: Tuple[float, float] = (0.0, 0.0)    # width and height of the part in this view (mm)
     detail_of: Optional[str] = None             # key of the view this is an enlarged detail of
     detail_at: Tuple[float, float] = (0.0, 0.0)  # centre of the circle, in the parent's frame (mm)
@@ -184,8 +186,8 @@ def box_layout(values: Dict[str, float], height_mm: float) -> List[View]:
                  section_label="B", extent=(total_l, height_mm), flipped=True)
     sec_b.dims += [
         Dim("h", (-body_l / 2, 4.0 - h2), (-body_l / 2 + wall, 4.0 - h2), "above", 0, wall),
-        Dim("v", (-body_l / 2 + wall / 2, h2), (-body_l / 2 + 3, floor_holes - h2), "left", 0,
-            height_mm - floor_holes),
+        Dim("v", (-body_l / 2 + wall / 2, h2), (-15.0, floor_holes - h2), "left", 0,
+            height_mm - floor_holes, search=0.1, steps=3),
     ]
     if g["chip"] and g["pedestal"] > 0:
         sec_b.dims += [
@@ -207,7 +209,7 @@ def box_layout(values: Dict[str, float], height_mm: float) -> List[View]:
                       detail_label="F")
         detail.dims += [
             # the groove's bottom edge is as long as the groove is wide: one pick
-            Dim("h", (vent.width / 2, 0.0), None, "above", 0, vent.width, search=0.1),
+            Dim("h", (vent.width / 2, 0.0), None, "above", 0, vent.width, search=0.1, steps=8),
             # from that edge to the floor's top face, picked to the left of the groove
             Dim("v", (vent.width / 2, 0.0), (-1.0, vent.depth), "left", 0, vent.depth, search=0.1),
         ]
@@ -215,7 +217,8 @@ def box_layout(values: Dict[str, float], height_mm: float) -> List[View]:
     return out
 
 
-def lid_layout(values: Dict[str, float], thickness_mm: float) -> List[View]:
+def lid_layout(values: Dict[str, float], thickness_mm: float,
+               measured: Optional[Dict[str, float]] = None) -> List[View]:
     """The lid's views and dimensions: the countersunk screw holes on the
     outer face, the relief pockets and the channel between them on the
     inner face, and a section along the feed line for their depths."""
@@ -258,7 +261,7 @@ def lid_layout(values: Dict[str, float], thickness_mm: float) -> List[View]:
     h2 = thickness_mm / 2.0          # v = Y - h2, Y measured from the inner face; this view reads upside down
     along.dims += [Dim("v", (-length / 2 + 2, -h2), (-length / 2 + 2, h2), "left", 0, thickness_mm)]
     out.append(along)
-    out += relief_sections(values, thickness_mm, length, channel, inner, outer, side)
+    out += relief_sections(values, thickness_mm, length, channel, inner, outer, side, measured)
     return out
 
 
@@ -268,51 +271,76 @@ def lid_layout(values: Dict[str, float], thickness_mm: float) -> List[View]:
 RELIEF_TOLERANCE = 0.02       # mm, +-
 CHANNEL_DEPTH_DEFAULT = 0.2   # route_clearence
 DEEP_DEPTH_CANDIDATES = (0.4, 0.3, 0.5, 0.6)   # the deeper steps: read off the section, not assumed
-DETAIL_SCALE = 20.0
+DETAIL_SCALE = 15.0
 DETAIL_RADIUS = 1.2           # mm
 
 
 def relief_sections(values: Dict[str, float], thickness_mm: float, length: float, channel: float,
-                    inner: float, outer: float, side: float) -> List[View]:
+                    inner: float, outer: float, side: float,
+                    measured: Optional[Dict[str, float]] = None) -> List[View]:
     """Three cross-sections of the inner (relief) face, each with an
-    enlarged detail that carries the depth, so a 0.2 mm step is not
+    enlarged detail that carries the depth, so a 0.3 mm step is not
     dimensioned from a view where it is a few pixels:
 
         G  across the channel, mid-way along it: its width and depth
         H  across the channel again, in the last millimetre before the
            connector pocket, where it is cut deeper
         K  across the chip pocket, clear of the channel: the pocket depth
+
+    A section of the inner face keeps its inner face at the bottom (K) or
+    at the right-hand edge (G, H: their strip is turned across the sheet);
+    a detail's circle is placed in the section's own frame, whose origin is
+    the middle of the lid's thickness, with the lateral coordinate first.
     """
-    h2 = thickness_mm / 2.0                      # v = Y - h2, Y from the inner face; the views read upside down
-    depth = _g(values, "route_clearence", CHANNEL_DEPTH_DEFAULT)
+    h2 = thickness_mm / 2.0
+    measured = measured or {}
+    # The depths themselves are measured off the part (`measure_relief`), not
+    # worked out from parameters: the deeper steps are not parameter-driven.
+    depth = measured.get("channel") or _g(values, "route_clearence", CHANNEL_DEPTH_DEFAULT)
+    deep = {"sec_h": measured.get("end"), "sec_k": measured.get("pocket")}
     scale = 2.5
     chip = 7.5                                   # the chip pocket (measured off the drawing, see tests)
-    # key, label, axis, cut position, where the section sits on the sheet, where its detail sits
+    centre_y = 0.3                               # the detail is centred this far into the lid (mm from the inner face)
+    # key, label, axis, cut, section on the sheet, detail on the sheet, circle centre (lateral)
     sections = (
-        ("sec_g", "G", "v", inner / 2.0, (0.235, 0.212), (0.225, 0.088)),
-        ("sec_h", "H", "v", inner - 0.5, (0.315, 0.212), (0.285, 0.088)),
-        ("sec_k", "K", "h", chip / 2.0, (0.330, 0.158), (0.345, 0.088)),
+        ("sec_g", "G", "v", inner / 2.0, (0.235, 0.212), (0.225, 0.098), 0.0),
+        ("sec_h", "H", "v", inner - 0.5, (0.315, 0.212), (0.290, 0.098), 0.0),
+        ("sec_k", "K", "h", 2.0, (0.330, 0.158), (0.355, 0.098), -chip / 2.0),
     )
     views: List[View] = []
-    for index, (key, label, axis, cut, at, detail_at) in enumerate(sections):
+    for index, (key, label, axis, cut, at, detail_at, lateral) in enumerate(sections):
         view = View("*Bottom", key, at[0], at[1], scale, section_of="inner",
                     section_at=cut, section_axis=axis, section_label=label,
-                    extent=(side if axis == "v" else length, thickness_mm), flipped=True)
+                    extent=(side if axis == "v" else length, thickness_mm), rotated=(axis == "v"))
         views.append(view)
-        detail = View("*Bottom", key + "_detail", detail_at[0], detail_at[1], DETAIL_SCALE, flipped=True,
+        detail = View("*Bottom", key + "_detail", detail_at[0], detail_at[1], DETAIL_SCALE,
                       extent=(2 * DETAIL_RADIUS, 2 * DETAIL_RADIUS), detail_of=key,
-                      detail_at=(0.0 if axis == "v" else chip / 2.0, depth / 2.0 - h2),
-                      detail_radius=DETAIL_RADIUS, detail_label=chr(ord("M") + index))
+                      detail_at=((h2 - centre_y, lateral) if axis == "v" else (lateral, centre_y - h2)),
+                      detail_radius=DETAIL_RADIUS,
+                      detail_label=chr(ord("M") + index), rotated=(axis == "v"))
+        face = (0.9 if axis == "v" else 1.0) + 0.0   # a point on the inner face, clear of the recess
         if key == "sec_g":
             detail.dims += [
-                Dim("h", (0.0, 0.0), None, "above", 0, channel, search=0.1),
-                Dim("v", (0.0, 0.0), (channel, -depth), "left", 0, depth, search=0.1,
+                # the channel floor is a line as long as the channel is wide: one pick
+                Dim("v", (0.0, depth - centre_y), None, "left", 0, channel, search=0.2, steps=5),
+                Dim("h", (face, -centre_y), (0.0, depth - centre_y), "above", 0, depth, search=0.2, steps=5,
                     tolerance=RELIEF_TOLERANCE),
             ]
         else:
-            for candidate in DEEP_DEPTH_CANDIDATES:
-                detail.dims.append(Dim("v", (0.0, 0.0), (channel, -candidate), "left", 0, candidate,
-                                       search=0.1, tolerance=RELIEF_TOLERANCE, group="deep"))
+            if axis == "v" and deep.get(key):
+                # the channel's width at its deeper floor: found first, it says where this
+                # view's content really is, and the depth dimension then starts there
+                detail.dims.append(Dim("v", (0.0, deep[key] - centre_y), None, "left", 0, channel,
+                                       search=0.1, steps=8))
+            for candidate in ((deep[key],) if deep.get(key) else DEEP_DEPTH_CANDIDATES):
+                at_floor = (0.0, candidate - centre_y)
+                at_face = (face if axis == "v" else -1.0, -centre_y)
+                kind = "h" if axis == "v" else "v"
+                detail.dims.append(Dim(kind, at_face, at_floor if axis == "v" else (1.0, candidate - centre_y),
+                                       "above" if axis == "v" else "left", 0, candidate,
+                                       search=0.2 if axis == "v" else 0.1,
+                                       steps=5 if axis == "v" else 2, 
+                                       tolerance=RELIEF_TOLERANCE, group="deep"))
         views.append(detail)
     return views
 
@@ -348,6 +376,7 @@ class _Sheet:
         self.views: Dict[str, View] = {}
         self.sw_views: Dict[str, object] = {}
         self.rejected: List[str] = []
+        self._found_at: Dict[str, Tuple[float, float]] = {}   # view key -> offset (mm) that worked last
 
     def _byref(self):
         import pythoncom
@@ -402,9 +431,9 @@ class _Sheet:
         self.drw.ActivateView(sw_parent.Name)
         sketcher = self.drw.SketchManager
         sketcher.InsertSketch(True)
+        # The circle is placed in the section's own sketch frame, whose second axis
+        # is the height above the part's middle whichever way the view reads.
         u, v = view.detail_at
-        if parent.flipped:
-            v = -v
         circle = sketcher.CreateCircleByRadius(u / 1000.0, v / 1000.0, 0, view.detail_radius / 1000.0)
         sketcher.InsertSketch(True)
         self.drw.ClearSelection2(True)
@@ -419,6 +448,8 @@ class _Sheet:
     # -- dimensions
     def _pt(self, view: View, point: Tuple[float, float]) -> Tuple[float, float]:
         u, v = point
+        if view.rotated:
+            return view.x - view.scale * v / 1000.0, view.y + view.scale * u / 1000.0
         if view.flipped:
             v = -v
         return view.x + view.scale * u / 1000.0, view.y + view.scale * v / 1000.0
@@ -433,15 +464,20 @@ class _Sheet:
         it could not be made to measure what it should."""
         if not dim.search or dim.expected is None:
             return self._dimension_at(key, dim)
-        steps = sorted(((du, dv) for du in range(-2, 3) for dv in range(-2, 3)),
-                       key=lambda t: (abs(t[0]) + abs(t[1]), t))
+        n = dim.steps
+        grid = sorted(((du * dim.search, dv * dim.search) for du in range(-n, n + 1) for dv in range(-n, n + 1)),
+                      key=lambda t: (abs(t[0]) + abs(t[1]), t))
+        # where the last dimension of this view was found goes first
+        remembered = self._found_at.get(key)
+        offsets = ([remembered] if remembered else []) + grid
         rejected = len(self.rejected)
-        for du, dv in steps:
-            moved = Dim(dim.kind, (dim.a[0] + du * dim.search, dim.a[1] + dv * dim.search),
-                        None if dim.b is None else (dim.b[0] + du * dim.search, dim.b[1] + dv * dim.search),
+        for du, dv in offsets:
+            moved = Dim(dim.kind, (dim.a[0] + du, dim.a[1] + dv),
+                        None if dim.b is None else (dim.b[0] + du, dim.b[1] + dv),
                         dim.side, dim.tier, dim.expected, dim.prefix, dim.suffix,
                         tolerance=dim.tolerance)
             if self._dimension_at(key, moved, quiet=True):
+                self._found_at[key] = (du, dv)
                 del self.rejected[rejected:]
                 return True
         del self.rejected[rejected:]
@@ -510,8 +546,8 @@ class _Sheet:
         try:
             tolerance = shown.GetDimension2(0).Tolerance
             tolerance.Type = TOLERANCE_SYMMETRIC
-            # the drawing's units are millimetres (UNITS_LINEAR above)
-            tolerance.SetValues(plus_minus, plus_minus)
+            # the API takes metres whatever the drawing's units
+            tolerance.SetValues(plus_minus / 1000.0, plus_minus / 1000.0)
         except Exception as exc:
             self.log(f"WARNING: could not put a tolerance on a dimension ({exc})")
 
@@ -627,6 +663,39 @@ def _title_block(sheet: "_Sheet", part: str, title: str, material: str, scale_no
         sheet.text(x1 + 0.006, y1 + 0.040 - i * 0.0065, line)
 
 
+def measure_relief(model, inner: float) -> Dict[str, float]:
+    """The depths of the lid's relief steps, measured off the part: a ray
+    from below the inner face, straight up through each place, reports the
+    height of the first face it meets, which is the depth there.
+
+    The channel and the chip pocket set the line impedance, so the depths
+    printed on the drawing are what the part holds, not what a parameter
+    says it should. Anything that cannot be measured is left out and the
+    layout falls back to its candidates."""
+    extension = model.Extension
+    selections = model.SelectionManager
+
+    def floor(u: float, v: float) -> Optional[float]:
+        model.ClearSelection2(True)
+        try:
+            # model coordinates in metres: X along the feedline, Y the thickness, Z across
+            hit = extension.SelectByRay(u / 1000.0, -0.01, v / 1000.0, 0, 1, 0, 1e-5, 2, False, 0, 0)
+            if not hit or selections.GetSelectedObjectCount2(-1) == 0:
+                return None
+            return round(selections.GetSelectionPoint2(1, -1)[1] * 1000.0, 3)
+        except Exception:
+            return None
+        finally:
+            model.ClearSelection2(True)
+
+    found = {
+        "channel": floor(inner / 2.0, 0.0),        # mid-way along the channel
+        "end": floor(inner - 0.5, 0.0),            # its last millimetre, before the connector pocket
+        "pocket": floor(2.0, 2.0),                 # the chip pocket, clear of the channel
+    }
+    return {k: v for k, v in found.items() if v is not None and v > 0}
+
+
 def pdf_extent_mm(path: str) -> Tuple[float, float, float, float]:
     """(min x, min y, max x, max y) in millimetres of every line the PDF
     draws, read from its content streams. Raises ValueError if there are none."""
@@ -675,13 +744,24 @@ def make_pdf(app, model, part_path: str, part: str, out_pdf: str, title: str,
     hide_sketches(model)
     box = model.GetPartBox(True)
     height_mm = (box[4] - box[1]) * 1000.0     # along the part's own Y
+    measured: Dict[str, float] = {}
+    if part != "box":
+        # Before the drawing exists: a ray picked in the part makes the part's
+        # window the active one, and a drawing sketched in meanwhile goes astray.
+        inner_edge = (_g(values, "pcb_length", 50.0) / 2 - _g(values, "port_space", 6.0)
+                      - _g(values, "port_length", 5.1))
+        measured = measure_relief(model, inner_edge)
+        log(f"lid relief depths measured off the part: {measured}")
     drawing = app.NewDocument(find_template(), 12, SHEET_W, SHEET_H)
     if drawing is None:
         raise RuntimeError("SolidWorks would not create a drawing")
     sheet = _Sheet(app, drawing, part_path, log)
     try:
         sheet.ext.SetUserPreferenceInteger(UNITS_LINEAR, 0, UNIT_MM)
-        layout = box_layout(values, height_mm) if part == "box" else lid_layout(values, height_mm)
+        if part == "box":
+            layout = box_layout(values, height_mm)
+        else:
+            layout = lid_layout(values, height_mm, measured)
         # The sheet's own furniture goes in before any view exists: once a
         # view has been worked on it stays the active one, and anything
         # sketched afterwards lands in it, at its scale.
