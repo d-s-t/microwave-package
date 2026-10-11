@@ -80,6 +80,33 @@
   .cw-actions a.button,.cw-actions button{padding:.4rem .8rem;font-size:.85em;margin:0}
   .cw-msg{margin-top:.5rem;font-size:.85em;min-height:1.1em}
 
+  /* The manufacturing-files panel: every file a machine shop or a PCB fab
+     needs for one combination, grouped, with what exists and what can be made. */
+  dialog.mfg-window{width:min(760px,94vw);max-width:none;border:1px solid var(--line-soft);
+    border-radius:8px;background:var(--panel);color:var(--fg);padding:0}
+  dialog.mfg-window::backdrop{background:var(--backdrop)}
+  .mfg-window header{display:flex;align-items:center;justify-content:space-between;gap:1rem;
+    padding:.6rem .9rem;border-bottom:1px solid var(--line-soft)}
+  .mfg-window header h3{margin:0;font-size:.95rem;word-break:break-all}
+  .mfg-window button.close{background:var(--neutral)}
+  .mfg-window button.close:hover{background:var(--neutral-hover)}
+  .mfg-body{padding:.8rem .9rem;max-height:75vh;overflow:auto}
+  .mfg-group{margin-bottom:1.1rem}
+  .mfg-group-head{display:flex;align-items:center;justify-content:space-between;gap:.8rem;
+    border-bottom:1px solid var(--line-soft);padding-bottom:.3rem;margin-bottom:.2rem}
+  .mfg-group-head h4{margin:0;font-size:.9rem}
+  .mfg-group-head .mfg-state{font-size:.82em;color:var(--muted);flex:1}
+  .mfg-group-head .mfg-state.busy{color:var(--busy)}
+  .mfg-group-head .mfg-state.bad{color:var(--bad)}
+  .mfg-file{display:grid;grid-template-columns:1fr auto;gap:.1rem .8rem;align-items:center;
+    padding:.35rem 0;border-bottom:1px solid var(--line-soft)}
+  .mfg-file .mfg-name{font-weight:600}
+  .mfg-file .mfg-desc{grid-column:1;color:var(--muted);font-size:.85em}
+  .mfg-file .mfg-act{grid-column:2;grid-row:1 / span 2;text-align:right;white-space:nowrap}
+  .mfg-file .mfg-size{color:var(--muted);font-size:.85em;margin-right:.6rem}
+  .mfg-file.missing .mfg-name{color:var(--muted)}
+  .mfg-window a.button,.mfg-window button.mini{padding:.3rem .7rem;font-size:.85em;margin:0}
+
   /* In-browser STEP viewer (three.js + occt-import-js, both served from
      /vendor). The dialog is only wired up when those files are present. */
   dialog.viewer3d{width:min(1000px,94vw);max-width:none;border:1px solid var(--line-soft);
@@ -313,6 +340,12 @@
             data-title="{{ combo_id }}"
             title="Quick 3D view of this combination's geometry, read from its STEP file">3D view</button>
     {% endif %}
+    {% if combo.step_status == "done" %}
+    <button type="button" class="mini mfg-open"
+            data-url="{{ url_for('combo_manufacturing', run_id=run.run_id, combo_id=combo_id) }}"
+            data-combo="{{ combo_id }}"
+            title="Files for a machine shop and a PCB fab: box and lid STEP, SLDPRT and drawings; board Gerber, drill, ODB++">Manufacturing files</button>
+    {% endif %}
     {# On having a project, not on having been queued: a run prepared
        while the share was down has models to look at and no tasks. #}
     {% if combo.model_status or combo.queue_status %}
@@ -526,6 +559,14 @@
     <button type="submit" class="danger" id="delete-button" disabled>Delete permanently</button>
   </form>
 </details>
+
+<dialog class="mfg-window" id="mfg-window">
+  <header>
+    <h3 id="mfg-window-title">Manufacturing files</h3>
+    <button type="button" class="close" id="mfg-window-close">Close</button>
+  </header>
+  <div class="mfg-body" id="mfg-window-body"></div>
+</dialog>
 
 <dialog class="combo-window" id="combo-window">
   <header>
@@ -1012,6 +1053,10 @@ setInterval(poll, 4000);
       html += '<button type="button" class="mini cw-heatmap" data-combo="' + esc(data.combo_id) +
               '">Show its chip field</button>';
     }
+    if (actions.manufacturing_url) {
+      html += '<button type="button" class="mini mfg-open" data-url="' + esc(actions.manufacturing_url) +
+              '" data-combo="' + esc(data.combo_id) + '">Manufacturing files</button>';
+    }
     html += '<a class="button" href="' + esc(actions.start_url) + '">Use as a starting point</a>';
     html += "</div>";
     html += '<p class="cw-msg muted"></p>';
@@ -1100,6 +1145,107 @@ setInterval(poll, 4000);
   // where a point clicked on the comparison page leads.
   var linked = new URLSearchParams(location.search).get("combo");
   if (linked) { open(linked); }
+})();
+
+// --- the manufacturing-files panel ------------------------------
+// One panel per combination: every file a machine shop or PCB fab needs,
+// grouped Box / Lid / PCB, with its size and what it is, a download link
+// where it exists and a "Generate" where it does not. Generating runs on
+// the server (SolidWorks / Altium, minutes at worst), so the panel polls
+// while any group is busy.
+(function () {
+  var dialog = document.getElementById("mfg-window");
+  if (!dialog) { return; }
+  var title = document.getElementById("mfg-window-title");
+  var body = document.getElementById("mfg-window-body");
+  var listUrl = null, timer = null;
+
+  function esc(text) {
+    var div = document.createElement("div");
+    div.textContent = text == null ? "" : text;
+    return div.innerHTML;
+  }
+
+  function draw(data) {
+    var busy = false, html = "";
+    if (data.run_busy) {
+      html += '<div class="note-box">A run is using SolidWorks / Altium right now; ' +
+              "files can be generated when it has finished.</div>";
+    }
+    data.groups.forEach(function (group) {
+      var job = group.job, running = job && job.state === "running";
+      if (running) { busy = true; }
+      var state = "", cls = "";
+      if (running) { state = "generating: " + esc(job.message); cls = "busy"; }
+      else if (job && job.state === "error") { state = "failed: " + esc(job.error); cls = "bad"; }
+      else if (group.cannot_reason) { state = esc(group.cannot_reason); }
+      html += '<div class="mfg-group"><div class="mfg-group-head"><h4>' + esc(group.title) + "</h4>" +
+              '<span class="mfg-state ' + cls + '">' + state + "</span>";
+      if (group.can_generate && !running && group.missing) {
+        html += '<button type="button" class="mini mfg-generate" data-group="' + esc(group.group) +
+                '">Generate missing (' + group.missing + ")</button>";
+      }
+      html += "</div>";
+      group.files.forEach(function (file) {
+        html += '<div class="mfg-file' + (file.exists ? "" : " missing") + '">' +
+                '<span class="mfg-name">' + esc(file.label) + "</span>" +
+                '<span class="mfg-act">';
+        if (file.exists) {
+          html += '<span class="mfg-size">' + esc(file.size_text) + "</span>" +
+                  '<a class="button" href="' + esc(file.url) + '" download>Download</a>';
+        } else {
+          html += '<span class="mfg-size">not generated</span>';
+        }
+        html += '</span><span class="mfg-desc">' + esc(file.description) + "</span></div>";
+      });
+      html += "</div>";
+    });
+    body.innerHTML = html;
+    clearTimeout(timer);
+    if (busy && dialog.open) { timer = setTimeout(refresh, 2000); }
+  }
+
+  async function refresh() {
+    try {
+      var res = await fetch(listUrl);
+      if (!res.ok) { throw new Error("could not load"); }
+      draw(await res.json());
+    } catch (e) {
+      body.innerHTML = '<p class="muted">Could not load the file list.</p>';
+    }
+  }
+
+  function open(url, combo) {
+    listUrl = url;
+    title.textContent = "Manufacturing files - " + combo;
+    body.innerHTML = '<p class="muted">Loading...</p>';
+    if (!dialog.open) { dialog.showModal(); }
+    refresh();
+  }
+
+  document.addEventListener("click", async function (event) {
+    var opener = event.target.closest && event.target.closest("button.mfg-open");
+    if (opener) { open(opener.dataset.url, opener.dataset.combo); return; }
+    var generate = event.target.closest && event.target.closest("button.mfg-generate");
+    if (generate) {
+      generate.disabled = true;
+      try {
+        var res = await fetch(listUrl.replace("manufacturing.json", "manufacturing/generate"), {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ group: generate.dataset.group })
+        });
+        if (!res.ok) {
+          var err = await res.json();
+          alert(err.error || "could not start");
+        }
+      } catch (e) { alert("could not reach the server"); }
+      refresh();
+    }
+  });
+  document.getElementById("mfg-window-close").addEventListener("click", function () {
+    clearTimeout(timer); dialog.close();
+  });
+  dialog.addEventListener("close", function () { clearTimeout(timer); });
 })();
 
 // --- open a combination's project in AEDT -----------------------

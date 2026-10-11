@@ -1,0 +1,5 @@
+# Written by microwave_package.altium_generation -- do not edit by hand.
+# All lengths in millimetres.
+outjob=C:\Users\david\mfgtest\run_20261011_021452\models\default\manufacturing\_altium_export\export.OutJob
+pcb=C:\Users\david\mfgtest\run_20261011_021452\models\default\manufacturing\_altium_export\package.PcbDoc
+project=C:\Users\david\mfgtest\run_20261011_021452\models\default\manufacturing\_altium_export\export.PrjPcb
