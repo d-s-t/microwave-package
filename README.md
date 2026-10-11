@@ -305,13 +305,28 @@ expects, that dimension is dropped and logged rather than printed (see
 inside the page. Keep the runs folder path short: SolidWorks cannot save to
 a path over 259 characters (`MICROWAVE_RUNS_PATH`).
 
+The lid's relief depths set the line impedance, so they are not left to
+chance: the depth of the channel, of its deeper last millimetre and of the
+chip pocket are *measured off the part* (a ray from below the inner face
+reports where the first face is), printed on three enlarged details
+(15:1) of sections across them, each with a +-0.02 tolerance, and the
+channel width beside them. The box carries the same kind of detail for the
+vent groove's width and depth.
+
 The fab package is Altium's output (an Output Job run from
 `design/outjob.py` and `base_parts/altium/ExportManufacturing.pas`), so it
-is made from the `.PcbDoc` itself. The Python Gerber/drill zips are written
-from `copper.txt`, a simplified export, and are labelled preview /
-cross-check: they can differ from the board (keep-outs, mask, plating). The
-fab drawing PDF and project zip are also written by Python. A combination drawn before this feature kept no `package.PcbDoc`, so
-generating its PCB files redraws the board in Altium first.
+is made from the `.PcbDoc` itself: the Gerber set, with the board outline
+(drawn on Mechanical 2 by the generator, plotted as `.GM2`), and NC drill
+with the plated vias and the four screw holes (non-plated pads the
+generator places beside the cutouts) as separate files. A board drawn
+before the generator did either gets a clearly labelled
+`supplement_from_parameters/` folder in the zip for just what is missing.
+The Python Gerber/drill zips are written from `copper.txt`, a simplified
+export, and are labelled preview / cross-check: they can differ from the
+board (keep-outs, mask, plating). The fab drawing PDF and project zip are
+also written by Python. A combination drawn before this feature kept no
+`package.PcbDoc`, so generating its PCB files redraws the board in Altium
+first.
 
 Generating uses SolidWorks and Altium, so it is refused while a run is
 using them. Routes: `GET .../combos/<combo>/manufacturing.json`,
