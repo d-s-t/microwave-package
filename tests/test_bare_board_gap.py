@@ -83,3 +83,22 @@ class TestTheChipBoardRunsOfTheBoxStudy(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class BarePedestalSkipTest(unittest.TestCase):
+    def test_bare_board_pedestal_is_skipped_at_creation(self):
+        from microwave_package.workflow import run_manager as rm
+        self.assertIn("set pedestal_depth to 0", rm._skip_reason({"no_chip": 1.0, "pedestal_depth": 2.0}, True))
+        self.assertIsNone(rm.constraints.check_bare_pedestal({"no_chip": 1.0, "pedestal_depth": 0.0}))
+
+
+class BarePedestalWebWarningTest(unittest.TestCase):
+    def test_start_run_warns_for_bare_board_pedestal(self):
+        from microwave_package import webapp
+        from microwave_package.design.sweep import SweepParameter
+        msg = webapp._bare_pedestal_message(
+            [SweepParameter(name="pedestal_depth", values=[0.0, 2.0])], {"no_chip": 1.0})
+        self.assertIn("Not started", msg)
+        self.assertIsNone(webapp._bare_pedestal_message(
+            [SweepParameter(name="pedestal_depth", values=[0.0, 2.0])], {}))
+        self.assertIsNone(webapp._bare_pedestal_message([], {"no_chip": 1.0, "pedestal_depth": 0.0}))
