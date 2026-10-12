@@ -232,7 +232,7 @@ def _skip_reason(values: Dict[str, float], use_altium: bool) -> Optional[str]:
     """
     reason = constraints.check_combination(values)
     if reason is None and use_altium:
-        reason = constraints.check_via_grid(values)
+        reason = constraints.check_bare_pedestal(values) or constraints.check_via_grid(values)
     return reason
 
 

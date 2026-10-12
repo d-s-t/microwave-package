@@ -580,6 +580,20 @@ def check_chip_line(values: Dict[str, float], mat_chip: Optional[str], board_gap
     return None
 
 
+def check_bare_pedestal(values: Dict[str, float]) -> Optional[str]:
+    """A bare board (no_chip) has no die, so its bottom ground plane has no
+    opening for the pedestal recess under the die to sit in: the recess would
+    run into a whole plane (AEDT: "pcb_copper_bottom and box intersect").
+    Checked at run creation so such a combination is skipped up front rather
+    than failing in the Altium step after its STEP files are built."""
+    depth = values.get("pedestal_depth", 0.0)
+    if parameter_meta.is_bare_board(values) and depth > 0:
+        return (f"pedestal_depth {_fmt(depth)} mm cuts a recess in the box floor "
+                f"under the die, but a bare board (no_chip) has no die and a whole bottom ground "
+                f"plane for it to run into -- set pedestal_depth to 0")
+    return None
+
+
 def check_layout(values: Dict[str, float], mat_pcb: Optional[str] = None,
                  mat_chip: Optional[str] = None) -> Optional[str]:
     """Why this combination's layout cannot be built, or None if it can.
@@ -607,13 +621,9 @@ def check_layout(values: Dict[str, float], mat_pcb: Optional[str] = None,
     half_length = get("pcb_length") / 2.0
     via_dia = get("via_diameter")
 
-    # A bare board has no die, so its bottom ground plane has no opening for
-    # the pedestal recess under the die to sit in: the recess would run into
-    # a whole plane (AEDT: "pcb_copper_bottom and box intersect").
-    if parameter_meta.is_bare_board(values) and get("pedestal_depth") > 0:
-        return (f"pedestal_depth {_fmt(get('pedestal_depth'))} mm cuts a recess in the box floor "
-                f"under the die, but a bare board (no_chip) has no die and a whole bottom ground "
-                f"plane for it to run into -- set pedestal_depth to 0")
+    reason = check_bare_pedestal(values)
+    if reason:
+        return reason
 
     # Already checked when the run was created. Checked again here so
     # a run from before that check, or a combination that reaches the
