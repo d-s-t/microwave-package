@@ -553,6 +553,26 @@ def index():
     )
 
 
+def _bare_pedestal_message(sweep_params, parameter_defaults) -> Optional[str]:
+    """The warning for a run that asks for a pedestal on a bare board, or None.
+
+    Checks the run's own values (pinned and swept) rather than building every
+    combination; the same rule as constraints.check_bare_pedestal."""
+    def values_of(name):
+        for param in sweep_params:
+            if param.name == name:
+                return list(param.values)
+        return [parameter_defaults[name]] if name in parameter_defaults else []
+
+    if 1.0 not in values_of(parameter_meta.NO_CHIP_PARAM):
+        return None
+    if any(depth > 0 for depth in values_of("pedestal_depth")):
+        return ("Not started: a bare board (no chip) has no die, so its bottom ground plane has "
+                "no opening for the pedestal recess. Set pedestal_depth to 0 for this run, or "
+                "untick Bare board.")
+    return None
+
+
 @app.route("/runs/new", methods=["POST"])
 def new_run():
     # A filled-in box means "use this"; an empty one leaves the parameter
@@ -642,6 +662,13 @@ def new_run():
                 f"This run builds no distorted geometry, so the sweep on {names} was ignored."
             )
             logger.info("Ignoring distortion-geometry sweep (%s) -- this run has no distorted combination.", names)
+
+    # A bare board with a pedestal recess cannot be laid out, and every such
+    # combination would be skipped. Say so here, before a run is created,
+    # rather than starting a run that quietly builds nothing for them.
+    bare_pedestal = _bare_pedestal_message(sweep_params, parameter_defaults)
+    if bare_pedestal:
+        return redirect(url_for("index", error=bare_pedestal))
 
     solve_settings = _solve_settings_from_form(request.form)
     settings = {

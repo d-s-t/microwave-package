@@ -27,7 +27,9 @@ class TestFormBooleans(unittest.TestCase):
         self.client = webapp.app.test_client()
 
     def start(self, **extra):
-        data = {"range_pedestal_depth": "0.5", **extra}
+        # A bare board cannot carry a pedestal, so it is posted at 0 there.
+        pedestal = "0" if "no_chip" in extra else "0.5"
+        data = {"range_pedestal_depth": pedestal, **extra}
         with mock.patch.object(webapp, "_start_pipeline_thread") as started:
             self.client.post("/runs/new", data=data)
         return started.call_args[0][0]
