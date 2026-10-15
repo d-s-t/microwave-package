@@ -32,6 +32,8 @@
 
 "chip_leg"= 0.8 	' size of the legs the chip lay on in case there is pedestal
 
+"pedestal_corner_radius"= 1.0	' radius of the rounded corners of the pedestal recess, in mm. The recess corners are milled, and a 1 mm end mill cannot cut a sharper one. 0 keeps them square (not millable: for comparison only). Must stay within the leg (see design/pedestal.py).
+
 "wing_length"= 5	' Mounting wing size
 
 "wing_width"= 1	' mounting wing width

@@ -31,7 +31,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Dict, List, Optional
 
-from . import parameter_meta
+from . import parameter_meta, pedestal
 
 
 @dataclass(frozen=True)
@@ -733,6 +733,12 @@ def check_layout(values: Dict[str, float], mat_pcb: Optional[str] = None,
     # ohm and the old solve put the ground 29 mm away. And the ground bonds
     # land beside the gap, on copper, so the die has to have the room.
     reason = check_chip_line(values, mat_chip, board_gap=gap)
+    if reason:
+        return reason
+
+    # The recess's rounded corners must fit its legs, and the legs must hold
+    # the die clear of its play (see design/pedestal.py).
+    reason = pedestal.check(values)
     if reason:
         return reason
 
