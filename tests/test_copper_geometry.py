@@ -833,9 +833,11 @@ class TestWireBondNaming(unittest.TestCase):
         self.assertTrue(any(p in "wirebond" for p in patterns))
 
 
+# A committed copy of one real Altium export, so these tests do not depend on
+# whichever board was drawn last. Regenerate it deliberately, not by accident.
 REAL_COPPER = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-    "base_parts", "altium", "generated", "copper.txt",
+    os.path.dirname(os.path.abspath(__file__)),
+    "fixtures", "copper_real_board.txt",
 )
 
 
@@ -1044,6 +1046,7 @@ class TestBuildingInBlocks(unittest.TestCase):
         if not os.path.isfile(REAL_COPPER):
             self.skipTest("copper.txt not present -- run the Altium generator first")
         board = cg.read_file(REAL_COPPER)["package"]
+        self.assertEqual(len(board.vias), 478, "the committed fixture's via count")
         modeler, _, _ = self._build(board)
         calls = (modeler.created + len(modeler.duplicates)
                  + len(modeler.unites) + len(modeler.subtractions))
