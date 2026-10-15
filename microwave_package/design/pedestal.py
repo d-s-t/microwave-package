@@ -23,10 +23,11 @@ legs as long as the legs are wider than twice that play. That is what
 `check` tests, rather than a rim on the flat walls, which the play would
 close up completely.
 
-The SolidWorks box part does not round these corners yet: that is a
-follow-up (see the pull request), so until it lands the rounded recess
-exists only in this rule. The HFSS side needs no cut of its own: the box
-STEP it imports carries whatever the SolidWorks part makes.
+The SolidWorks box part rounds these corners with two sketch fillets on
+`Sketch2`, each radius linked to `pedestal_corner_radius` (see
+base_parts/add_pedestal_radius.py). A sketch fillet cannot be zero, so a
+radius of 0 is refused here rather than built. The HFSS side needs no cut
+of its own: the box STEP it imports carries whatever the SolidWorks part makes.
 """
 from __future__ import annotations
 
@@ -45,7 +46,7 @@ TAN_HALF_TURN = math.tan(math.radians(22.5))
 
 
 def corner_radius(values: Dict[str, float]) -> float:
-    """The corner radius for one combination, in mm. 0 means square."""
+    """The corner radius for one combination, in mm (above 0; see `check`)."""
     return float(values.get("pedestal_corner_radius", DEFAULT_RADIUS))
 
 
@@ -71,7 +72,7 @@ def check(values: Dict[str, float]) -> Optional[str]:
     half_side = values.get("chip_side", 6.3) / 2.0
 
     if radius < 0:
-        return "pedestal_corner_radius cannot be negative (0 keeps the corners square)"
+        return "pedestal_corner_radius cannot be negative"
     if leg <= 0:
         return ("chip_leg must be positive: the four legs are the corners the die lies on, "
                 "and a recess without them has no chamfers to round")
@@ -82,6 +83,11 @@ def check(values: Dict[str, float]) -> Optional[str]:
         return (f"chip_leg {leg:g} mm must be more than twice cavity_clearance "
                 f"({2.0 * clearance:g} mm): a die shifted by the clearance in both directions "
                 f"would otherwise come off its legs -- raise chip_leg or reduce cavity_clearance")
+    if radius == 0:
+        # The SolidWorks fillet cannot be zero, and a zero dimension keeps its
+        # last value with no error, so the part would silently keep another radius.
+        return ("pedestal_corner_radius must be above 0: the SolidWorks box rounds the recess with "
+                "a fillet, which cannot have zero radius (a square recess is not built)")
     if radius > min(half_length, half_side):
         return (f"pedestal_corner_radius {radius:g} mm is more than half the recess's smaller "
                 f"side ({min(half_length, half_side):g} mm) -- reduce it")

@@ -42,8 +42,10 @@ class TestLegBound(unittest.TestCase):
         self.assertIn("does not fit", reason)
         self.assertIn("1.366", reason)
 
-    def test_square_corners_are_allowed(self):
-        self.assertIsNone(pedestal.check(defaults(pedestal_corner_radius=0.0)))
+    def test_a_zero_radius_is_refused(self):
+        # A sketch fillet cannot be zero, and SolidWorks would keep its last radius.
+        reason = pedestal.check(defaults(pedestal_corner_radius=0.0))
+        self.assertIn("must be above 0", reason)
 
     def test_a_negative_radius_is_refused(self):
         self.assertIn("negative", pedestal.check(defaults(pedestal_corner_radius=-0.1)))
