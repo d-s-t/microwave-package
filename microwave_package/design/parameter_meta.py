@@ -36,6 +36,7 @@ LABELS: Dict[str, str] = {
     "port_width": "Port width",
     "port_space": "Port distance from edge",
     "chip_leg": "Chip support leg height",
+    "pedestal_corner_radius": "Pedestal recess corner radius",
     "bonding_clearence": "Wire-bond clearance",
     "route_width": "Lid relief width",
     "route_clearence": "Lid relief depth",
@@ -186,7 +187,7 @@ GROUPS: List[dict] = [
         "collapsed": False,
         "names": [
             "port_count", "port_length", "port_width", "port_space",
-            "chip_leg", "bonding_clearence",
+            "chip_leg", "pedestal_corner_radius", "bonding_clearence",
             "route_width", "route_clearence", "route_chip_clearence",
         ],
     },
