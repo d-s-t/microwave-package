@@ -36,7 +36,9 @@ LABELS: Dict[str, str] = {
     "port_width": "Port width",
     "port_space": "Port distance from edge",
     "chip_leg": "Chip support leg height",
-    "pedestal_corner_radius": "Pedestal recess corner radius",
+    "pedestal_size": "Pedestal recess size (square side or circle diameter)",
+    "pedestal_shape": "Pedestal recess shape (0 square, 1 circle)",
+    "pedestal_corner_radius": "Pedestal recess corner radius (square)",
     "bonding_clearence": "Wire-bond clearance",
     "route_width": "Lid relief width",
     "route_clearence": "Lid relief depth",
@@ -90,7 +92,7 @@ MICRON_PARAMETERS = {
 }
 
 # Counts rather than lengths: no unit at all.
-INTEGER_PARAMETERS = {"port_count"}
+INTEGER_PARAMETERS = {"port_count", "pedestal_shape"}
 
 # On/off flags in the equations file (a plain 0 or 1). The form gives
 # these their own named control instead of a value-or-range box, so they
@@ -176,7 +178,7 @@ GROUPS: List[dict] = [
             "chip_length", "chip_side",
             "pcb_width", "chip_width",
             "cavity_clearance",
-            "pedestal_depth",
+            "pedestal_depth", "pedestal_size", "pedestal_shape",
         ],
     },
     {
