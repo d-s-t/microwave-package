@@ -207,7 +207,7 @@ As of 2026-10-11. Preflight: 0 fail, 1 warn, 14 pass, 13 manual.
 | Screws, countersink, thread | **passed** | automatic |
 | Cryo: 5880 z-axis expansion | **open** | warning; fab data or change laminate |
 | S1 line impedance, board | **passed** (2026-10-11, run_20261011_125037) | Zo 50.5-51.6 ohm over 1-26 GHz, inside 50 +- 2.5; the gap Altium drew, 128.85 um, against the analytic 128.8 um. HFSS reads 1.4 ohm above the 2D Extractor's 50.17 ohm (0.9 ohm with a 6 mm section): that is the check's own accuracy |
-| S2 line impedance, chip | **open** | the chip gap bug is fixed (PR #64: `chip_trace_width` 0.2 mm gives 169 um on silicon); not yet run |
+| S2 line impedance, chip | **failed** (2026-10-18, run_20261018_134120) | final design: TMM 10i, `cpw_trace_width` 0.20, default lid 1.2 x 0.3 mm, `chip_trace_width` 0.2, `which_line=chip`. Zo 50.0-58.6 ohm over 1-26 GHz against 50 +- 2.5: about 54.7 ohm from 1 to ~18 GHz, a peak of 58.6 ohm at 21.2 GHz (20.7 GHz ill-conditioned, half-wavelength section). Analytic gap 168.7 um used; the run does not report a solved gap, so no gap comparison yet. Earlier attempts in the same window, all with no model: run_20261015_145748 (board gap 38 um at default width), run_20261015_145819 (Altium copper export busy), run_20261015_150140 and run_20261018_114429 (Altium dialog). Not tuned: a re-run needs a decision on the gap |
 | S4/S5/S7 driven + eigen + fine windows, with chip | **passed on the previous model** | B20: S21 above -3 dB for 99 % of 2-20 GHz and 61 % of 20-26 GHz; narrow notches at 16.94, 18.58 and 19.20 GHz; redo after the chip-gap fix |
 | S6 finite conductivity | **open** | not run |
 | S8 tolerances | **open** | one combination per setting so far |
