@@ -554,7 +554,7 @@ def check_chip_line(values: Dict[str, float], mat_chip: Optional[str], board_gap
     if trace <= 0:
         return "chip_trace_width must be positive"
     try:
-        chip_gap = cpw.solve_gap_for_z0(
+        chip_gap = cpw.solve_chip_gap_for_z0(
             trace_width=trace,
             substrate_height=get("chip_width", 0.381),
             eps_r=cpw.permittivity_of(mat_chip or "silicon"),

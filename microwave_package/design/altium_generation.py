@@ -607,8 +607,10 @@ def build_params(
 
     The board's gap is solved for the line under the lid: the relief
     channel's depth is the ceiling over the trace (`constraints.lid_cover`).
-    The chip's is not -- its line sits in the lid's pocket over the die,
-    whose ceiling is not one of the relief parameters -- so it stays open-top.
+    The chip's is not solved under a cover either: its line sits in the lid's
+    pocket over the die, and the air under the die is not in the open-top
+    formula, so `cpw.solve_chip_gap_for_z0` scales that formula by the factor
+    HFSS's chip check reads against it (see `cpw.CHIP_HFSS_IMPEDANCE_FACTOR`).
 
     The die's line has its own width (`chip_trace_width`, the board's
     `cpw_trace_width` when a set of values has none): the same trace on a 0.381
@@ -646,7 +648,7 @@ def build_params(
         # itself can carry. The board's own gap stands in; nothing draws it.
         out["chip_cpw_gap"] = out["pcb_cpw_gap"]
     else:
-        out["chip_cpw_gap"] = cpw.solve_gap_for_z0(
+        out["chip_cpw_gap"] = cpw.solve_chip_gap_for_z0(
             trace_width=chip_trace,
             substrate_height=values["chip_width"],
             eps_r=cpw.permittivity_of(mat_chip),

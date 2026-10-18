@@ -143,7 +143,7 @@ def cpw_checks(values, mat_pcb, mat_chip, has_chip) -> List[Check]:
         trace_chip = constraints.chip_trace(values)
         title = f"Chip line: analytic gap on {mat_chip}"
         try:
-            chip_gap = cpw.solve_gap_for_z0(
+            chip_gap = cpw.solve_chip_gap_for_z0(
                 trace_width=trace_chip, substrate_height=values.get("chip_width", 0.381),
                 eps_r=cpw.permittivity_of(mat_chip), conductor_thickness=values.get("chip_metal_thickness", 0.0))
             out.append(Check("cpw.chip_gap", "CPW", title, PASS,
