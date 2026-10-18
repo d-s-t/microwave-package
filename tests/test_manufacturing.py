@@ -7,6 +7,7 @@ Run: python -m unittest discover -s tests
 """
 import io
 import logging
+import math
 import os
 import re
 import tempfile
@@ -98,6 +99,18 @@ class TestFabDrawing(unittest.TestCase):
         data = doc.to_bytes()
         self.assertTrue(data.startswith(b"%PDF"))
 
+    def test_a_rounded_pcb_has_the_corner_callout_and_its_note(self):
+        values = dict(VALUES, pcb_corner_radius=1.0)
+        doc = fab_drawing.build(values, "Rogers TMM 10i (tm)", self.copper, "run_1", "default")
+        ops = "\n".join(doc.pages[0]._ops)
+        self.assertIn("TYP 4 PLCS", ops)
+        self.assertIn("R1.0", ops)
+
+    def test_a_sharp_pcb_has_no_corner_callout(self):
+        values = dict(VALUES, pcb_corner_radius=0.0)
+        doc = fab_drawing.build(values, "Rogers TMM 10i (tm)", self.copper, "run_1", "default")
+        self.assertNotIn("TYP 4 PLCS", "\n".join(doc.pages[0]._ops))
+
     def test_all_text_stays_on_the_sheet(self):
         doc = fab_drawing.build(VALUES, "Rogers TMM 10i (tm)", self.copper, "run_1", "default")
         page = doc.pages[0]
@@ -140,6 +153,22 @@ class TestGerber(unittest.TestCase):
         text = gerber.outline_layer(VALUES, "x")
         self.assertIn("X-25000000Y-12500000D02*", text)
         self.assertIn("X25000000Y12500000D01*", text)
+
+    def test_a_rounded_outline_has_four_arcs_of_the_corner_radius(self):
+        text = gerber.outline_layer(dict(VALUES, pcb_corner_radius=1.0), "x")
+        arcs = re.findall(r"X(-?\d+)Y(-?\d+)I(-?\d+)J(-?\d+)D01\*", text)
+        self.assertEqual(text.count("G03*"), 4)
+        self.assertEqual(len(arcs), 4)
+        for _x, _y, i, j in arcs:
+            # (I, J) runs from the arc's start to its centre, so its length
+            # is the radius.
+            self.assertAlmostEqual(math.hypot(int(i), int(j)) / 1e6, 1.0, places=5)
+        # The sharp corner is gone: no edge runs to (25, 12.5).
+        self.assertNotIn("X25000000Y12500000D01*", text)
+
+    def test_a_sharp_board_draws_no_arcs(self):
+        text = gerber.outline_layer(dict(VALUES, pcb_corner_radius=0.0), "x")
+        self.assertNotIn("G03*", text)
 
     def test_drill_files_split_plated_from_not_plated(self):
         files = gerber.drill_files(VALUES, self.copper)
@@ -482,7 +511,7 @@ class TestAltiumOutputs(ManufacturingCase):
             script = f.read()
         self.assertIn("AddMountHole", script)
         self.assertIn("Pd.Plated := False", script)
-        self.assertIn("AddOutlineBox(Board, HalfL, HalfS)", script)
+        self.assertIn("AddOutlineBox(Board, HalfL, HalfS, PcbR)", script)
         self.assertIn("eMechanical2", script)
 
     def test_no_altium_zip_means_no_supplement(self):

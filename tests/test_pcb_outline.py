@@ -287,5 +287,84 @@ class TestClipCallSequence(unittest.TestCase):
         self.assertEqual(self.modeler.calls, [])
 
 
+class TestClearanceInside(unittest.TestCase):
+    def test_the_middle_of_the_board_is_clear_by_half_its_short_side(self):
+        self.assertAlmostEqual(po.clearance_inside(0.0, 0.0, X, Y, R), Y)
+
+    def test_a_point_on_the_arc_is_exactly_on_the_edge(self):
+        u, v = (X - R) + R * math.cos(math.pi / 4), (Y - R) + R * math.sin(math.pi / 4)
+        self.assertAlmostEqual(po.clearance_inside(u, v, X, Y, R), 0.0, places=12)
+
+    def test_the_sharp_corner_of_the_square_is_outside_the_arc(self):
+        self.assertAlmostEqual(po.clearance_inside(X, Y, X, Y, R), R - math.sqrt(2.0) * R)
+
+    def test_a_point_inside_the_corner_square_but_inside_the_arc_is_clear(self):
+        # 0.707 mm from the arc's centre, 0.293 mm inside the arc.
+        self.assertAlmostEqual(po.clearance_inside(X - 0.5, Y - 0.5, X, Y, R),
+                               R - math.sqrt(0.5))
+
+    def test_a_sharp_board_measures_to_its_four_edges(self):
+        self.assertAlmostEqual(po.clearance_inside(X, Y, X, Y, 0.0), 0.0)
+        self.assertAlmostEqual(po.clearance_inside(X - 0.3, Y, X, Y, 0.0), 0.0)
+        self.assertAlmostEqual(po.clearance_inside(X - 0.3, 0.0, X, Y, 0.0), 0.3)
+
+
+class TestGeneratorCarriesTheRadius(unittest.TestCase):
+    """The radius the DelphiScript rounds the outline with, and the
+    radius the model clips to, must be the same number."""
+
+    def test_the_parameter_file_carries_the_resolved_radius(self):
+        from microwave_package import paths
+        from microwave_package.design import altium_generation as ag
+        from microwave_package.design import equations as eq
+        values = eq.get_numeric_parameters(eq.read_file(str(paths.DEFAULT_EQUATIONS_FILE)))
+        params = ag.build_params(values)
+        self.assertEqual(params["pcb_corner_radius"], po.corner_radius_of(values))
+        self.assertGreater(params["pcb_corner_radius"], 0.0)
+
+    def test_a_file_with_only_the_cavity_radius_still_gets_a_rounded_board(self):
+        from microwave_package import paths
+        from microwave_package.design import altium_generation as ag
+        from microwave_package.design import equations as eq
+        values = eq.get_numeric_parameters(eq.read_file(str(paths.DEFAULT_EQUATIONS_FILE)))
+        del values["pcb_corner_radius"]
+        values["cavity_corner_radius"] = 0.8
+        self.assertEqual(ag.build_params(values)["pcb_corner_radius"], 0.8)
+
+
+class TestAltiumOutlineSource(unittest.TestCase):
+    """The DelphiScript is not run here, but its outline has to be the
+    rounded one the copper check and the model assume. These pin the
+    pieces that carry it."""
+
+    @classmethod
+    def setUpClass(cls):
+        from microwave_package import paths
+        cls.text = (paths.BASE_PARTS_DIR / "altium" / "GenerateFromParams.pas").read_text(
+            encoding="utf-8", errors="replace")
+
+    def test_the_radius_is_read_and_defaults_to_sharp(self):
+        self.assertIn("PcbR      := ParamOf(P, 'pcb_corner_radius', 0.0);", self.text)
+
+    def test_the_board_outline_is_eight_segments_of_arcs_and_edges(self):
+        self.assertIn("ePolySegmentArc", self.text)
+        self.assertIn("Board.BoardOutline.PointCount := 8;", self.text)
+        self.assertIn("SetOutline(Board, HalfL, HalfS, PcbR);", self.text)
+
+    def test_the_mechanical_outline_is_drawn_with_arc_primitives(self):
+        self.assertIn("eArcObject", self.text)
+        self.assertIn("AddOutlineBox(Board, HalfL, HalfS, PcbR);", self.text)
+
+    def test_the_die_is_drawn_with_sharp_corners(self):
+        self.assertIn("PcbR := 0.0;", self.text)
+        self.assertIn("AddOutlineBox(Board, CavHalfL, CavHalfS, 0.0);", self.text)
+
+    def test_the_default_radius_in_the_equations_file_is_one_millimetre(self):
+        from microwave_package import paths
+        from microwave_package.design import equations as eq
+        values = eq.get_numeric_parameters(eq.read_file(str(paths.DEFAULT_EQUATIONS_FILE)))
+        self.assertEqual(values["pcb_corner_radius"], 1.0)
+
+
 if __name__ == "__main__":
     unittest.main()

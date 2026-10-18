@@ -623,13 +623,17 @@ def build_params(
     the script only draws, and so that HFSS, which asks `cavity.plan`
     the same question, cannot get a different answer.
     """
-    from . import cavity, constraints, cpw, smp
+    from . import cavity, constraints, cpw, pcb_outline, smp
 
     out = dict(values)
     # The connector land pattern travels with the parameters so the
     # vendor's numbers live in one place rather than being retyped into
     # the DelphiScript.
     out.update(smp.as_parameters())
+    # The board's corner radius, resolved here as HFSS resolves it (see
+    # pcb_outline.corner_radius_of), so the DelphiScript rounds the outline
+    # it is handed with the same radius the model clips to.
+    out["pcb_corner_radius"] = pcb_outline.corner_radius_of(values)
     trace = values["cpw_trace_width"]
     chip_trace = constraints.chip_trace(values)
     out["chip_trace_width"] = chip_trace

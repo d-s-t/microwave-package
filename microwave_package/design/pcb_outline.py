@@ -66,6 +66,27 @@ def outline_points(half_length: float, half_side: float, radius: float,
     return points
 
 
+def corner_arcs(half_length: float, half_side: float,
+                radius: float) -> List[Tuple[Tuple[float, float], Tuple[float, float], Tuple[float, float]]]:
+    """The four corner arcs of the outline, counter-clockwise from the
+    bottom-left, as (centre, start point, end point). The outline runs
+    start -> end, then a straight edge to the next arc's start. This is the
+    order GenerateFromParams.pas draws them in (CornerArc), so a Gerber
+    plot of the outline follows the Altium board's arcs exactly.
+    """
+    r = radius
+    centres = [(-half_length + r, -half_side + r), (half_length - r, -half_side + r),
+               (half_length - r, half_side - r), (-half_length + r, half_side - r)]
+    start_angles = (180.0, 270.0, 0.0, 90.0)
+    arcs = []
+    for (cx, cy), a0 in zip(centres, start_angles):
+        a1, a2 = math.radians(a0), math.radians(a0 + 90.0)
+        start = (cx + r * math.cos(a1), cy + r * math.sin(a1))
+        end = (cx + r * math.cos(a2), cy + r * math.sin(a2))
+        arcs.append(((cx, cy), start, end))
+    return arcs
+
+
 @dataclass(frozen=True)
 class CornerCut:
     """One corner's piece to take off the board, cavity or vacuum.
@@ -107,6 +128,24 @@ def corner_squares(half_length: float, half_side: float,
             v1, v2 = sorted((sy * (y - r), sy * y))
             squares.append((u1, v1, u2, v2))
     return squares
+
+
+def clearance_inside(x: float, y: float, half_length: float, half_side: float,
+                     radius: float) -> float:
+    """How far (x, y) lies inside the rounded outline: its distance to the
+    nearest edge or arc, positive inside and negative outside.
+
+    A point in a corner square is measured to the corner's arc, not to the
+    square's own edges, which is what makes a via there clear or not. Used
+    to check copper written by Altium against the outline it was drawn in.
+    """
+    ax, ay = abs(x), abs(y)
+    if radius <= 0:
+        return min(half_length - ax, half_side - ay)
+    cu, cv = half_length - radius, half_side - radius
+    if ax <= cu or ay <= cv:
+        return min(half_length - ax, half_side - ay)
+    return radius - math.hypot(ax - cu, ay - cv)
 
 
 def reaches_corner(bounds: Sequence[float], half_length: float, half_side: float,
