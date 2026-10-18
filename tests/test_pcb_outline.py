@@ -215,16 +215,39 @@ class TestClipCallSequence(unittest.TestCase):
         self.hfss = types.SimpleNamespace(modeler=self.modeler)
         self.frame = cg.Frame(x_offset=27.0, z_offset=14.0)
 
-    def test_each_corner_is_a_box_less_a_cylinder_then_one_subtract_from_all_targets(self):
+    def test_each_corner_is_a_box_less_a_cylinder_then_subtracted_from_all_targets(self):
         model_builder.clip_to_outline(
             self.hfss, self.frame, X, Y, R, base=-0.1, height=0.2,
             targets=["pcb_substrate", "pcb_copper_top"], log=lambda *_: None)
         kinds = [c[0] for c in self.modeler.calls]
-        self.assertEqual(kinds, ["box", "cylinder", "subtract"] * 4 + ["unite", "subtract"])
-        final = self.modeler.calls[-1]
-        self.assertEqual(final[1], ["pcb_substrate", "pcb_copper_top"])
-        self.assertEqual(final[2], ["pcb_corner_cut"])
-        self.assertFalse(final[3])
+        self.assertEqual(kinds, ["box", "cylinder", "subtract", "subtract"] * 4)
+        subtracts = [c for c in self.modeler.calls if c[0] == "subtract"]
+        names = []
+        for number in range(4):
+            cut_piece, disc_part = subtracts[2 * number][1], subtracts[2 * number][2]
+            self.assertTrue(cut_piece.startswith("pcb_corner_cut_"))
+            self.assertEqual(len(disc_part), 1)
+            onto_targets = subtracts[2 * number + 1]
+            self.assertEqual(onto_targets[1], ["pcb_substrate", "pcb_copper_top"])
+            self.assertEqual(onto_targets[2], [cut_piece])
+            self.assertFalse(onto_targets[3])
+            names.append(cut_piece)
+        self.assertEqual(len(set(names)), 4)
+
+    def test_every_call_uses_names_no_earlier_call_used(self):
+        # AEDT would not keep a cut's name when an earlier, consumed cut had
+        # the same one, so the names of two clips in one model must differ.
+        first = _RecordingModeler()
+        second = _RecordingModeler()
+        for modeler in (first, second):
+            model_builder.clip_to_outline(
+                types.SimpleNamespace(modeler=modeler), self.frame, X, Y, R,
+                base=-0.1, height=0.2, targets=["vacuum"], log=lambda *_: None)
+        first_names = {c[1] for c in first.calls if c[0] == "subtract" and isinstance(c[1], str)
+                  and c[1].startswith("pcb_corner_cut")}
+        second_names = {c[1] for c in second.calls if c[0] == "subtract" and isinstance(c[1], str)
+                  and c[1].startswith("pcb_corner_cut")}
+        self.assertTrue(first_names.isdisjoint(second_names))
 
     def test_every_cylinder_is_a_true_cylinder_of_the_radius_along_up(self):
         model_builder.clip_to_outline(

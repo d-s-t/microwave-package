@@ -14,6 +14,7 @@ solver rather than branched on. See registry.py for that contract.
 from __future__ import annotations
 
 import functools
+import itertools
 import logging
 import os
 import re
@@ -516,39 +517,45 @@ def place_lid_inside(hfss, frame, stack, new_objects: List[str], log=logger.info
     return "lid_inside"
 
 
+_CORNER_CUT_SERIALS = itertools.count(1)
+
+
 def clip_to_outline(hfss, frame, half_length: float, half_side: float, radius: float,
                     base: float, height: float, targets: List[str],
                     log=logger.info) -> None:
     """Round the PCB's corners off `targets`, so they follow the board's outline.
 
     Each corner's cut is its square less the quarter circle that leaves the
-    corner round (`pcb_outline.corner_cuts`). The four cuts are united into
-    one tool and subtracted from every target in one boolean, which keeps
-    the targets' names -- the material rules match on them. The tool spans
-    `base` to `base + height`, so every target must lie inside that height.
+    corner round (`pcb_outline.corner_cuts`). Each is named, shaped, and then
+    subtracted from the targets. The targets keep their names, which is what
+    the material rules match on. The cut spans `base` to `base + height`, so
+    every target must lie inside that height.
+
+    One cut at a time rather than all four united. Each cut gets a name that
+    no earlier cut in this session used: a new cut given the name of a cut
+    already consumed (the vacuum's, then the board's) was not found by the
+    subtract that followed.
 
     Nothing happens for a sharp board (`radius` 0) or with no targets.
     """
     if radius <= 0 or not targets:
         return
-    from ..design import copper_geometry as cg, pcb_outline
+    from ..design import pcb_outline
 
-    parts: List[str] = []
-    for cut in pcb_outline.corner_cuts(half_length, half_side, radius):
+    serial = next(_CORNER_CUT_SERIALS)
+    for number, cut in enumerate(pcb_outline.corner_cuts(half_length, half_side, radius), 1):
+        tool = f"pcb_corner_cut_{serial}_{number}"
         u1, v1, u2, v2 = cut.box
         origin, sizes = frame.box(u1, v1, u2, v2, base, height)
         block = hfss.modeler.create_box(origin=origin, sizes=sizes)
+        block.name = tool
         cu, cv = cut.centre
         disc = hfss.modeler.create_cylinder(
             orientation="Y", origin=frame.point(cu, cv, base),
             radius=cut.radius, height=height,
         )
-        hfss.modeler.subtract(block.name, [disc.name], keep_originals=False)
-        parts.append(block.name)
-
-    tool = "pcb_corner_cut"
-    cg._unite_as(hfss.modeler, parts, tool, log)
-    hfss.modeler.subtract(list(targets), [tool], keep_originals=False)
+        hfss.modeler.subtract(tool, [disc.name], keep_originals=False)
+        hfss.modeler.subtract(list(targets), [tool], keep_originals=False)
     log(f"Rounded {', '.join(targets)} to the {radius:g} mm PCB corners.")
 
 
