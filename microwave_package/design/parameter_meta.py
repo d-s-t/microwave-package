@@ -36,13 +36,16 @@ LABELS: Dict[str, str] = {
     "port_width": "Port width",
     "port_space": "Port distance from edge",
     "chip_leg": "Chip support leg height",
-    "pedestal_corner_radius": "Pedestal recess corner radius",
+    "pedestal_size": "Pedestal recess size (square side or circle diameter)",
+    "pedestal_shape": "Pedestal recess shape (0 square, 1 circle)",
+    "pedestal_corner_radius": "Pedestal recess corner radius (square)",
     "bonding_clearence": "Wire-bond clearance",
     "route_width": "Lid relief width",
     "route_clearence": "Lid relief depth",
     "route_chip_clearence": "Lid relief clearance to chip",
     # additional
     "wall_width": "Box wall thickness",
+    "cavity_corner_radius": "Box cavity corner radius",
     "wing_length": "Mounting wing length",
     "wing_width": "Mounting wing width",
     # transmission line, shielding and bonds
@@ -89,7 +92,7 @@ MICRON_PARAMETERS = {
 }
 
 # Counts rather than lengths: no unit at all.
-INTEGER_PARAMETERS = {"port_count"}
+INTEGER_PARAMETERS = {"port_count", "pedestal_shape"}
 
 # On/off flags in the equations file (a plain 0 or 1). The form gives
 # these their own named control instead of a value-or-range box, so they
@@ -175,7 +178,7 @@ GROUPS: List[dict] = [
             "chip_length", "chip_side",
             "pcb_width", "chip_width",
             "cavity_clearance",
-            "pedestal_depth",
+            "pedestal_depth", "pedestal_size", "pedestal_shape",
         ],
     },
     {
@@ -219,7 +222,7 @@ GROUPS: List[dict] = [
         "title": "Additional parameters",
         "hint": "Mechanical features and margins that do not affect the interior fields.",
         "collapsed": True,
-        "names": ["wall_width", "lid_width", "wing_length", "wing_width"],
+        "names": ["wall_width", "cavity_corner_radius", "lid_width", "wing_length", "wing_width"],
     },
     {
         "title": "Corner screws",

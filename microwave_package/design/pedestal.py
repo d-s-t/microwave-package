@@ -1,33 +1,30 @@
 """
-The pedestal recess in the box floor under the die: its outline, the
-rounding of its corners, and the checks that keep a die sitting on it.
+The pedestal recess in the box floor under the die: its shape and size, and
+the checks that keep a die sitting on it.
 
-The recess is a square of the die's size (`chip_length` x `chip_side`)
-whose four corners are cut back by 45-degree chamfers of `chip_leg`. The
-four solid corner triangles are the legs the die lies on, and the recess
-walls run flush with the die's edges. So the die bridges the recess on
-the flat walls and rests on the legs at its corners.
+Two shapes, chosen by `pedestal_shape`, both cut `pedestal_depth` deep into
+the cavity floor and centred on the box:
 
-Every one of the eight corners of that octagon is a pocket corner, which
-a milling cutter cannot reach sharply. `pedestal_corner_radius` rounds
-them all with one radius. A fillet adds metal to the box, so it only ever
-adds support under the die, never removes it.
+    0  a square of `pedestal_size` with its four corners rounded by
+       `pedestal_corner_radius`. The walls run flush with the die's edges, so
+       the die bridges the recess on its flat walls and rests on the four
+       small corner slivers of rim.
+    1  a circle of diameter `pedestal_size`. The die's edges touch it at their
+       midpoints and its corners stand over the rim.
 
-The chamfer legs limit the radius. A fillet at a 135-degree corner uses
-R * tan(22.5 deg) of each edge it meets, and a leg's chamfer is
-`chip_leg` * sqrt(2) long, so both ends of a chamfer must share it.
+`pedestal_size` is the real die side, 6.25 mm, not the 6.3 mm the PCB opening
+uses: the recess needs no margin, and a bigger one would let the die fall in.
 
-The die cannot drop in: at the largest play the die can take in the PCB
-opening (`cavity_clearance` each way), its corners still stand over the
-legs as long as the legs are wider than twice that play. That is what
-`check` tests, rather than a rim on the flat walls, which the play would
-close up completely.
+The die cannot fall in: at the largest play the die can take in the PCB
+opening (`cavity_clearance` each way), its corners must still stand over the
+rim. `check` tests that for the chosen shape.
 
-The SolidWorks box part rounds these corners with two sketch fillets on
-`Sketch2`, each radius linked to `pedestal_corner_radius` (see
-base_parts/add_pedestal_radius.py). A sketch fillet cannot be zero, so a
-radius of 0 is refused here rather than built. The HFSS side needs no cut
-of its own: the box STEP it imports carries whatever the SolidWorks part makes.
+The SolidWorks box part builds both shapes as separate features, each
+suppressed by its own equation (see base_parts/add_pedestal_shapes.py). The
+square's corners are sketch fillets linked to `pedestal_corner_radius`, and a
+sketch fillet cannot be zero, so a square radius of 0 is refused here rather
+than built. The HFSS side needs no cut of its own: the box STEP it imports
+carries whatever the SolidWorks part makes.
 """
 from __future__ import annotations
 
@@ -36,23 +33,36 @@ from typing import Dict, Optional
 
 from . import parameter_meta
 
+# The real die's side (mm). The recess is never bigger than this.
+CHIP_SIZE = 6.25
+
+SQUARE = 0
+CIRCLE = 1
+
+DEFAULT_SIZE = CHIP_SIZE
+DEFAULT_SHAPE = SQUARE
 # The default radius (mm), and the one a part built before this parameter
 # existed gets. A 1 mm end mill cannot cut a sharper internal corner.
 DEFAULT_RADIUS = 1.0
 
-# Half the angle of a fillet at the octagon's 135-degree corners: a fillet of
-# radius R uses R * tan(22.5 deg) along each edge it meets.
-TAN_HALF_TURN = math.tan(math.radians(22.5))
+# A fillet at a 90-degree corner of the square sits at the corner's distance
+# (1 - 1/sqrt(2)) * R inside the square's corner. Used by the die-fall check.
+CORNER_INSET = 1.0 - 1.0 / math.sqrt(2.0)
+
+
+def shape(values: Dict[str, float]) -> float:
+    """The recess shape for one combination: SQUARE (0) or CIRCLE (1)."""
+    return float(values.get("pedestal_shape", DEFAULT_SHAPE))
+
+
+def size(values: Dict[str, float]) -> float:
+    """The recess's size in mm: the square side or the circle diameter."""
+    return float(values.get("pedestal_size", DEFAULT_SIZE))
 
 
 def corner_radius(values: Dict[str, float]) -> float:
-    """The corner radius for one combination, in mm (above 0; see `check`)."""
+    """The square's corner radius for one combination, in mm (see `check`)."""
     return float(values.get("pedestal_corner_radius", DEFAULT_RADIUS))
-
-
-def leg_limit(leg: float) -> float:
-    """The largest radius a chamfer leg of `leg` mm can hold at its two ends."""
-    return leg * math.sqrt(2.0) / (2.0 * TAN_HALF_TURN)
 
 
 def check(values: Dict[str, float]) -> Optional[str]:
@@ -65,35 +75,42 @@ def check(values: Dict[str, float]) -> Optional[str]:
     if parameter_meta.is_bare_board(values) or values.get("pedestal_depth", 0.0) <= 0:
         return None
 
-    radius = corner_radius(values)
-    leg = values.get("chip_leg", 0.8)
-    clearance = values.get("cavity_clearance", 0.1)
-    half_length = values.get("chip_length", 6.3) / 2.0
-    half_side = values.get("chip_side", 6.3) / 2.0
+    which = shape(values)
+    if which not in (SQUARE, CIRCLE):
+        return "pedestal_shape must be 0 (square) or 1 (circle)"
 
-    if radius < 0:
-        return "pedestal_corner_radius cannot be negative"
-    if leg <= 0:
-        return ("chip_leg must be positive: the four legs are the corners the die lies on, "
-                "and a recess without them has no chamfers to round")
-    if leg >= min(half_length, half_side):
-        return (f"chip_leg {leg:g} mm is as long as half the die, so the legs cover the whole "
-                f"recess -- reduce chip_leg")
-    if leg <= 2.0 * clearance:
-        return (f"chip_leg {leg:g} mm must be more than twice cavity_clearance "
-                f"({2.0 * clearance:g} mm): a die shifted by the clearance in both directions "
-                f"would otherwise come off its legs -- raise chip_leg or reduce cavity_clearance")
-    if radius == 0:
-        # The SolidWorks fillet cannot be zero, and a zero dimension keeps its
-        # last value with no error, so the part would silently keep another radius.
-        return ("pedestal_corner_radius must be above 0: the SolidWorks box rounds the recess with "
-                "a fillet, which cannot have zero radius (a square recess is not built)")
-    if radius > min(half_length, half_side):
-        return (f"pedestal_corner_radius {radius:g} mm is more than half the recess's smaller "
-                f"side ({min(half_length, half_side):g} mm) -- reduce it")
-    if radius > leg_limit(leg):
-        return (f"pedestal_corner_radius {radius:g} mm does not fit the {leg:g} mm legs: a fillet "
-                f"at each end of a leg's chamfer needs {2.0 * radius * TAN_HALF_TURN:.3f} mm of its "
-                f"{leg * math.sqrt(2.0):.3f} mm length -- reduce pedestal_corner_radius to at most "
-                f"{leg_limit(leg):.3f} mm, or raise chip_leg")
+    side = size(values)
+    if side <= 0:
+        return "pedestal_size must be positive: it is the side of the square or the diameter of the circle"
+    if side > CHIP_SIZE + 1e-9:
+        return (f"pedestal_size {side:g} mm is bigger than the {CHIP_SIZE:g} mm chip: a recess "
+                f"bigger than the die would let it fall in -- reduce pedestal_size")
+
+    # The die's corners, pushed in by the largest play the PCB opening allows.
+    clearance = values.get("cavity_clearance", 0.1)
+    half_die = CHIP_SIZE / 2.0
+    reach = half_die - clearance
+
+    if which == SQUARE:
+        radius = corner_radius(values)
+        if radius <= 0:
+            # The SolidWorks fillet cannot be zero, and a zero dimension keeps its
+            # last value with no error, so the part would silently keep another radius.
+            return ("pedestal_corner_radius must be above 0: the square recess is rounded with a "
+                    "fillet, which cannot have zero radius")
+        if radius >= side / 2.0:
+            return (f"pedestal_corner_radius {radius:g} mm must be less than half pedestal_size "
+                    f"({side / 2.0:g} mm), or the straight walls of the square vanish -- reduce it")
+        # The die's corner must stay outside the fillet at the largest play:
+        # the fillet's centre is (side/2 - R) each way, and the die corner at
+        # (reach, reach) has to be at least R from it.
+        if reach <= side / 2.0 - radius * CORNER_INSET:
+            return (f"at cavity_clearance {clearance:g} mm the die's corner would drop past a "
+                    f"{radius:g} mm corner of the {side:g} mm square -- reduce pedestal_size or "
+                    f"cavity_clearance, or raise pedestal_corner_radius")
+    else:
+        # The die's corners must stand outside the circle at the largest play.
+        if math.sqrt(2.0) * reach <= side / 2.0:
+            return (f"at cavity_clearance {clearance:g} mm the die's corner would fall inside the "
+                    f"{side:g} mm circle -- reduce pedestal_size or cavity_clearance")
     return None

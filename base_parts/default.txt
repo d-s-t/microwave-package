@@ -32,7 +32,13 @@
 
 "chip_leg"= 0.8 	' size of the legs the chip lay on in case there is pedestal
 
-"pedestal_corner_radius"= 1.0	' radius of the rounded corners of the pedestal recess, in mm. The recess corners are milled, and a 1 mm end mill cannot cut a sharper one. Must be above 0 (a SolidWorks fillet cannot be zero) and stay within the leg (see design/pedestal.py).
+"pedestal_size"= 6.25	' size of the pedestal recess under the chip, in mm: the side of the square (pedestal_shape 0) or the diameter of the circle (pedestal_shape 1). The real chip is 6.25 mm, so this is the chip size with no margin: a bigger recess would let the die fall in. Must be above 0 and at most 6.25 (see design/pedestal.py).
+
+"pedestal_shape"= 0	' shape of the pedestal recess under the chip: 0 = square of pedestal_size with rounded corners (pedestal_corner_radius), 1 = circle of diameter pedestal_size. Both are cut into the box; the other one is suppressed.
+
+"pedestal_corner_radius"= 1.0	' radius of the rounded corners of the square pedestal recess (pedestal_shape 0), in mm. The recess corners are milled, and a 1 mm end mill cannot cut a sharper one. Must be above 0 (a SolidWorks fillet cannot be zero) and less than half pedestal_size (see design/pedestal.py). Not used by the circle.
+
+"cavity_corner_radius"= 1.0	' radius of the four vertical inside corners of the box cavity, in mm, and of the matching corners of the lid plug that goes into it. The cavity is milled, and a 1 mm end mill cannot cut a sharper inside corner. Must be above 0 (a SolidWorks fillet cannot be zero) and less than half the cavity's smaller side (see design/constraints.py).
 
 "wing_length"= 5	' Mounting wing size
 
