@@ -617,7 +617,7 @@ def check_bare_pedestal(values: Dict[str, float]) -> Optional[str]:
 # The gap is 0 today, so the PCB's corner radius has to equal the cavity's.
 # `cavity_clearance` is NOT this gap: it is the die's play in the PCB opening.
 CAVITY_RADIUS_PARAM = "cavity_corner_radius"
-PCB_RADIUS_PARAM = "pcb_corner_radius"          # stage 2: absent until then
+PCB_RADIUS_PARAM = "pcb_corner_radius"
 DEFAULT_CAVITY_RADIUS = 1.0
 PCB_WALL_GAP = 0.0                              # mm, PCB edge to the cavity wall
 PCB_RADIUS_TOLERANCE = 1e-6                     # mm
@@ -650,6 +650,10 @@ def check_cavity_corners(values: Dict[str, float], wall_gap: float = PCB_WALL_GA
         return (f"cavity_corner_radius {_fmt(radius)} mm is not less than half the cavity's smaller "
                 f"side ({_fmt(half_side)} mm) -- reduce it")
     pcb_radius = float(values.get(PCB_RADIUS_PARAM, radius))
+    pcb_half_side = min(values.get("pcb_length", 50.0), values.get("pcb_side", 25.0)) / 2.0
+    if pcb_radius >= pcb_half_side:
+        return (f"{parameter_meta.label_for(PCB_RADIUS_PARAM)} {_fmt(pcb_radius)} mm is not less "
+                f"than half the PCB's smaller side ({_fmt(pcb_half_side)} mm) -- reduce it")
     floor = pcb_corner_floor(radius, wall_gap)
     if pcb_radius < floor - PCB_RADIUS_TOLERANCE:
         return (f"{parameter_meta.label_for(PCB_RADIUS_PARAM)} {_fmt(pcb_radius)} mm is under the "

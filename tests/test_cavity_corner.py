@@ -106,11 +106,21 @@ class TestPcbCornerFit(unittest.TestCase):
     def test_a_larger_pcb_corner_fits(self):
         self.assertIsNone(constraints.check_cavity_corners(defaults(pcb_corner_radius=1.5)))
 
-    def test_without_a_pcb_corner_parameter_the_cavity_radius_stands_in(self):
-        # Stage 2 adds pcb_corner_radius with this same default, so until then
-        # the PCB is taken to match the cavity.
-        self.assertNotIn("pcb_corner_radius", defaults())
+    def test_the_default_pcb_radius_matches_the_cavity(self):
+        self.assertEqual(defaults()["pcb_corner_radius"], defaults()["cavity_corner_radius"])
         self.assertIsNone(constraints.check_cavity_corners(defaults()))
+
+    def test_without_a_pcb_corner_parameter_the_cavity_radius_stands_in(self):
+        # A file from before pcb_corner_radius existed: the PCB is taken to
+        # match the cavity, as it did when the board was added to the model.
+        values = defaults()
+        del values["pcb_corner_radius"]
+        self.assertIsNone(constraints.check_cavity_corners(values))
+
+    def test_a_pcb_corner_at_or_over_half_the_pcb_side_is_refused(self):
+        reason = constraints.check_cavity_corners(defaults(pcb_corner_radius=12.5))
+        self.assertIsNotNone(reason)
+        self.assertIn("PCB's smaller side", reason)
 
     def test_cavity_clearance_does_not_relax_the_pcb_corner(self):
         # cavity_clearance is the die's play in the PCB opening, not the PCB's

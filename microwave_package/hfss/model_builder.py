@@ -516,8 +516,44 @@ def place_lid_inside(hfss, frame, stack, new_objects: List[str], log=logger.info
     return "lid_inside"
 
 
+def clip_to_outline(hfss, frame, half_length: float, half_side: float, radius: float,
+                    base: float, height: float, targets: List[str],
+                    log=logger.info) -> None:
+    """Round the PCB's corners off `targets`, so they follow the board's outline.
+
+    Each corner's cut is its square less the quarter circle that leaves the
+    corner round (`pcb_outline.corner_cuts`). The four cuts are united into
+    one tool and subtracted from every target in one boolean, which keeps
+    the targets' names -- the material rules match on them. The tool spans
+    `base` to `base + height`, so every target must lie inside that height.
+
+    Nothing happens for a sharp board (`radius` 0) or with no targets.
+    """
+    if radius <= 0 or not targets:
+        return
+    from ..design import copper_geometry as cg, pcb_outline
+
+    parts: List[str] = []
+    for cut in pcb_outline.corner_cuts(half_length, half_side, radius):
+        u1, v1, u2, v2 = cut.box
+        origin, sizes = frame.box(u1, v1, u2, v2, base, height)
+        block = hfss.modeler.create_box(origin=origin, sizes=sizes)
+        cu, cv = cut.centre
+        disc = hfss.modeler.create_cylinder(
+            orientation="Y", origin=frame.point(cu, cv, base),
+            radius=cut.radius, height=height,
+        )
+        hfss.modeler.subtract(block.name, [disc.name], keep_originals=False)
+        parts.append(block.name)
+
+    tool = "pcb_corner_cut"
+    cg._unite_as(hfss.modeler, parts, tool, log)
+    hfss.modeler.subtract(list(targets), [tool], keep_originals=False)
+    log(f"Rounded {', '.join(targets)} to the {radius:g} mm PCB corners.")
+
+
 def build_vacuum(hfss, frame, stack, pcb_half_length: float, pcb_half_side: float,
-                 log=logger.info) -> Optional[str]:
+                 log=logger.info, corner_radius: float = 0.0) -> Optional[str]:
     """Build the interior air fill directly, instead of importing one.
 
     base_parts/vacuum.SLDPRT used to supply this, mated to box in the old
@@ -551,6 +587,12 @@ def build_vacuum(hfss, frame, stack, pcb_half_length: float, pcb_half_side: floa
     )
     vacuum = hfss.modeler.create_box(origin=origin, sizes=sizes)
     vacuum.name = "vacuum"
+    # The vacuum is the cavity's air, so it has the cavity's rounded corners.
+    # A sharp box here would fill the corners the box metal occupies.
+    clip_to_outline(
+        hfss, frame, pcb_half_length, pcb_half_side, corner_radius,
+        base=box_bottom, height=box_top - box_bottom, targets=["vacuum"], log=log,
+    )
     log(
         f"Built vacuum fill {2 * pcb_half_length:g} x {2 * pcb_half_side:g} x "
         f"{box_top - box_bottom:.3f} mm from box's own measured envelope."
@@ -665,6 +707,7 @@ def build_layout(hfss, combo_dir: str, dimensions_txt_content: str,
     """
     from ..design import (
         cavity as cavity_plan, copper_geometry as cg, equations as eq, parameter_meta,
+        pcb_outline,
     )
 
     v = eq.get_numeric_parameters(dimensions_txt_content)
@@ -675,6 +718,9 @@ def build_layout(hfss, combo_dir: str, dimensions_txt_content: str,
     chip_width = v.get("chip_width", 0.381)
     wall = v.get("wall_width", 1.0)
     pedestal = v.get("pedestal_depth", 0.0)
+    # The board's rounded corners. 0 for a board from before the cavity had
+    # rounded corners, which is then sharp like its box.
+    pcb_radius = pcb_outline.corner_radius_of(v)
 
     # The assembly origin is a corner, so the board centre sits inside
     # the box -- but not simply half of (pcb_length + 2*wall_width),
@@ -729,6 +775,7 @@ def build_layout(hfss, combo_dir: str, dimensions_txt_content: str,
     build_vacuum(
         hfss, frame, stack,
         pcb_half_length=pcb_length / 2.0, pcb_half_side=pcb_side / 2.0, log=log,
+        corner_radius=pcb_radius,
     )
     place_lid_inside(hfss, frame, stack, lid_inside_names, log=log)
 
@@ -762,6 +809,7 @@ def build_layout(hfss, combo_dir: str, dimensions_txt_content: str,
     )
 
     package = boards.get("package")
+    made: Dict[str, List[str]] = {}
     if package is not None and len(package):
         made = cg.build(
             hfss.modeler, package, frame,
@@ -781,6 +829,34 @@ def build_layout(hfss, combo_dir: str, dimensions_txt_content: str,
         # The vias are solid posts standing in the undrilled board -- the
         # material override lets the metal win where they overlap. See
         # `copper_geometry._via_post` for why they are not drilled.
+
+    # The board's rounded corners: the substrate and any copper that reaches
+    # a corner are cut to the outline here. Only the bodies that can reach a
+    # corner are in the boolean (see `copper_geometry.copper_reaching_corners`),
+    # and sheets are left out, since a boolean on a sheet is the risky case.
+    if pcb_radius > 0:
+        half_length, half_side = pcb_length / 2.0, pcb_side / 2.0
+        planes, vias = (
+            cg.copper_reaching_corners(package, half_length, half_side, pcb_radius)
+            if package is not None and len(package) else (False, False)
+        )
+        targets = ["pcb_substrate"]
+        for key, names in made.items():
+            wanted = vias if key.endswith("_vias") else planes
+            if not wanted:
+                continue
+            kept = [name for name in names if name not in sheets]
+            if len(kept) < len(names):
+                log(f"WARNING: {', '.join(n for n in names if n in sheets)} is a sheet, not "
+                    "clipped to the rounded corners.")
+            targets += kept
+        # 0.1 mm past the board's faces on each side, so the tool's faces
+        # never coincide with the substrate's or the copper's.
+        clip_to_outline(
+            hfss, frame, half_length, half_side, pcb_radius,
+            base=stack.pcb_bottom - 0.1, height=(stack.pcb_top - stack.pcb_bottom) + 0.2,
+            targets=targets, log=log,
+        )
 
     # A bare board never has a die, whatever an earlier run left in
     # copper.txt.

@@ -36,6 +36,8 @@
 
 "cavity_corner_radius"= 1.0	' radius of the four vertical inside corners of the box cavity, in mm, and of the matching corners of the lid plug that goes into it. The cavity is milled, and a 1 mm end mill cannot cut a sharper inside corner. Must be above 0 (a SolidWorks fillet cannot be zero) and less than half the cavity's smaller side (see design/constraints.py).
 
+"pcb_corner_radius"= 1.0	' radius of the four vertical corners of the PCB, in mm. The board sits in the box cavity with no gap, so it must be at least the cavity radius (cavity_corner_radius) to fit inside the cavity's rounded corners; it may be larger. Must be above 0 and less than half the board's smaller side (see design/constraints.py).
+
 "wing_length"= 5	' Mounting wing size
 
 "wing_width"= 1	' mounting wing width
