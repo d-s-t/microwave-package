@@ -207,12 +207,31 @@ As of 2026-10-11. Preflight: 0 fail, 1 warn, 14 pass, 13 manual.
 | Screws, countersink, thread | **passed** | automatic |
 | Cryo: 5880 z-axis expansion | **open** | warning; fab data or change laminate |
 | S1 line impedance, board | **passed** (2026-10-11, run_20261011_125037) | Zo 50.5-51.6 ohm over 1-26 GHz, inside 50 +- 2.5; the gap Altium drew, 128.85 um, against the analytic 128.8 um. HFSS reads 1.4 ohm above the 2D Extractor's 50.17 ohm (0.9 ohm with a 6 mm section): that is the check's own accuracy |
-| S2 line impedance, chip | **failed** (2026-10-18, run_20261018_134120) | final design: TMM 10i, `cpw_trace_width` 0.20, default lid 1.2 x 0.3 mm, `chip_trace_width` 0.2, `which_line=chip`. Zo 50.0-58.6 ohm over 1-26 GHz against 50 +- 2.5: about 54.7 ohm from 1 to ~18 GHz, a peak of 58.6 ohm at 21.2 GHz (20.7 GHz ill-conditioned, half-wavelength section). Analytic gap 168.7 um used; the run does not report a solved gap, so no gap comparison yet. Earlier attempts in the same window, all with no model: run_20261015_145748 (board gap 38 um at default width), run_20261015_145819 (Altium copper export busy), run_20261015_150140 and run_20261018_114429 (Altium dialog). Not tuned: a re-run needs a decision on the gap |
+| S2 line impedance, chip | **failed at the analytic gap** (2026-10-18, run_20261018_135026) | final design: TMM 10i, `cpw_trace_width` 0.20, default lid 1.2 x 0.3 mm, `chip_trace_width` 0.2, `which_line=chip`, analytic gap 168.69 um, 2 mm section, 1-20 GHz (the goal band). Zo mean 54.6 ohm, 53.8-55.9 ohm over 1-20 GHz against 50 +- 2.5: outside the window at every point. The earlier 3 mm run (run_20261018_134120, 1-26 GHz) read about 54.7 ohm to ~18 GHz with the half-wavelength artefact at 20.7-21.2 GHz; the 2 mm section removes that artefact from the band. Earlier attempts in the same window, all with no model: run_20261015_145748 (board gap 38 um at default width), run_20261015_145819 (Altium copper export busy), run_20261015_150140 and run_20261018_114429 (Altium dialog). **Not passed; see S3 for the gap HFSS wants** |
+| S3 chip gap against the analytic one (2026-10-18) | **gap found; analytic gap is wrong by 28 %** | HFSS reads 50 ohm at **121 um** (run_20261018_135800: mean 50.48 ohm, 50.02-51.43 ohm over 1-20 GHz: **PASS** against 50 +- 2.5). The analytic gap is 168.69 um, so the ratio is **0.72** (HFSS wants 28 % less gap). A least-squares fit through all runs puts the centring gap at 120 um; the largest gap that stays inside 50 +- 2.5 over the whole 1-20 GHz is about **143 um** (140 um passes, 145 um fails), so the window is narrow on the high side: a gap 20 um wider than the centre is a fail. The Zo table is under the status table. |
 | S4/S5/S7 driven + eigen + fine windows, with chip | **passed on the previous model** | B20: S21 above -3 dB for 99 % of 2-20 GHz and 61 % of 20-26 GHz; narrow notches at 16.94, 18.58 and 19.20 GHz; redo after the chip-gap fix |
 | S6 finite conductivity | **open** | not run |
 | S8 tolerances | **open** | one combination per setting so far |
 | S9 venting | **open** | section 6 |
 | Via fill/cap | **open** | section 6 |
+
+**Chip line Zo against gap (S2, S3), 2026-10-18.** 1-20 GHz, 2 mm section, `cpw_trace_width` 0.2, `which_line=chip`. The mean is not smooth in the gap (neighbouring steps differ by 0.05 to 0.14 ohm per um), so treat each mean as +-0.5 ohm.
+
+| gap (um) | run | geometry | mean (ohm) | min-max (ohm) | verdict |
+|---|---|---|---|---|---|
+| 168.69 (analytic) | run_20261018_135026 | copper layout | 54.60 | 53.84-55.86 | FAIL |
+| 155 | run_20261018_135452 | forced, from parameters | 52.98 | 52.39-53.56 | FAIL |
+| 145 | run_20261018_135932 | forced | 52.34 | 51.77-52.82 | FAIL (max) |
+| 140 | run_20261018_135330 | forced | 51.38 | 50.77-51.95 | pass |
+| 125 | run_20261018_135208 | forced | 50.57 | 49.99-50.98 | pass |
+| **121 (confirm)** | run_20261018_135800 | forced | **50.48** | **50.02-51.43** | **pass** |
+| 115 | run_20261018_135625 | forced | 49.18 | 48.70-49.50 | pass |
+
+The 105 um point was not run: 115 um already brackets the low side. The forced-gap runs build the section from parameters while the analytic run uses the copper layout; the 155 and 168.69 um points lie on one slope, which suggests the difference is small, but this is not separately proven.
+
+**Hypothesis, not established (chip gap).** HFSS wants a chip gap about 28 % smaller than `design/cpw.py` gives (121 against 168.69 um). From reading the code: `build.py` passes the lid cover to the analytic gap only for the board, so the chip's 168.69 um is the open-top formula, while the HFSS chip section sits under the lid, and the formula assumes the die sits directly on its ground. The two numbers the README names are the likely causes: air under the die (a die not in contact with its floor lowers the substrate's effective permittivity, which raises Z, the sign HFSS shows) and the lid cover over the die. The lid alone should push Z down, so it does not explain the sign by itself. A run with the air under the die removed, and one with the lid removed, would separate the two; neither has been made.
+
+**Goal band.** The "1-26 GHz" in the S1 and S2 wording above is not the goal band; the goal band is 1-20 GHz. The S1 result stays on 1-26 GHz as recorded.
 | SMP footprint, finish, fits, fab capability, Gerber review | **open** | manual |
 | Room-temperature, cold and TDR measurements | **open** | after manufacture |
 
