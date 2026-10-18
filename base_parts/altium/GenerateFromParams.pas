@@ -307,22 +307,53 @@ Begin
     End;
 End;
 
-{ One arc of the outline, on a layer -- drawn as an arc primitive, so a
-  Gerber plot has a G02/G03 for it rather than a chain of short tracks. }
-Procedure AddArc(Board : IPCB_Board; CX, CY, Rad, SA, EA, W : Double; Lay : TLayer);
-Var
-    A : IPCB_Arc;
+{ The PCB outline as a polygon: N points, counter-clockwise. A sharp board
+  has its four corners. A rounded one has 17 points along each corner's arc
+  (16 chords a quarter turn, about 1 um inside the true arc at R = 1 mm),
+  with the straight edges between the arcs. Point v of a rounded board is
+  point J = v - 17 K of corner K. }
+Function OutlinePointCount(R : Double) : Integer;
 Begin
-    A := PCBServer.PCBObjectFactory(eArcObject, eNoDimension, eCreate_Default);
-    A.CenterX := MMsToCoord(CX);
-    A.CenterY := MMsToCoord(CY);
-    A.Radius := MMsToCoord(Rad);
-    A.StartAngle := SA;
-    A.EndAngle := EA;
-    A.LineWidth := MMsToCoord(W);
-    A.Layer := Lay;
-    Board.AddPCBObject(A);
-    Announce(Board, A);
+    If R <= 0.0 Then Result := 4 Else Result := 4 * 17;
+End;
+
+Procedure OutlinePoint(v : Integer; HalfL, HalfS, R : Double; Var PX, PY : Double);
+Var
+    K, J : Integer;
+    CX, CY, SA, EA, X1, Y1, X2, Y2, Ang : Double;
+Begin
+    If R <= 0.0 Then
+    Begin
+        If v = 0 Then
+        Begin
+            PX := -HalfL;
+            PY := -HalfS;
+        End
+        Else If v = 1 Then
+        Begin
+            PX := HalfL;
+            PY := -HalfS;
+        End
+        Else If v = 2 Then
+        Begin
+            PX := HalfL;
+            PY := HalfS;
+        End
+        Else
+        Begin
+            PX := -HalfL;
+            PY := HalfS;
+        End;
+    End
+    Else
+    Begin
+        K := v Div 17;
+        J := v - K * 17;
+        CornerArc(K, HalfL, HalfS, R, CX, CY, SA, EA, X1, Y1, X2, Y2);
+        Ang := PiVal * (SA + 90.0 * J / 16.0) / 180.0;
+        PX := CX + R * Cos(Ang);
+        PY := CY + R * Sin(Ang);
+    End;
 End;
 
 { Whether (CX, CY) is one of the package's four outer corners while the
@@ -735,8 +766,6 @@ Begin
             C.AddPoint(MMsToCoord(CX + SX * A), MMsToCoord(CY + SY * B));
         End;
         C.AddPoint(MMsToCoord(CX + SX * QA * LA), MMsToCoord(CY));
-        { Only the quadrant at the board's corner has a rounded corner here;
-          the arrival is along the board's side (x is fixed), so vertical. }
         AddCorner(C, CX + SX * QA * LA, CY + SY * QB * LB, False);
         C.AddPoint(MMsToCoord(CX),                MMsToCoord(CY + SY * QB * LB));
 
@@ -830,26 +859,16 @@ End;
   the outline has to be drawn on a layer, and this is that layer. }
 Procedure AddOutlineBox(Board : IPCB_Board; HalfL, HalfS, R : Double);
 Var
-    K, Next : Integer;
-    CX, CY, SA, EA, X1, Y1, X2, Y2 : Double;
-    NCX, NCY, NSA, NEA, NX1, NY1, NX2, NY2 : Double;
+    v, N, NextV : Integer;
+    PX, PY, QX, QY : Double;
 Begin
-    If R <= 0.0 Then
+    N := OutlinePointCount(R);
+    For v := 0 To N - 1 Do
     Begin
-        AddTrack(Board, -HalfL, -HalfS,  HalfL, -HalfS, 0.1, eMechanical2);
-        AddTrack(Board,  HalfL, -HalfS,  HalfL,  HalfS, 0.1, eMechanical2);
-        AddTrack(Board,  HalfL,  HalfS, -HalfL,  HalfS, 0.1, eMechanical2);
-        AddTrack(Board, -HalfL,  HalfS, -HalfL, -HalfS, 0.1, eMechanical2);
-        Exit;
-    End;
-    { Four arcs, each followed by the straight edge to the next one. }
-    For K := 0 To 3 Do
-    Begin
-        If K = 3 Then Next := 0 Else Next := K + 1;
-        CornerArc(K, HalfL, HalfS, R, CX, CY, SA, EA, X1, Y1, X2, Y2);
-        AddArc(Board, CX, CY, R, SA, EA, 0.1, eMechanical2);
-        CornerArc(Next, HalfL, HalfS, R, NCX, NCY, NSA, NEA, NX1, NY1, NX2, NY2);
-        AddTrack(Board, X2, Y2, NX1, NY1, 0.1, eMechanical2);
+        If v = N - 1 Then NextV := 0 Else NextV := v + 1;
+        OutlinePoint(v, HalfL, HalfS, R, PX, PY);
+        OutlinePoint(NextV, HalfL, HalfS, R, QX, QY);
+        AddTrack(Board, PX, PY, QX, QY, 0.1, eMechanical2);
     End;
 End;
 
@@ -1090,9 +1109,6 @@ Begin
     Result := False;
     If (Not ClearOfEdge(X, Dia, MinGap, HalfL)) Or
        (Not ClearOfEdge(Y, Dia, MinGap, HalfS)) Then Exit;
-    { At a rounded corner the rectangle is not the edge: the via has to sit
-      inside the arc, MinGap clear of it. Only a via in the corner square
-      can be outside the arc while inside the rectangle. }
     If (PcbR > 0.0) And (Abs(X) > PkgHalfL - PcbR) And (Abs(Y) > PkgHalfS - PcbR) Then
     Begin
         Reach := Sqrt((Abs(X) - (PkgHalfL - PcbR)) * (Abs(X) - (PkgHalfL - PcbR))
@@ -1480,65 +1496,23 @@ End;
 
 Procedure SetOutline(Board : IPCB_Board; HalfL, HalfS, R : Double);
 Var
-    i, K : Integer;
-    Seg  : TPolySegment;
-    CX, CY, SA, EA, X1, Y1, X2, Y2 : Double;
+    i, N   : Integer;
+    Seg    : TPolySegment;
+    PX, PY : Double;
 Begin
+    N := OutlinePointCount(R);
     Board.BoardOutline.BeginModify;
-    If R <= 0.0 Then
+    Board.BoardOutline.PointCount := N;
+    For i := 0 To N - 1 Do
     Begin
-        Board.BoardOutline.PointCount := 4;
-        For i := 0 To 3 Do
-        Begin
-            { Segments[i] returns the record BY VALUE: editing it in place
-              is silently discarded, and the board stays at its default
-              6 x 4 inches while reporting success. }
-            Seg := Board.BoardOutline.Segments[i];
-            Seg.Kind := ePolySegmentLine;
-            Case i Of
-                0 : Begin Seg.vx := MMsToCoord(-HalfL); Seg.vy := MMsToCoord(-HalfS); End;
-                1 : Begin Seg.vx := MMsToCoord(HalfL);  Seg.vy := MMsToCoord(-HalfS); End;
-                2 : Begin Seg.vx := MMsToCoord(HalfL);  Seg.vy := MMsToCoord(HalfS);  End;
-                3 : Begin Seg.vx := MMsToCoord(-HalfL); Seg.vy := MMsToCoord(HalfS);  End;
-            End;
-            Board.BoardOutline.Segments[i] := Seg;
-        End;
-    End
-    Else
-    Begin
-        { Eight segments: an arc at each corner, then the edge to the next.
-          Segment 2K is the arc: its vertex is where it starts, cx, cy its
-          centre, sa and ea its angles in degrees, radius its radius.
-          Segment 2K+1 is the line from the end of that arc to the start of
-          the next. }
-        Board.BoardOutline.PointCount := 8;
-        For K := 0 To 3 Do
-        Begin
-            CornerArc(K, HalfL, HalfS, R, CX, CY, SA, EA, X1, Y1, X2, Y2);
-            Seg := Board.BoardOutline.Segments[2 * K];
-            Seg.Kind := ePolySegmentArc;
-            Seg.vx := MMsToCoord(X1);
-            Seg.vy := MMsToCoord(Y1);
-            Seg.cx := MMsToCoord(CX);
-            Seg.cy := MMsToCoord(CY);
-            Seg.sa := SA;
-            Seg.ea := EA;
-            Seg.radius := MMsToCoord(R);
-            Board.BoardOutline.Segments[2 * K] := Seg;
-            Seg := Board.BoardOutline.Segments[2 * K + 1];
-            Seg.Kind := ePolySegmentLine;
-            Seg.vx := MMsToCoord(X2);
-            Seg.vy := MMsToCoord(Y2);
-            Board.BoardOutline.Segments[2 * K + 1] := Seg;
-        End;
-    End;
-    Board.BoardOutline.EndModify;
-    Board.BoardOutline.Rebuild;
-End;
-            1 : Begin Seg.vx := MMsToCoord(HalfL);  Seg.vy := MMsToCoord(-HalfS); End;
-            2 : Begin Seg.vx := MMsToCoord(HalfL);  Seg.vy := MMsToCoord(HalfS);  End;
-            3 : Begin Seg.vx := MMsToCoord(-HalfL); Seg.vy := MMsToCoord(HalfS);  End;
-        End;
+        OutlinePoint(i, HalfL, HalfS, R, PX, PY);
+        { Segments[i] returns the record BY VALUE: editing it in place
+          is silently discarded, and the board stays at its default
+          6 x 4 inches while reporting success. }
+        Seg := Board.BoardOutline.Segments[i];
+        Seg.Kind := ePolySegmentLine;
+        Seg.vx := MMsToCoord(PX);
+        Seg.vy := MMsToCoord(PY);
         Board.BoardOutline.Segments[i] := Seg;
     End;
     Board.BoardOutline.EndModify;
@@ -1865,7 +1839,6 @@ Begin
 
     HalfL     := ParamOf(P, 'pcb_length', 26.0) / 2.0;
     HalfS     := ParamOf(P, 'pcb_side', 10.0) / 2.0;
-    { The PCB's rounded corners, from build_params. Zero is a sharp board. }
     PcbR      := ParamOf(P, 'pcb_corner_radius', 0.0);
     PkgHalfL  := HalfL;
     PkgHalfS  := HalfS;
@@ -1938,6 +1911,8 @@ Begin
         { The square the plane gives up round each screw: the keep-out plus
           half a millimetre each way (screws.KEEPOUT_BLOCK_MARGIN). }
         ScrewBlockS := ScrewKeepR + 0.5;
+        PkgHalfL := HalfL;
+        PkgHalfS := HalfS;
         Say('screws_on=1');
         Say('screw_keepout_r_mm=' + FloatToStr(ScrewKeepR));
     End;
@@ -2093,7 +2068,7 @@ Begin
             AddOutlineBox(Board, CavHalfL, CavHalfS, 0.0);
         Say('package_outline_layer=ok');
         Say('pcb_corner_radius_mm=' + FloatToStr(PcbR));
-        Say('outline_segments=' + IntToStr(Board.BoardOutline.PointCount));
+        Say('outline_segments=' + IntToStr(OutlinePointCount(PcbR)));
     Except
         Say('package_outline_layer=FAIL');
     End;
@@ -2204,7 +2179,6 @@ Begin
 
     { The die's board has no screws, and its planes must stay plain. }
     ScrewBlockS := 0.0;
-    { The die's corners are sharp: it is cut from a diced wafer, not milled. }
     PcbR := 0.0;
 
     If NoChip Then

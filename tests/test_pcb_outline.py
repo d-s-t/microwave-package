@@ -346,14 +346,23 @@ class TestAltiumOutlineSource(unittest.TestCase):
     def test_the_radius_is_read_and_defaults_to_sharp(self):
         self.assertIn("PcbR      := ParamOf(P, 'pcb_corner_radius', 0.0);", self.text)
 
-    def test_the_board_outline_is_eight_segments_of_arcs_and_edges(self):
-        self.assertIn("ePolySegmentArc", self.text)
-        self.assertIn("Board.BoardOutline.PointCount := 8;", self.text)
+    def test_the_board_outline_is_a_polygon_of_17_points_per_corner(self):
+        # Arc segments and arc primitives were rejected by Altium's script
+        # engine, so the rounded corners are chords (16 a quarter turn).
         self.assertIn("SetOutline(Board, HalfL, HalfS, PcbR);", self.text)
+        self.assertIn("N := OutlinePointCount(R);", self.text)
+        self.assertIn("Result := 4 * 17;", self.text)
+        self.assertNotIn("ePolySegmentArc", self.text)
 
-    def test_the_mechanical_outline_is_drawn_with_arc_primitives(self):
-        self.assertIn("eArcObject", self.text)
+    def test_the_mechanical_outline_is_drawn_along_the_same_polygon(self):
         self.assertIn("AddOutlineBox(Board, HalfL, HalfS, PcbR);", self.text)
+        self.assertNotIn("eArcObject", self.text)
+
+    def test_the_chords_stay_within_a_few_micrometres_of_the_arc(self):
+        # 16 chords a quarter turn: the sagitta of one chord, R (1 - cos(pi/64)).
+        sagitta = 1.0 * (1.0 - math.cos(math.pi / 64.0))
+        self.assertLess(sagitta, 0.002)     # 2 um at R = 1 mm
+        self.assertAlmostEqual(sagitta * 1000.0, 1.2, places=1)   # micrometres
 
     def test_the_die_is_drawn_with_sharp_corners(self):
         self.assertIn("PcbR := 0.0;", self.text)
