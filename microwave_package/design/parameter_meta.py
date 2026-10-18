@@ -43,6 +43,7 @@ LABELS: Dict[str, str] = {
     "route_chip_clearence": "Lid relief clearance to chip",
     # additional
     "wall_width": "Box wall thickness",
+    "cavity_corner_radius": "Box cavity corner radius",
     "wing_length": "Mounting wing length",
     "wing_width": "Mounting wing width",
     # transmission line, shielding and bonds
@@ -219,7 +220,7 @@ GROUPS: List[dict] = [
         "title": "Additional parameters",
         "hint": "Mechanical features and margins that do not affect the interior fields.",
         "collapsed": True,
-        "names": ["wall_width", "lid_width", "wing_length", "wing_width"],
+        "names": ["wall_width", "cavity_corner_radius", "lid_width", "wing_length", "wing_width"],
     },
     {
         "title": "Corner screws",
