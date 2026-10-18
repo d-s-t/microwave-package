@@ -395,6 +395,53 @@ def solve_gap_for_z0(
     return gap
 
 
+# The die's line, as HFSS reads it, against the open-top formula above.
+#
+# The die has no ground under it: it lies on the pedestal over `pedestal_depth`
+# of air, under a lid whose relief channel is `route_clearence` above the
+# metal. Neither is in the open-top formula, and each has been tried as a
+# closed-form correction and checked against a 2-D field solve of the same
+# cross-section (base_parts/cpw_fd_check.py, extended for the air):
+#
+# * the lid cover alone lowers the line by about 2.7 ohm at a 0.3 mm relief
+#   (cover_height in z0_gcpw); HFSS shows the same lid effect to within 0.3 ohm;
+# * the air under the die raises it by about 5.5 ohm in the field solve, but by
+#   only about 3.5 ohm in HFSS, and no closed form for that stack (a layered
+#   substrate over an air gap) reproduced HFSS's gap-to-impedance slope.
+#
+# So the die's gap is the open-top formula scaled by an impedance factor fitted
+# to HFSS's Line impedance check (which_line = chip) on the default die: the
+# mean of the seven gaps 115-169 um on silicon, trace 0.2 mm, 0.5 mm of air
+# under the die, lid 1.2 x 0.3 mm, 2 mm section, 1-20 GHz. HFSS / formula is
+# 1.069-1.092 over that span, sd 0.8 %. It is EMPIRICAL: it absorbs the air and
+# the lid at the default stack, and it does not follow `route_clearence` or
+# `pedestal_depth` -- a run that changes either should be re-checked in HFSS.
+# Validation: PRE_MANUFACTURING.md, rows S2 and S3.
+CHIP_HFSS_IMPEDANCE_FACTOR = 1.079
+
+
+def solve_chip_gap_for_z0(
+    trace_width: float,
+    substrate_height: float,
+    eps_r: float,
+    z0: float = TARGET_Z0_OHM,
+    conductor_thickness: float = 0.0,
+) -> float:
+    """The gap that makes the die's CPW read `z0` in HFSS's Line impedance
+    check: `solve_gap_for_z0` for `z0 / CHIP_HFSS_IMPEDANCE_FACTOR`, the
+    open-top formula that HFSS's reading is the factor times. The lid and the
+    air under the die are in the factor (see the comment above it), not solved
+    for, so no `cover_height` is taken here.
+    """
+    return solve_gap_for_z0(
+        trace_width=trace_width,
+        substrate_height=substrate_height,
+        eps_r=eps_r,
+        z0=z0 / CHIP_HFSS_IMPEDANCE_FACTOR,
+        conductor_thickness=conductor_thickness,
+    )
+
+
 def permittivity_of(material_name: str) -> float:
     """eps_r for a material named in the run's material settings."""
     try:

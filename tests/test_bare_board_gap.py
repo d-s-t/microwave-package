@@ -18,8 +18,8 @@ def values(trace, no_chip, chip_trace=None, **extra):
 
 
 def silicon_gap(trace, base):
-    return cpw.solve_gap_for_z0(trace, base["chip_width"], cpw.permittivity_of("silicon"),
-                                conductor_thickness=base["chip_metal_thickness"])
+    return cpw.solve_chip_gap_for_z0(trace, base["chip_width"], cpw.permittivity_of("silicon"),
+                                     conductor_thickness=base["chip_metal_thickness"])
 
 
 class TestBareBoardGap(unittest.TestCase):
@@ -63,7 +63,8 @@ class TestTheChipBoardRunsOfTheBoxStudy(unittest.TestCase):
         v = values(0.4, False, **self.CANDIDATE)
         params = altium_generation.build_params(v, mat_pcb=DUROID)
         self.assertLess(params["chip_cpw_gap"], 0.5)
-        self.assertAlmostEqual(params["chip_cpw_gap"], 0.1687, delta=0.002)
+        # 121 um is HFSS's 50 ohm gap for this die (PRE_MANUFACTURING S3); the formula gives 119.
+        self.assertAlmostEqual(params["chip_cpw_gap"], 0.121, delta=0.006)
         self.assertAlmostEqual(params["pcb_cpw_gap"], 0.0943, delta=0.0005)
 
     def test_the_old_behaviour_was_a_29_mm_gap(self):

@@ -48,11 +48,16 @@ def make_section(values: Dict[str, float], settings: Dict[str, Any], combo_dir: 
     trace = constraints.chip_trace(values) if which == sec.CHIP else values["cpw_trace_width"]
     try:
         # The board's line is solved under the lid it is built with; the die's
-        # as the layout check solves it (no cover).
-        analytic = cpw.solve_gap_for_z0(
-            trace_width=trace, substrate_height=height, eps_r=eps_r,
-            z0=float(settings.get("line_z0_ohm", 50.0)), conductor_thickness=metal,
-            **(constraints.lid_cover(values) if which == sec.BOARD else {}))
+        # as the layout check solves it (the calibrated open-top formula).
+        z0 = float(settings.get("line_z0_ohm", 50.0))
+        if which == sec.BOARD:
+            analytic = cpw.solve_gap_for_z0(
+                trace_width=trace, substrate_height=height, eps_r=eps_r,
+                z0=z0, conductor_thickness=metal, **constraints.lid_cover(values))
+        else:
+            analytic = cpw.solve_chip_gap_for_z0(
+                trace_width=trace, substrate_height=height, eps_r=eps_r,
+                z0=z0, conductor_thickness=metal)
     except ValueError as exc:
         analytic = None
         log(f"The analytic 50 ohm gap could not be solved for this line ({exc}); the check goes on "

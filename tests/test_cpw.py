@@ -361,5 +361,34 @@ class TestPermittivityLookup(unittest.TestCase):
         self.assertIn("unobtainium", str(ctx.exception))
 
 
+class TestChipGapCalibration(unittest.TestCase):
+    """The die's gap is the open-top formula scaled by the HFSS factor (see
+    `CHIP_HFSS_IMPEDANCE_FACTOR`). These pin it to the HFSS Line impedance runs of
+    2026-10-18 (PRE_MANUFACTURING.md, S2 and S3): the default die, and a second width
+    whose formula gap HFSS then read as 50 ohm (run_20261018_143910, 176.6 um, 49.8-51.2 ohm)."""
+
+    SILICON = dict(substrate_height=0.381, eps_r=11.9, conductor_thickness=0.0002)
+
+    def test_the_default_die_gap_is_the_hfss_gap_121_um(self):
+        gap = cpw.solve_chip_gap_for_z0(0.2, **self.SILICON)
+        self.assertAlmostEqual(gap, 0.121, delta=0.006)
+
+    def test_a_0_25_mm_die_trace_gap_is_the_one_hfss_passes(self):
+        gap = cpw.solve_chip_gap_for_z0(0.25, **self.SILICON)
+        self.assertAlmostEqual(gap, 0.1766, delta=0.005)
+
+    def test_the_gap_is_the_open_top_line_at_the_factor_times_50_ohm(self):
+        gap = cpw.solve_chip_gap_for_z0(0.2, **self.SILICON)
+        z_open = cpw.z0_gcpw(0.2, gap, 0.381, 11.9, 0.0002)
+        self.assertAlmostEqual(z_open * cpw.CHIP_HFSS_IMPEDANCE_FACTOR, 50.0, places=6)
+
+    def test_the_factor_is_about_8_percent_over_the_open_top_formula(self):
+        self.assertAlmostEqual(cpw.CHIP_HFSS_IMPEDANCE_FACTOR, 1.079, places=3)
+
+    def test_the_target_is_still_an_argument(self):
+        self.assertGreater(cpw.solve_chip_gap_for_z0(0.2, z0=60.0, **self.SILICON),
+                           cpw.solve_chip_gap_for_z0(0.2, z0=50.0, **self.SILICON))
+
+
 if __name__ == "__main__":
     unittest.main()
