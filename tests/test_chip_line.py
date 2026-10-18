@@ -92,8 +92,9 @@ class TestTheDieHasRoomForItsLine(unittest.TestCase):
 
     def test_the_materials_die_is_the_one_checked(self):
         """Sapphire (eps 10) carries a wider 50 ohm CPW trace than silicon (eps 11.9):
-        0.34 mm is no CPW on silicon and one on sapphire."""
-        v = defaults(chip_trace_width=0.34)
+        0.38 mm is no CPW on silicon (no gap below the 2 x die-thickness limit reaches
+        50 ohm) and one on sapphire."""
+        v = defaults(chip_trace_width=0.38)
         self.assertIn("no 50 ohm CPW", constraints.check_layout(v, None, "silicon"))
         self.assertIsNone(constraints.check_layout(v, None, "sapphire"))
 
