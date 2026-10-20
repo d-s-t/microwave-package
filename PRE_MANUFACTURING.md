@@ -126,7 +126,7 @@ fabricator's real limits replace the defaults with `--fab`.
 | Screw holes and thread | clearance, tap drill, 1.5 x diameter engagement | yes |
 | SMP footprint | land pattern against the datasheet drawing of the exact part number, checked in the fab's CAM | **manual** |
 | Surface finish | soft gold or ENEPIG on bond pads (ENIG's nickel bonds poorly) | **manual** |
-| Via fill or cap | see section 6 | **manual** |
+| Via fill or cap | copper-filled and planarised (decided 2026-10-19); fab to confirm the fill process | **manual** |
 | Mechanical fit | holes align across lid, board and box; lid flat on the ground copper; nothing holds it off | **manual** |
 | Fab capability | confirm the fab can hold the 129 um gap, the 150 um drill and 5880's lamination and drilling | **manual** |
 | Gerber / drill review | view the actual fab output, not the Altium file | **manual** |
@@ -180,11 +180,13 @@ not sufficient.
 
 ## 6. Open points that are not settled
 
-- **Vias: solid posts or drilled holes.** The HFSS model draws the vias as
-  solid posts; the Altium board has drilled holes. Whether they are
-  filled or capped, and what that does to the pockets of trapped air in
-  a cold, evacuated or sealed package, is pending the user's PI. The
-  simulations do not currently tell the two apart.
+- **Vias: decided 2026-10-19: copper-filled, plated shut, planarised.**
+  The user chose to fill every via with copper, the same material as the
+  via barrel, so the board has no open via bores. The HFSS model already
+  draws the vias as solid posts, so the simulation needs no change. The
+  fab note is in the fab drawing (note 4), in the preview README and in the
+  Altium supplement note (`workflow/manufacturing.py`). The Altium output
+  itself still needs its via fill set (see the table in section 7).
 - **Venting.** _Reserved. Another session is adding vents; their section
   goes here: where air can leak out of the box and the cavities, the vent
   geometry, and the simulation S9 that checks the vents do not open a
@@ -213,7 +215,7 @@ As of 2026-10-11. Preflight: 0 fail, 1 warn, 14 pass, 13 manual.
 | S6 finite conductivity | **open** | not run |
 | S8 tolerances | **open** | one combination per setting so far |
 | S9 venting | **open** | section 6 |
-| Via fill/cap | **open** | section 6 |
+| Via fill/cap | **decided 2026-10-19: copper-filled, planarised** | section 6; the Altium output's via fill still to be set and confirmed with the fab |
 
 **Chip line Zo against gap (S2, S3), 2026-10-18.** 1-20 GHz, 2 mm section, `cpw_trace_width` 0.2, `which_line=chip`. The mean is not smooth in the gap (neighbouring steps differ by 0.05 to 0.14 ohm per um), so treat each mean as +-0.5 ohm.
 

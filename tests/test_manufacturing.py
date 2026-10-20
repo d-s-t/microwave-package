@@ -122,6 +122,31 @@ class TestFabDrawing(unittest.TestCase):
                 self.assertTrue(0 <= float(m.group(3)) / pt <= page.height, op)
 
 
+class TestViaFillNote(unittest.TestCase):
+    """Decided 2026-10-19: every via is copper-filled and planarised, so the
+    fab notes say so wherever the repo writes them."""
+
+    def setUp(self):
+        self.copper = fab_drawing.parse_package_copper(COPPER)
+
+    def test_the_fab_sheet_carries_the_via_fill_note(self):
+        doc = fab_drawing.build(VALUES, "Rogers TMM 10i (tm)", self.copper, "run_1", "default")
+        self.assertIn("copper-filled", "\n".join(doc.pages[0]._ops))
+
+    def test_the_drill_table_names_the_via_fill(self):
+        rows = fab_drawing.drill_table(VALUES, self.copper)
+        vias = [r for r in rows if r["plated"]]
+        self.assertTrue(vias)
+        for row in vias:
+            self.assertIn("copper-filled", row["what"])
+
+    def test_the_preview_readme_and_the_supplement_note_carry_it(self):
+        members = {}
+        manufacturing.add_read_me(members, mock.Mock(run_id="run_1"), "default", "PREVIEW")
+        self.assertIn(fab_drawing.VIA_NOTE, members["README.txt"])
+        self.assertIn(fab_drawing.VIA_NOTE, manufacturing.supplement_note({"outline": True}))
+
+
 class TestGerber(unittest.TestCase):
     def setUp(self):
         self.copper = fab_drawing.parse_package_copper(COPPER)

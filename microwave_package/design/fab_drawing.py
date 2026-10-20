@@ -38,6 +38,10 @@ FINISH_NOTE = (
     "Do not use HASL or immersion tin/silver on bond pads."
 )
 
+# Decided by the user, 2026-10-19: the vias are filled with copper, so the
+# board has no open via bores. The HFSS model already draws them as solid posts.
+VIA_NOTE = "Vias: copper-filled, plated shut and planarised; no open via bores."
+
 
 def parse_package_copper(text: str) -> Dict[str, list]:
     """The package board's tracks, vias and pads out of a copper.txt.
@@ -84,7 +88,7 @@ def drill_table(values: Dict[str, float], copper: Dict[str, list]) -> List[dict]
     for _x, _y, _dia, hole in copper.get("via", []):
         vias[round(hole, 4)] = vias.get(round(hole, 4), 0) + 1
     for hole, count in sorted(vias.items()):
-        rows.append({"diameter": hole, "count": count, "plated": True, "what": "via (plated through)"})
+        rows.append({"diameter": hole, "count": count, "plated": True, "what": "via (plated, copper-filled)"})
     plan = screws.plan(values)
     if plan is not None:
         rows.append({"diameter": plan.clearance_diameter, "count": len(plan.positions),
@@ -275,12 +279,13 @@ def build(
         f"2. Controlled impedance: 50 ohm grounded coplanar waveguide; signal trace {trace * 1000:.0f} um, gap {gap_note} "
         "(minimum trace and gap on the board). Etch tolerance +/- 10 um on trace and gap.",
         "3. " + FINISH_NOTE,
-        f"4. Outline {length:g} x {side:g} mm"
+        "4. " + VIA_NOTE,
+        f"5. Outline {length:g} x {side:g} mm"
         + (f", corners R{radius:.1f} (4 places)" if radius > 0.0 else "")
         + ", tolerance +/- 0.05 mm; routed. Hole position tolerance +/- 0.05 mm.",
-        "5. Solder mask and legend: as given by the mask and silkscreen layers of the Gerber set.",
-        "6. Fabrication files: Gerber RS-274X, Excellon NC drill (plated and non-plated), ODB++, IPC-2581 as supplied.",
-        "7. All dimensions in millimetres. Do not scale from this drawing.",
+        "6. Solder mask and legend: as given by the mask and silkscreen layers of the Gerber set.",
+        "7. Fabrication files: Gerber RS-274X, Excellon NC drill (plated and non-plated), ODB++, IPC-2581 as supplied.",
+        "8. All dimensions in millimetres. Do not scale from this drawing.",
     ]
     ny = area_y0 + area_h - 2
     nx = 20.0
