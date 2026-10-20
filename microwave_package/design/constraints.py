@@ -632,6 +632,57 @@ def pcb_corner_floor(cavity_radius: float, wall_gap: float = PCB_WALL_GAP) -> fl
     return max(0.0, cavity_radius - PCB_GAP_FACTOR * wall_gap)
 
 
+SMP_RELIEF_RADIUS_PARAM = "smp_relief_radius"
+DEFAULT_SMP_RELIEF_RADIUS = 1.0
+# The least lid left between a relief circle and the channel, the outside edge
+# or a screw countersink, in mm. A design choice (the lid is 1.5 mm thick and the
+# relief must not break out of the plate); the layout check reports the margin.
+SMP_RELIEF_MIN_CLEARANCE = 0.5
+
+
+def check_smp_relief(values: Dict[str, float]) -> Optional[str]:
+    """Why the dog-bone reliefs at the SMP pocket corners cannot be cut, or None.
+
+    The eight reliefs are circles of `smp_relief_radius`, centred on the corners
+    of the two 5.1 mm connector pockets in the lid (base_parts/add_smp_relief.py).
+    Each must keep SMP_RELIEF_MIN_CLEARANCE of lid from the route channel, from
+    the outside edge and from every screw countersink.
+    """
+    radius = float(values.get(SMP_RELIEF_RADIUS_PARAM, DEFAULT_SMP_RELIEF_RADIUS))
+    if radius <= 0:
+        return ("smp_relief_radius must be above 0: each SMP pocket corner is over-cut with a "
+                "circle of that radius, and a zero circle is not cut")
+    from . import screws
+
+    half_length = values.get("pcb_length", 50.0) / 2.0
+    half_side = values.get("pcb_side", 25.0) / 2.0
+    outer = half_length - values.get("port_space", 6.0)
+    inner = outer - values.get("port_length", 5.1)
+    half_port = values.get("port_width", 5.1) / 2.0
+    channel = values.get("route_width", 1.2) / 2.0
+    countersink = screws.COUNTERSINK_DIAMETER / 2.0
+    plan = screws.plan(values)
+    holes = list(plan.positions) if plan is not None else []
+    centres = [(sx * x, sz * half_port) for x in (inner, outer) for sx in (1, -1) for sz in (1, -1)]
+    for cx, cz in centres:
+        edge = min(half_length - (abs(cx) + radius), half_side - (abs(cz) + radius))
+        if edge < SMP_RELIEF_MIN_CLEARANCE:
+            return (f"the SMP pocket relief at ({_fmt(cx)}, {_fmt(cz)}) mm leaves {_fmt(edge)} mm of lid "
+                    f"to the outside edge, under {_fmt(SMP_RELIEF_MIN_CLEARANCE)} mm -- reduce smp_relief_radius")
+        gap = abs(cz) - radius - channel
+        if gap < SMP_RELIEF_MIN_CLEARANCE:
+            return (f"the SMP pocket relief at ({_fmt(cx)}, {_fmt(cz)}) mm leaves {_fmt(gap)} mm to the "
+                    f"route channel, under {_fmt(SMP_RELIEF_MIN_CLEARANCE)} mm -- reduce smp_relief_radius "
+                    f"or route_width")
+        for u, v in holes:
+            gap = math.hypot(cx - u, cz - v) - radius - countersink
+            if gap < SMP_RELIEF_MIN_CLEARANCE:
+                return (f"the SMP pocket relief at ({_fmt(cx)}, {_fmt(cz)}) mm leaves {_fmt(gap)} mm to a "
+                        f"screw countersink at ({_fmt(u)}, {_fmt(v)}) mm, under "
+                        f"{_fmt(SMP_RELIEF_MIN_CLEARANCE)} mm -- reduce smp_relief_radius or screw_inset")
+    return None
+
+
 def check_cavity_corners(values: Dict[str, float], wall_gap: float = PCB_WALL_GAP) -> Optional[str]:
     """Why the box cavity's corners cannot be built, or None if they can.
 
@@ -787,6 +838,10 @@ def check_layout(values: Dict[str, float], mat_pcb: Optional[str] = None,
     # fit inside them. Before the bare-board return below: the cavity is
     # there with or without a die (see check_cavity_corners).
     reason = check_cavity_corners(values)
+    if reason:
+        return reason
+    # The lid's SMP pocket reliefs keep clear of the channel, the edge and the screws.
+    reason = check_smp_relief(values)
     if reason:
         return reason
 
