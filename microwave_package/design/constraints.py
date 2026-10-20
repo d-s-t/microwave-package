@@ -28,6 +28,7 @@ other, so the message names exactly one parameter to change.
 """
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Dict, List, Optional
 
@@ -594,6 +595,125 @@ def check_bare_pedestal(values: Dict[str, float]) -> Optional[str]:
     return None
 
 
+# --- box cavity corners ------------------------------------------------
+#
+# The box cavity's four vertical inside corners are milled, so each is a
+# fillet of `cavity_corner_radius` (base_parts/add_cavity_radius.py links the
+# box's radius dimensions to it). The lid plug is cut to the same outline, so
+# it takes the same radius and, with zero clearance, sits exactly in the
+# cavity. The cavity is cut to the PCB outline: box_length = pcb_length +
+# 2 * wall_width, so its inside is pcb_length by pcb_side, and the PCB edge
+# sits on the wall.
+#
+# A PCB with a sharp corner cannot sit in a cavity with a rounded one. With
+# the PCB's edge `g` inside the wall on each side, its corner (radius r) fits
+# the cavity's (radius R) only if r >= R - (2 + sqrt 2) * g. That follows from
+# the two arcs centred on the same diagonal: the PCB arc's centre is
+# sqrt(2) * (R - g - r) from the cavity arc's, and the PCB arc must stay
+# inside the cavity arc, so sqrt(2) * (R - g - r) + r <= R. Checked by
+# sampling the outlines at R = 0.5, 1, 1.5 and g = 0, 0.05, 0.1: the fit
+# fails just below the bound and holds at it.
+#
+# The gap is 0 today, so the PCB's corner radius has to equal the cavity's.
+# `cavity_clearance` is NOT this gap: it is the die's play in the PCB opening.
+CAVITY_RADIUS_PARAM = "cavity_corner_radius"
+PCB_RADIUS_PARAM = "pcb_corner_radius"
+DEFAULT_CAVITY_RADIUS = 1.0
+PCB_WALL_GAP = 0.0                              # mm, PCB edge to the cavity wall
+PCB_RADIUS_TOLERANCE = 1e-6                     # mm
+
+# The factor in the bound above: sqrt(2) / (sqrt(2) - 1) = 2 + sqrt(2).
+PCB_GAP_FACTOR = 2.0 + math.sqrt(2.0)
+
+
+def pcb_corner_floor(cavity_radius: float, wall_gap: float = PCB_WALL_GAP) -> float:
+    """The smallest corner radius a PCB can have and still clear a cavity
+    corner of `cavity_radius`, with its edge `wall_gap` inside the wall."""
+    return max(0.0, cavity_radius - PCB_GAP_FACTOR * wall_gap)
+
+
+SMP_RELIEF_RADIUS_PARAM = "smp_relief_radius"
+DEFAULT_SMP_RELIEF_RADIUS = 1.0
+# The least lid left between a relief circle and the channel, the outside edge
+# or a screw countersink, in mm. A design choice (the lid is 1.5 mm thick and the
+# relief must not break out of the plate); the layout check reports the margin.
+SMP_RELIEF_MIN_CLEARANCE = 0.5
+
+
+def check_smp_relief(values: Dict[str, float]) -> Optional[str]:
+    """Why the dog-bone reliefs at the SMP pocket corners cannot be cut, or None.
+
+    The eight reliefs are circles of `smp_relief_radius`, centred on the corners
+    of the two 5.1 mm connector pockets in the lid (base_parts/add_smp_relief.py).
+    Each must keep SMP_RELIEF_MIN_CLEARANCE of lid from the route channel, from
+    the outside edge and from every screw countersink.
+    """
+    radius = float(values.get(SMP_RELIEF_RADIUS_PARAM, DEFAULT_SMP_RELIEF_RADIUS))
+    if radius <= 0:
+        return ("smp_relief_radius must be above 0: each SMP pocket corner is over-cut with a "
+                "circle of that radius, and a zero circle is not cut")
+    from . import screws
+
+    half_length = values.get("pcb_length", 50.0) / 2.0
+    half_side = values.get("pcb_side", 25.0) / 2.0
+    outer = half_length - values.get("port_space", 6.0)
+    inner = outer - values.get("port_length", 5.1)
+    half_port = values.get("port_width", 5.1) / 2.0
+    channel = values.get("route_width", 1.2) / 2.0
+    countersink = screws.COUNTERSINK_DIAMETER / 2.0
+    plan = screws.plan(values)
+    holes = list(plan.positions) if plan is not None else []
+    centres = [(sx * x, sz * half_port) for x in (inner, outer) for sx in (1, -1) for sz in (1, -1)]
+    for cx, cz in centres:
+        edge = min(half_length - (abs(cx) + radius), half_side - (abs(cz) + radius))
+        if edge < SMP_RELIEF_MIN_CLEARANCE:
+            return (f"the SMP pocket relief at ({_fmt(cx)}, {_fmt(cz)}) mm leaves {_fmt(edge)} mm of lid "
+                    f"to the outside edge, under {_fmt(SMP_RELIEF_MIN_CLEARANCE)} mm -- reduce smp_relief_radius")
+        gap = abs(cz) - radius - channel
+        if gap < SMP_RELIEF_MIN_CLEARANCE:
+            return (f"the SMP pocket relief at ({_fmt(cx)}, {_fmt(cz)}) mm leaves {_fmt(gap)} mm to the "
+                    f"route channel, under {_fmt(SMP_RELIEF_MIN_CLEARANCE)} mm -- reduce smp_relief_radius "
+                    f"or route_width")
+        for u, v in holes:
+            gap = math.hypot(cx - u, cz - v) - radius - countersink
+            if gap < SMP_RELIEF_MIN_CLEARANCE:
+                return (f"the SMP pocket relief at ({_fmt(cx)}, {_fmt(cz)}) mm leaves {_fmt(gap)} mm to a "
+                        f"screw countersink at ({_fmt(u)}, {_fmt(v)}) mm, under "
+                        f"{_fmt(SMP_RELIEF_MIN_CLEARANCE)} mm -- reduce smp_relief_radius or screw_inset")
+    return None
+
+
+def check_cavity_corners(values: Dict[str, float], wall_gap: float = PCB_WALL_GAP) -> Optional[str]:
+    """Why the box cavity's corners cannot be built, or None if they can.
+
+    Applies to every combination, the bare board included: the box has its
+    cavity whether or not there is a die. The PCB's own corner radius is
+    `pcb_corner_radius` where the equations file has one, and the cavity
+    radius where it does not (its default).
+    """
+    radius = float(values.get(CAVITY_RADIUS_PARAM, DEFAULT_CAVITY_RADIUS))
+    if radius <= 0:
+        return ("cavity_corner_radius must be above 0: the box cavity is milled with a fillet at "
+                "each inside corner, and a fillet cannot have zero radius (a square cavity is not "
+                "built). A 1 mm end mill cuts corners of 1 mm radius or more")
+    half_side = min(values.get("pcb_length", 50.0), values.get("pcb_side", 25.0)) / 2.0
+    if radius >= half_side:
+        return (f"cavity_corner_radius {_fmt(radius)} mm is not less than half the cavity's smaller "
+                f"side ({_fmt(half_side)} mm) -- reduce it")
+    pcb_radius = float(values.get(PCB_RADIUS_PARAM, radius))
+    pcb_half_side = min(values.get("pcb_length", 50.0), values.get("pcb_side", 25.0)) / 2.0
+    if pcb_radius >= pcb_half_side:
+        return (f"{parameter_meta.label_for(PCB_RADIUS_PARAM)} {_fmt(pcb_radius)} mm is not less "
+                f"than half the PCB's smaller side ({_fmt(pcb_half_side)} mm) -- reduce it")
+    floor = pcb_corner_floor(radius, wall_gap)
+    if pcb_radius < floor - PCB_RADIUS_TOLERANCE:
+        return (f"{parameter_meta.label_for(PCB_RADIUS_PARAM)} {_fmt(pcb_radius)} mm is under the "
+                f"{_fmt(floor)} mm the {_fmt(radius)} mm cavity corner needs: the PCB's sharp-cornered "
+                f"edge would poke into the cavity's rounded corner -- raise pcb_corner_radius to at "
+                f"least {_fmt(floor)} mm, or reduce cavity_corner_radius")
+    return None
+
+
 def check_layout(values: Dict[str, float], mat_pcb: Optional[str] = None,
                  mat_chip: Optional[str] = None) -> Optional[str]:
     """Why this combination's layout cannot be built, or None if it can.
@@ -711,6 +831,17 @@ def check_layout(values: Dict[str, float], mat_pcb: Optional[str] = None,
         return reason
     from . import venting
     reason = venting.check(values)
+    if reason:
+        return reason
+
+    # The box cavity's rounded corners, and the PCB's corners that have to
+    # fit inside them. Before the bare-board return below: the cavity is
+    # there with or without a die (see check_cavity_corners).
+    reason = check_cavity_corners(values)
+    if reason:
+        return reason
+    # The lid's SMP pocket reliefs keep clear of the channel, the edge and the screws.
+    reason = check_smp_relief(values)
     if reason:
         return reason
 

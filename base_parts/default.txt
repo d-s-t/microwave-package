@@ -32,7 +32,21 @@
 
 "chip_leg"= 0.8 	' size of the legs the chip lay on in case there is pedestal
 
-"pedestal_corner_radius"= 1.0	' radius of the rounded corners of the pedestal recess, in mm. The recess corners are milled, and a 1 mm end mill cannot cut a sharper one. Must be above 0 (a SolidWorks fillet cannot be zero) and stay within the leg (see design/pedestal.py).
+"pedestal_size"= 6.2	' side of the square pedestal recess under the chip, in mm (pedestal_shape 0). The real chip is 6.25 mm; the square is 0.025 mm smaller on each side, so the die cannot fall in and rests on the rim. Must be above 0 and below 6.25 (see design/pedestal.py).
+
+"pedestal_diameter"= 6.25	' diameter of the circular pedestal recess under the chip, in mm (pedestal_shape 1). The circle may be as big as the chip, 6.25 mm: its edge touches the die's sides at their midpoints. Must be above 0 and at most 6.25 (see design/pedestal.py).
+
+"pedestal_shape"= 0	' shape of the pedestal recess under the chip: 0 = square of pedestal_size with rounded corners (pedestal_corner_radius), 1 = circle of pedestal_diameter. Both are cut into the box; the other one is suppressed.
+
+"pedestal_corner_radius"= 1.0	' radius of the rounded corners of the square pedestal recess (pedestal_shape 0), in mm. The recess corners are milled, and a 1 mm end mill cannot cut a sharper one. Must be above 0 (a SolidWorks fillet cannot be zero) and less than half pedestal_size (see design/pedestal.py). Not used by the circle.
+
+"smp_relief_radius"= 1.0	' radius of the dog-bone relief circles at the four corners of each SMP connector pocket in the lid, in mm: the 1 mm end mill cuts each corner with a circle of its own radius, centred on the corner, so the square connector (5.0 x 4.1 mm, sharp corners) fits. Must be above 0. Built by base_parts/add_smp_relief.py.
+
+"chip_pocket_radius"= 1.0	' radius of the four inside corners of the 7.5 mm chip window in the lid plug, in mm. The window is milled, and a 1 mm end mill cannot cut a sharper inside corner. Must be above 0 (a SolidWorks fillet cannot be zero). Built by base_parts/add_chip_pocket_radius.py.
+
+"cavity_corner_radius"= 1.0	' radius of the four vertical inside corners of the box cavity, in mm, and of the matching corners of the lid plug that goes into it. The cavity is milled, and a 1 mm end mill cannot cut a sharper inside corner. Must be above 0 (a SolidWorks fillet cannot be zero) and less than half the cavity's smaller side (see design/constraints.py).
+
+"pcb_corner_radius"= 1.0	' radius of the four vertical corners of the PCB, in mm. The board sits in the box cavity with no gap, so it must be at least the cavity radius (cavity_corner_radius) to fit inside the cavity's rounded corners; it may be larger. Must be above 0 and less than half the board's smaller side (see design/constraints.py).
 
 "wing_length"= 5	' Mounting wing size
 

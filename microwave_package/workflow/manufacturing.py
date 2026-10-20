@@ -339,10 +339,12 @@ def write_zip(destination: str, members: Dict[str, object]) -> None:
 
 
 def add_read_me(members: Dict[str, object], run, combo_id: str, what: str) -> None:
+    from ..design.fab_drawing import VIA_NOTE
     members["README.txt"] = (
         f"{what}\r\nRun {run.run_id}, combination {combo_id}\r\n"
         f"Generated {_dt.datetime.now().isoformat(timespec='seconds')} by microwave_package.\r\n"
         "Units: millimetres. Board centre at the origin.\r\n"
+        f"{VIA_NOTE}\r\n"
     )
 
 
@@ -477,6 +479,7 @@ def altium_fab_gaps(zip_path: str) -> Dict[str, bool]:
 
 
 def supplement_note(gaps: Dict[str, bool]) -> str:
+    from ..design.fab_drawing import VIA_NOTE
     lines = [
         "Altium's own output for this board lacks the files below, so they are written from the same",
         "parameters the board was drawn from (outline size, screw positions and clearance diameter),",
@@ -486,6 +489,7 @@ def supplement_note(gaps: Dict[str, bool]) -> str:
         lines.append("  *_Edge_Cuts.gbr   board outline (and the through opening for the die, if any)")
     if gaps.get("npth"):
         lines.append("  *_NPTH.drl        non-plated screw clearance holes")
+    lines.append(VIA_NOTE)
     lines.append("")
     return "\r\n".join(lines)
 
