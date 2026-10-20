@@ -15,8 +15,12 @@ What it does to the part:
                       four corners rounded by sketch fillets whose radii are
                       linked to `pedestal_corner_radius`. Suppressed unless
                       pedestal_shape = 0.
-    Pedestal_Circle   a circle of diameter `pedestal_size`, centred on the
+    Pedestal_Circle   a circle of diameter `pedestal_diameter`, centred on the
                       origin. Suppressed unless pedestal_shape = 1.
+
+The square and the circle have their own sizes: `pedestal_size` (the square's
+side, 6.2 mm) and `pedestal_diameter` (the circle's diameter, 6.25 mm). A box
+built before the split is migrated by base_parts/add_pedestal_diameter.py.
 
 Both cut `pedestal_depth` down from the cavity floor, the face the PCB rests
 on, the face base_parts/add_vents.py sketches its grooves on. Both are added
@@ -50,9 +54,10 @@ SWSKETCH_LINE = 0          # ISketchSegment.GetType value for a line
 OCTAGON_CUT = "Cut-Extrude3"
 SQUARE_FEATURE = "Pedestal_Square"
 CIRCLE_FEATURE = "Pedestal_Circle"
-NEW_PARAMETERS = ("pedestal_size", "pedestal_shape")
+NEW_PARAMETERS = ("pedestal_size", "pedestal_diameter", "pedestal_shape")
 RADIUS_EQUATION = "pedestal_corner_radius"
-SIZE_EQUATION = "pedestal_size"
+SIZE_EQUATION = "pedestal_size"          # the square's side
+DIAMETER_EQUATION = "pedestal_diameter"  # the circle's diameter
 CREATE_RADIUS = 1.0        # mm: the radius the fillets are made at, before linking
 HALF_SIZE = 6.25 / 2.0     # mm: the real die's half side, the size the recess is drawn at
 
@@ -219,13 +224,13 @@ def build_circle(m, b):
     circle.GetCenterPoint2.Select4(True, null())
     m.SketchAddConstraints("sgCOINCIDENT")
     m.ClearSelection2(True)
-    # Diameter linked to pedestal_size.
+    # Diameter linked to pedestal_diameter (the square's side is pedestal_size).
     circle.Select4(False, null())
     disp = m.AddDiameterDimension2(0.02, 0.02, 0)
     if disp is None:
         sys.exit("the diameter dimension was not made -- nothing was saved")
     m.ClearSelection2(True)
-    b.equation(f'"{disp.GetDimension2(0).FullName}"="{SIZE_EQUATION}"')
+    b.equation(f'"{disp.GetDimension2(0).FullName}"="{DIAMETER_EQUATION}"')
     name = leave_and_name(m, b, before)
     return name
 

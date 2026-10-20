@@ -36,7 +36,8 @@ LABELS: Dict[str, str] = {
     "port_width": "Port width",
     "port_space": "Port distance from edge",
     "chip_leg": "Chip support leg height",
-    "pedestal_size": "Pedestal recess size (square side or circle diameter)",
+    "pedestal_size": "Pedestal recess size (square side)",
+    "pedestal_diameter": "Pedestal recess diameter (circle)",
     "pedestal_shape": "Pedestal recess shape (0 square, 1 circle)",
     "pedestal_corner_radius": "Pedestal recess corner radius (square)",
     "bonding_clearence": "Wire-bond clearance",
@@ -179,7 +180,7 @@ GROUPS: List[dict] = [
             "chip_length", "chip_side",
             "pcb_width", "chip_width",
             "cavity_clearance",
-            "pedestal_depth", "pedestal_size", "pedestal_shape",
+            "pedestal_depth", "pedestal_size", "pedestal_diameter", "pedestal_shape",
         ],
     },
     {

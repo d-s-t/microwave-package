@@ -5,26 +5,30 @@ the checks that keep a die sitting on it.
 Two shapes, chosen by `pedestal_shape`, both cut `pedestal_depth` deep into
 the cavity floor and centred on the box:
 
-    0  a square of `pedestal_size` with its four corners rounded by
-       `pedestal_corner_radius`. The walls run flush with the die's edges, so
-       the die bridges the recess on its flat walls and rests on the four
-       small corner slivers of rim.
-    1  a circle of diameter `pedestal_size`. The die's edges touch it at their
-       midpoints and its corners stand over the rim.
+    0  a square of side `pedestal_size` with its four corners rounded by
+       `pedestal_corner_radius`. The square is smaller than the die (6.2 mm
+       against 6.25 mm), so the die cannot fall in: it bridges the recess on
+       its flat walls and rests on the rim around the square, 0.025 mm out on
+       every side.
+    1  a circle of diameter `pedestal_diameter`. At the die's size (6.25 mm)
+       its edge touches the die's sides at their midpoints and its corners
+       stand over the rim.
 
-`pedestal_size` is the real die side, 6.25 mm, not the 6.3 mm the PCB opening
-uses: the recess needs no margin, and a bigger one would let the die fall in.
+The two sizes are separate parameters: the square's side is `pedestal_size`
+and the circle's diameter is `pedestal_diameter`. Changing one does not move
+the other.
 
 The die cannot fall in: at the largest play the die can take in the PCB
 opening (`cavity_clearance` each way), its corners must still stand over the
 rim. `check` tests that for the chosen shape.
 
 The SolidWorks box part builds both shapes as separate features, each
-suppressed by its own equation (see base_parts/add_pedestal_shapes.py). The
-square's corners are sketch fillets linked to `pedestal_corner_radius`, and a
-sketch fillet cannot be zero, so a square radius of 0 is refused here rather
-than built. The HFSS side needs no cut of its own: the box STEP it imports
-carries whatever the SolidWorks part makes.
+suppressed by its own equation (see base_parts/add_pedestal_shapes.py and
+base_parts/add_pedestal_diameter.py). The square's corners are sketch fillets
+linked to `pedestal_corner_radius`, and a sketch fillet cannot be zero, so a
+square radius of 0 is refused here rather than built. The HFSS side needs no
+cut of its own: the box STEP it imports carries whatever the SolidWorks part
+makes.
 """
 from __future__ import annotations
 
@@ -33,13 +37,15 @@ from typing import Dict, Optional
 
 from . import parameter_meta
 
-# The real die's side (mm). The recess is never bigger than this.
+# The real die's side (mm). No recess may be bigger than this, and the square
+# must be smaller.
 CHIP_SIZE = 6.25
 
 SQUARE = 0
 CIRCLE = 1
 
-DEFAULT_SIZE = CHIP_SIZE
+DEFAULT_SIZE = 6.2                   # the square's side (mm), 0.025 mm inside the die
+DEFAULT_DIAMETER = CHIP_SIZE         # the circle's diameter (mm), the die's own side
 DEFAULT_SHAPE = SQUARE
 # The default radius (mm), and the one a part built before this parameter
 # existed gets. A 1 mm end mill cannot cut a sharper internal corner.
@@ -56,13 +62,42 @@ def shape(values: Dict[str, float]) -> float:
 
 
 def size(values: Dict[str, float]) -> float:
-    """The recess's size in mm: the square side or the circle diameter."""
+    """The square recess's side in mm (`pedestal_size`)."""
     return float(values.get("pedestal_size", DEFAULT_SIZE))
+
+
+def diameter(values: Dict[str, float]) -> float:
+    """The circular recess's diameter in mm (`pedestal_diameter`)."""
+    return float(values.get("pedestal_diameter", DEFAULT_DIAMETER))
+
+
+def recess_size(values: Dict[str, float]) -> float:
+    """The size that applies to the chosen shape: the square's side for
+    SQUARE, the circle's diameter for CIRCLE."""
+    return diameter(values) if shape(values) == CIRCLE else size(values)
 
 
 def corner_radius(values: Dict[str, float]) -> float:
     """The square's corner radius for one combination, in mm (see `check`)."""
     return float(values.get("pedestal_corner_radius", DEFAULT_RADIUS))
+
+
+def rim_support_area(values: Dict[str, float], die: float = CHIP_SIZE) -> float:
+    """The rim under a square die of side `die`, centred on the recess, in mm^2:
+    the die's footprint minus the recess, with the recess inside the die's
+    footprint. This is the area that carries the die.
+
+    The square recess loses (4 - pi) R^2 at its four corners to its rounding,
+    which is why it is a little less than side^2. At the defaults: the 6.2 mm
+    square with R 1 leaves 1.4809 mm^2; the 6.25 mm circle leaves 8.3829 mm^2.
+    """
+    if shape(values) == CIRCLE:
+        pocket = math.pi * (diameter(values) / 2.0) ** 2
+    else:
+        side = size(values)
+        radius = corner_radius(values)
+        pocket = side * side - (4.0 - math.pi) * radius * radius
+    return die * die - pocket
 
 
 def check(values: Dict[str, float]) -> Optional[str]:
@@ -79,12 +114,21 @@ def check(values: Dict[str, float]) -> Optional[str]:
     if which not in (SQUARE, CIRCLE):
         return "pedestal_shape must be 0 (square) or 1 (circle)"
 
-    side = size(values)
+    if which == CIRCLE:
+        side = diameter(values)
+        name = "pedestal_diameter"
+    else:
+        side = size(values)
+        name = "pedestal_size"
     if side <= 0:
-        return "pedestal_size must be positive: it is the side of the square or the diameter of the circle"
-    if side > CHIP_SIZE + 1e-9:
-        return (f"pedestal_size {side:g} mm is bigger than the {CHIP_SIZE:g} mm chip: a recess "
-                f"bigger than the die would let it fall in -- reduce pedestal_size")
+        return f"{name} must be positive: it is the size of the recess"
+    if which == SQUARE and side >= CHIP_SIZE - 1e-9:
+        return (f"pedestal_size {side:g} mm is not smaller than the {CHIP_SIZE:g} mm chip: the "
+                f"square recess must be smaller than the die so that it cannot drop in -- "
+                f"reduce pedestal_size")
+    if which == CIRCLE and side > CHIP_SIZE + 1e-9:
+        return (f"pedestal_diameter {side:g} mm is bigger than the {CHIP_SIZE:g} mm chip: a recess "
+                f"bigger than the die would let it fall in -- reduce pedestal_diameter")
 
     # The die's corners, pushed in by the largest play the PCB opening allows.
     clearance = values.get("cavity_clearance", 0.1)
@@ -112,5 +156,5 @@ def check(values: Dict[str, float]) -> Optional[str]:
         # The die's corners must stand outside the circle at the largest play.
         if math.sqrt(2.0) * reach <= side / 2.0:
             return (f"at cavity_clearance {clearance:g} mm the die's corner would fall inside the "
-                    f"{side:g} mm circle -- reduce pedestal_size or cavity_clearance")
+                    f"{side:g} mm circle -- reduce pedestal_diameter or cavity_clearance")
     return None

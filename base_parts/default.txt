@@ -32,9 +32,11 @@
 
 "chip_leg"= 0.8 	' size of the legs the chip lay on in case there is pedestal
 
-"pedestal_size"= 6.25	' size of the pedestal recess under the chip, in mm: the side of the square (pedestal_shape 0) or the diameter of the circle (pedestal_shape 1). The real chip is 6.25 mm, so this is the chip size with no margin: a bigger recess would let the die fall in. Must be above 0 and at most 6.25 (see design/pedestal.py).
+"pedestal_size"= 6.2	' side of the square pedestal recess under the chip, in mm (pedestal_shape 0). The real chip is 6.25 mm; the square is 0.025 mm smaller on each side, so the die cannot fall in and rests on the rim. Must be above 0 and below 6.25 (see design/pedestal.py).
 
-"pedestal_shape"= 0	' shape of the pedestal recess under the chip: 0 = square of pedestal_size with rounded corners (pedestal_corner_radius), 1 = circle of diameter pedestal_size. Both are cut into the box; the other one is suppressed.
+"pedestal_diameter"= 6.25	' diameter of the circular pedestal recess under the chip, in mm (pedestal_shape 1). The circle may be as big as the chip, 6.25 mm: its edge touches the die's sides at their midpoints. Must be above 0 and at most 6.25 (see design/pedestal.py).
+
+"pedestal_shape"= 0	' shape of the pedestal recess under the chip: 0 = square of pedestal_size with rounded corners (pedestal_corner_radius), 1 = circle of pedestal_diameter. Both are cut into the box; the other one is suppressed.
 
 "pedestal_corner_radius"= 1.0	' radius of the rounded corners of the square pedestal recess (pedestal_shape 0), in mm. The recess corners are milled, and a 1 mm end mill cannot cut a sharper one. Must be above 0 (a SolidWorks fillet cannot be zero) and less than half pedestal_size (see design/pedestal.py). Not used by the circle.
 
