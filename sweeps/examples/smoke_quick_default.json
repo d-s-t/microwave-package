@@ -1,0 +1,22 @@
+{
+  "name": "smoke_quick_default",
+  "preset": "quick",
+  "max_job_hours": 2,
+  "description": "End-to-end check of the runner on the default board: one quick DrivenModal solve of about 25 minutes of worker time. It shows that the runner, the pipeline and the worker work together; its numbers are not a result.",
+  "jobs": [
+    {
+      "name": "default_board",
+      "note": "pedestal_depth 0.5 mm is the equation file's own default, pinned here so the job has a sweep.",
+      "args": [
+        "--sweep", "pedestal_depth=0.5",
+        "--solution-type", "DrivenModal",
+        "--no-pair",
+        "--f-start-ghz", "2",
+        "--f-stop-ghz", "20",
+        "--sweep-points", "73",
+        "--fine-windows", "off",
+        "--reference-plane", "connector"
+      ]
+    }
+  ]
+}

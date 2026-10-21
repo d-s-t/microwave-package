@@ -30,7 +30,7 @@ from typing import Callable, Dict, List, Optional
 
 from ansys_analyze_common import queue_common
 
-from . import paths
+from . import paths, solver_presets
 from .design.sweep import SweepParameter, expand_values, pin_bare_board_pedestal, split_swept_and_fixed
 from .hfss import model_builder, registry
 from .hfss.driven import DRIVEN_MODAL, ports
@@ -540,25 +540,34 @@ def apply_setting_overrides(settings: dict, items) -> dict:
 
 
 def build_analysis_settings(args: argparse.Namespace) -> dict:
+    # The five solver settings: a flag given explicitly wins, then the
+    # preset's value, then the solver's own default (see solver_presets).
+    # Without --preset they are the solver defaults, as they always were.
+    preset = getattr(args, "preset", None)
+    solver, overrides = solver_presets.resolve(
+        {key: getattr(args, key, None) for key in solver_presets.SOLVER_KEYS},
+        preset, registry.all_defaults())
+    # --setting can name a solver key too, and that is an override as well.
+    for item in getattr(args, "setting", None) or []:
+        name = item.split("=", 1)[0].strip().replace("-", "_")
+        if preset is not None and name in solver_presets.SOLVER_KEYS and name not in overrides:
+            overrides.append(name)
+
     # Every solver's defaults underneath, so a setting the command line has
     # no flag for (the fine-window ones, mostly) still takes its default.
-    return apply_setting_overrides({
+    settings = apply_setting_overrides({
         **registry.all_defaults(),
+        **solver,
         "run_both": getattr(args, "run_both", False),
         "fine_windows": getattr(args, "fine_windows", "auto"),
         "fine_windows_manual": getattr(args, "fine_windows_manual", ""),
         "adapt_at": getattr(args, "adapt_at", "f_stop"),
         "solution_type": args.solution_type,
         "modes": args.modes,
-        "max_passes": args.max_passes,
-        "min_passes": args.min_passes,
-        "min_converged": args.min_converged,
-        "max_delta_f": args.max_delta_f,
         "min_freq_safety_factor": args.min_freq_safety_factor,
         "f_start_ghz": args.f_start_ghz,
         "f_stop_ghz": args.f_stop_ghz,
         "sweep_points": args.sweep_points,
-        "max_delta_s": args.max_delta_s,
         "port_impedance_ohm": args.port_impedance_ohm,
         "reference_plane": args.reference_plane,
         "aedt_version": args.aedt_version,
@@ -581,9 +590,14 @@ def build_analysis_settings(args: argparse.Namespace) -> dict:
             "include_wirebonds": args.include_wirebonds,
         },
     }, getattr(args, "setting", None))
+    # Recorded with the run, so a run says which preset it was made with and
+    # which of the five settings it then changed. Web-made runs have neither.
+    settings["solver_preset"] = preset
+    settings["solver_overrides"] = [key for key in solver_presets.SOLVER_KEYS if key in overrides]
+    return settings
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run the analysis client pipeline end to end")
     parser.add_argument(
         "--sweep", action="append", default=[], metavar="NAME=SPEC",
@@ -598,6 +612,14 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--resume", type=str, default=None, help="Resume an existing run by its run_id instead of starting a new one")
     parser.add_argument(
+        "--preset", choices=solver_presets.PRESET_NAMES, default=None,
+        help="Solver settings for a new run as one set: quick (about 20 min a solve, not "
+             "converged) or converged (4.5 to 10 h a solve). The five settings below "
+             "(--max-passes, --min-passes, --min-converged, --max-delta-s, --max-delta-f) "
+             "take the preset's values unless given explicitly. Without a preset they are "
+             "the solver defaults, which are the converged values.",
+    )
+    parser.add_argument(
         "--solution-type", choices=[t["value"] for t in registry.solution_types()],
         default=registry.default_solution_type(),
         help="Eigenmode reports resonant frequencies and Q; DrivenModal drives the "
@@ -606,13 +628,13 @@ def parse_args() -> argparse.Namespace:
     )
     # Eigenmode settings.
     parser.add_argument("--modes", type=int, default=20)
-    parser.add_argument("--max-delta-f", type=float, default=3.0, help="Maximum Delta Frequency Per Pass (%%)")
+    parser.add_argument("--max-delta-f", type=float, default=None, help="Maximum Delta Frequency Per Pass (%%); default from --preset, else 3.0")
     parser.add_argument("--min-freq-safety-factor", type=float, default=0.1)
     # DrivenModal settings.
     parser.add_argument("--f-start-ghz", type=float, default=1.0, help="Frequency sweep start")
     parser.add_argument("--f-stop-ghz", type=float, default=20.0, help="Frequency sweep stop")
     parser.add_argument("--sweep-points", type=int, default=401, help="Frequency points reported by the sweep")
-    parser.add_argument("--max-delta-s", type=float, default=0.02, help="Maximum Delta S Per Pass")
+    parser.add_argument("--max-delta-s", type=float, default=None, help="Maximum Delta S Per Pass; default from --preset, else 0.02")
     parser.add_argument("--port-impedance-ohm", type=float, default=50.0)
     parser.add_argument(
         "--reference-plane", choices=[p["value"] for p in ports.REFERENCE_PLANES],
@@ -639,9 +661,11 @@ def parse_args() -> argparse.Namespace:
         help="Solve only --solution-type. By default every combination is solved twice, "
              "as an Eigenmode run and then a Driven Modal run on the same geometry.")
     # Shared.
-    parser.add_argument("--max-passes", type=int, default=99)
-    parser.add_argument("--min-passes", type=int, default=3)
-    parser.add_argument("--min-converged", type=int, default=2)
+    # The five solver settings a preset sets (the two delta ones are below):
+    # None means "not given", so the preset or the solver default fills them in.
+    parser.add_argument("--max-passes", type=int, default=None, help="Default from --preset, else 99")
+    parser.add_argument("--min-passes", type=int, default=None, help="Default from --preset, else 3")
+    parser.add_argument("--min-converged", type=int, default=None, help="Default from --preset, else 2")
     parser.add_argument("--aedt-version", type=str, default=None)
     parser.add_argument("--no-student-version", dest="student_version", action="store_false", default=True)
     parser.add_argument("--graphical", action="store_true", help="Show the AEDT UI while building")
@@ -671,7 +695,10 @@ def parse_args() -> argparse.Namespace:
                         help="Build the model with no wire bonds -- the die is left "
                              "unbonded. Everything else (including the bond pads) is "
                              "unchanged.")
-    return parser.parse_args()
+    args = parser.parse_args(argv)
+    if args.resume and args.preset:
+        parser.error("--preset sets the solver settings of a new run; a resumed run keeps its own")
+    return args
 
 
 def stop_on_interrupt(stop_event: threading.Event) -> None:
@@ -731,6 +758,13 @@ def main() -> None:
         except ValueError as exc:
             raise SystemExit(f"{exc} (--no-pair solves just the one --solution-type.)")
         logger.info("Created run %s with %d combination(s)", run.run_id, len(run.state["combos"]))
+        solver = run.analysis_settings
+        logger.info(
+            "Solver settings: preset %s%s -- %s",
+            solver.get("solver_preset") or "none",
+            f" (overridden: {', '.join(solver['solver_overrides'])})" if solver.get("solver_overrides") else "",
+            ", ".join(f"{key}={solver.get(key)}" for key in solver_presets.SOLVER_KEYS),
+        )
 
     stop_event = threading.Event()
     stop_on_interrupt(stop_event)
