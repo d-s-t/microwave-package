@@ -580,6 +580,8 @@ class Lifecycle(RunnerFixture):
         self.assertEqual(job["status"], "failed")
         self.assertIn("exit code 2", job["reason"])
         self.assertIn("no analysis setup", job["reason"])
+        status = json.loads((self.folder(plan) / "status.json").read_text(encoding="utf-8"))
+        self.assertIn("is failed", status["last_alert"]["text"])
         self.assertEqual(len(popen.calls), 1)
 
     def test_a_job_that_overruns_is_terminated_and_the_next_one_runs(self):

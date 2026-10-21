@@ -869,7 +869,6 @@ class SweepRunner:
         self.state: Dict[str, Any] = {}
         self.state_name = "starting"
         self.current_job: Optional[str] = None
-        self.last_alert: Optional[dict] = None
         self.obs: Dict[str, Any] = {}
         self.blocked = False
         self.log_growth = LogGrowth()
@@ -947,7 +946,7 @@ class SweepRunner:
             },
             "queue": self.obs.get("queue"),
             "jobs": {"total": len(self.plan.jobs), **counts},
-            "last_alert": self.last_alert,
+            "last_alert": self.journal.last_alert,
             "stop_file": (self.folder / STOP_FILE).exists(),
             "pause_file": (self.folder / PAUSE_FILE).exists(),
         }
@@ -963,7 +962,6 @@ class SweepRunner:
         event = self.episodes.update(key, present)
         if event == "raise":
             self.journal.alert(text)
-            self.last_alert = {"time": iso(self.clock()), "text": text}
         elif event == "clear":
             self.journal.info(f"Resolved: {key}")
 
@@ -1164,10 +1162,10 @@ class SweepRunner:
             record["log_offset"] = None
         self.save()
         render_results(self.folder, self.plan, self._all_rows(), self.clock())
-        self.write_status(force=True)
         self.journal.info(f"Job {job_name}: {status}" + (f" -- {reason}" if reason else ""))
         if status in ("failed", "timeout", "invalid"):
             self.journal.alert(f"Job {job_name} is {status}: {reason}")
+        self.write_status(force=True)
         return status
 
     def _all_rows(self) -> List[dict]:
@@ -1333,12 +1331,14 @@ class _Journal:
         self.folder = Path(folder)
         self.clock = clock
         self.echo = echo
+        self.last_alert: Optional[dict] = None
 
     def info(self, text: str) -> None:
         self._write("runner.log", f"{stamp(self.clock())}  {text}")
 
     def alert(self, text: str) -> None:
         line = f"{stamp(self.clock())}  {text}"
+        self.last_alert = {"time": iso(self.clock()), "text": text}   # status.json reads this
         self._write("alerts.txt", line)
         self._write("runner.log", f"{stamp(self.clock())}  ALERT  {text}")
 

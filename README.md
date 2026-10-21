@@ -584,7 +584,7 @@ python -m microwave_package.sweep_runner sweeps/examples/depth_converged.json --
 
 Before each job it waits, alerting once per problem, until the worker's
 heartbeat is under 15 minutes old, the queue folder is reachable, the screen is
-unlocked and no Altium dialog is open. SolidWorks documents left open by another
+unlocked, no Altium dialog is open and Altium is running (the runner never starts Altium; a job with `--no-altium` does not need it). SolidWorks documents left open by another
 worktree are closed, without saving, so the next build can open its own. Then it
 starts the pipeline as its own child process, with `--preset` from the plan, and
 supervises it:

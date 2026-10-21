@@ -183,6 +183,9 @@ Each alert appears once for as long as its problem lasts, and is followed by a "
 | `Job X is failed: ...` | The job did not produce a complete result. The reason is in the line and in `state.json`. | Read the reason. A failed job is retried the next time the runner starts. |
 | `Job X is invalid: ...` | The results exist, but a combination's solve is not to be trusted: a flat S21, or the worker logged `Error in Solving`. | See "Redoing a job" below. |
 | `Job X ... wall-time limit ... reached` | The job ran longer than `max_job_hours` on this attempt. Its pipeline child was terminated. | Nothing. Start the runner again to resume it. Raise `max_job_hours` if the job is expected to take longer. |
+| `Altium (X2.EXE) is not running: open it yourself` | Altium is not open on this PC. The runner waits, and never starts Altium. A job with `--no-altium` does not wait for it. | Open your Altium project yourself. Do not expect the runner to start it. |
+| `SolidWorks is running but its COM object could not be attached` | The runner could not attach to the running SolidWorks session, so no document check was made for that job. | Check that SolidWorks is running in your session with no dialog open. If documents from another checkout are open, close them by hand without saving; otherwise a build can fail with OpenDoc6 error 65536. |
+| `SolidWorks: the document list stopped early (...)` or `a document's path could not be read (...)` | Some open SolidWorks documents could not be read, so a document from another checkout may have been missed. | Close documents from other checkouts by hand, without saving, before the next build. |
 | `STOP file found` | The sweep is stopping after the current job. | Nothing, unless you did not mean to stop. Delete `STOP` to keep it going. |
 
 ## Redoing a job
