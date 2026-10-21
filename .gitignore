@@ -11,6 +11,11 @@ venv/
 # backed up elsewhere, not committed.
 runs/
 
+# Long sweeps: each sweep's state, results, logs and alerts stay local (see
+# SWEEPS.md). The example plans are kept.
+/sweeps/*
+!/sweeps/examples/
+
 # Third-party JS/WASM for the in-browser STEP viewer (three.js +
 # occt-import-js, ~8 MB). Fetched once with `python -m
 # microwave_package.fetch_vendor`; not committed.

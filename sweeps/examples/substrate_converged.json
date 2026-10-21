@@ -1,0 +1,68 @@
+{
+  "name": "substrate_converged",
+  "preset": "converged",
+  "max_job_hours": 16,
+  "description": "The same chip package (circle pocket 6.25 mm, pedestal depth 0.5 mm, chip present) on three laminates, converged settings, driven S-parameters 2-20 GHz with 73 points. The CPW trace width is typed per laminate and the gap is solved for 50 ohm: 0.2 mm on TMM 10i, 0.4 mm on RO3003 and RO4003, as in the earlier bare-board comparison runs. Change the trace widths if the laminate or the target impedance changes.",
+  "jobs": [
+    {
+      "name": "tmm10i",
+      "note": "Baseline laminate. Expected 4.5 to 10 h on the worker.",
+      "args": [
+        "--sweep", "pedestal_depth=0.5",
+        "--sweep", "no_chip=0",
+        "--sweep", "pedestal_shape=1",
+        "--sweep", "pedestal_diameter=6.25",
+        "--sweep", "cpw_trace_width=0.2",
+        "--sweep", "chip_trace_width=0.2",
+        "--mat-pcb", "Rogers TMM 10i (tm)",
+        "--solution-type", "DrivenModal",
+        "--no-pair",
+        "--f-start-ghz", "2",
+        "--f-stop-ghz", "20",
+        "--sweep-points", "73",
+        "--fine-windows", "off",
+        "--reference-plane", "connector"
+      ]
+    },
+    {
+      "name": "ro3003",
+      "note": "Expected 4.5 to 10 h on the worker.",
+      "args": [
+        "--sweep", "pedestal_depth=0.5",
+        "--sweep", "no_chip=0",
+        "--sweep", "pedestal_shape=1",
+        "--sweep", "pedestal_diameter=6.25",
+        "--sweep", "cpw_trace_width=0.4",
+        "--sweep", "chip_trace_width=0.2",
+        "--mat-pcb", "Rogers RO3003 (tm)",
+        "--solution-type", "DrivenModal",
+        "--no-pair",
+        "--f-start-ghz", "2",
+        "--f-stop-ghz", "20",
+        "--sweep-points", "73",
+        "--fine-windows", "off",
+        "--reference-plane", "connector"
+      ]
+    },
+    {
+      "name": "ro4003",
+      "note": "Expected 4.5 to 10 h on the worker.",
+      "args": [
+        "--sweep", "pedestal_depth=0.5",
+        "--sweep", "no_chip=0",
+        "--sweep", "pedestal_shape=1",
+        "--sweep", "pedestal_diameter=6.25",
+        "--sweep", "cpw_trace_width=0.4",
+        "--sweep", "chip_trace_width=0.2",
+        "--mat-pcb", "Rogers RO4003 (tm)",
+        "--solution-type", "DrivenModal",
+        "--no-pair",
+        "--f-start-ghz", "2",
+        "--f-stop-ghz", "20",
+        "--sweep-points", "73",
+        "--fine-windows", "off",
+        "--reference-plane", "connector"
+      ]
+    }
+  ]
+}

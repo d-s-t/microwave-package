@@ -1,0 +1,68 @@
+{
+  "name": "depth_converged",
+  "preset": "converged",
+  "max_job_hours": 16,
+  "description": "Pedestal depth 0.1, 0.25 and 1.0 mm on the TMM 10i chip board with the circle pocket (6.25 mm), converged settings, driven S-parameters 2-20 GHz with 73 points, connector reference plane, no pairing, no fine windows. One job per depth: a converged solve takes 4.5 to 10 h, so three depths in one job would overrun the 16 h limit. The quick sweep of the same geometry is run_20261021_141838 (depths 0, 0.1, 0.25, 0.5, 1.0 mm); the converged 0.5 mm reference is run_20261020_150512.",
+  "jobs": [
+    {
+      "name": "depth_0.1mm",
+      "note": "Expected 4.5 to 10 h on the worker.",
+      "args": [
+        "--sweep", "pedestal_depth=0.1",
+        "--sweep", "no_chip=0",
+        "--sweep", "pedestal_shape=1",
+        "--sweep", "pedestal_diameter=6.25",
+        "--sweep", "cpw_trace_width=0.2",
+        "--sweep", "chip_trace_width=0.2",
+        "--mat-pcb", "Rogers TMM 10i (tm)",
+        "--solution-type", "DrivenModal",
+        "--no-pair",
+        "--f-start-ghz", "2",
+        "--f-stop-ghz", "20",
+        "--sweep-points", "73",
+        "--fine-windows", "off",
+        "--reference-plane", "connector"
+      ]
+    },
+    {
+      "name": "depth_0.25mm",
+      "note": "Expected 4.5 to 10 h on the worker.",
+      "args": [
+        "--sweep", "pedestal_depth=0.25",
+        "--sweep", "no_chip=0",
+        "--sweep", "pedestal_shape=1",
+        "--sweep", "pedestal_diameter=6.25",
+        "--sweep", "cpw_trace_width=0.2",
+        "--sweep", "chip_trace_width=0.2",
+        "--mat-pcb", "Rogers TMM 10i (tm)",
+        "--solution-type", "DrivenModal",
+        "--no-pair",
+        "--f-start-ghz", "2",
+        "--f-stop-ghz", "20",
+        "--sweep-points", "73",
+        "--fine-windows", "off",
+        "--reference-plane", "connector"
+      ]
+    },
+    {
+      "name": "depth_1.0mm",
+      "note": "Expected 4.5 to 10 h on the worker.",
+      "args": [
+        "--sweep", "pedestal_depth=1.0",
+        "--sweep", "no_chip=0",
+        "--sweep", "pedestal_shape=1",
+        "--sweep", "pedestal_diameter=6.25",
+        "--sweep", "cpw_trace_width=0.2",
+        "--sweep", "chip_trace_width=0.2",
+        "--mat-pcb", "Rogers TMM 10i (tm)",
+        "--solution-type", "DrivenModal",
+        "--no-pair",
+        "--f-start-ghz", "2",
+        "--f-stop-ghz", "20",
+        "--sweep-points", "73",
+        "--fine-windows", "off",
+        "--reference-plane", "connector"
+      ]
+    }
+  ]
+}
