@@ -122,8 +122,9 @@ class FakeDesktop:
         self.age = 1.0
         self.detail = {"worker_state": "running", "current_task_id": None}
         self.log_size = 0
-        self.errors = {}
+        self.errors = {TASK: 0}
         self.locked = False
+        self.altium = True
         self.modal = []
         self.sw_docs = []
         self.closed = []
@@ -132,6 +133,12 @@ class FakeDesktop:
 
     def queue_reachable(self):
         return self.reachable
+
+    def altium_running(self):
+        return self.altium
+
+    def drain_notes(self):
+        return []
 
     def heartbeat_age_minutes(self):
         return self.age
@@ -409,6 +416,14 @@ class Verdicts(unittest.TestCase):
         pending = sr.evaluate_run(self.runs, "run_missing", {TASK: 0}, False, "p", "j", "2026-10-21")[0]
         self.assertEqual(pending["status"], "pending")
 
+    def test_a_task_the_log_never_mentions_is_not_confirmed(self):
+        make_run(self.runs, "run_nolog", s21=varying_s21())
+        row = sr.evaluate_run(self.runs, "run_nolog", {}, True, "p", "j", "d")[0]
+        self.assertEqual(row["status"], "failed")
+        self.assertIn("no record of task", row["reason"])
+        unfinished = sr.evaluate_run(self.runs, "run_nolog", {}, False, "p", "j", "d")[0]
+        self.assertEqual(unfinished["status"], "pending")
+
     def test_a_worker_failed_task_is_failed_and_an_unreadable_log_is_failed(self):
         make_run(self.runs, "run_wf", s21=varying_s21(), queue_status="failed")
         self.assertEqual(sr.evaluate_run(self.runs, "run_wf", {}, True, "p", "j", "d")[0]["status"], "failed")
@@ -435,7 +450,7 @@ class Verdicts(unittest.TestCase):
 
     def test_results_files_carry_the_date_and_band_edges(self):
         make_run(self.runs, "run_ok", s21=varying_s21())
-        rows = sr.evaluate_run(self.runs, "run_ok", {}, True, "test_plan", "j", "2026-10-21")
+        rows = sr.evaluate_run(self.runs, "run_ok", {TASK: 0}, True, "test_plan", "j", "2026-10-21")
         folder = self.tmp / "sweeps" / "test_plan"
         sr.render_results(folder, make_plan(), rows, now=1_000_000.0)
         with open(folder / "results.csv", newline="", encoding="utf-8") as handle:
@@ -896,6 +911,46 @@ class FakeSolidWorks:
         self.closed.append(path)
 
 
+class Refresh(RunnerFixture):
+    def test_status_queue_counts_follow_the_queue(self):
+        plan = make_plan()
+        runner = self.runner(plan, FakePopen(self.clock, []))
+        runner.load_state()
+        self.desktop.queue = {"pending": 0, "in_progress": 0}
+        runner.write_status(force=True)
+        self.desktop.queue = {"pending": 3, "in_progress": 1}
+        runner.write_status(force=True)
+        status = json.loads((runner.folder / "status.json").read_text(encoding="utf-8"))
+        self.assertEqual(status["queue"], {"pending": 3, "in_progress": 1})
+
+
+class AltiumGuard(RunnerFixture):
+    def test_a_job_waits_for_altium_and_never_starts_it(self):
+        plan = make_plan()
+        self.desktop.altium = False
+
+        def open_altium(clock):
+            if clock.sleeps == 20:
+                self.desktop.altium = True
+
+        self.clock.on_sleep = open_altium
+        popen = FakePopen(self.clock, [{"end_after": 60, "rc": 0, "events": [(1, self.created_run("run_a"))],
+                                        "on_end": self.finish_run("run_a", s21=varying_s21())}])
+        self.runner(plan, popen).run()
+        self.assertTrue(any("Altium (X2.EXE) is not running" in line for line in self.alerts(plan)))
+        self.assertEqual(self.state(plan)["jobs"]["one"]["status"], "done")
+        self.assertGreater(self.clock.sleeps, 20)
+
+    def test_a_job_that_does_not_use_altium_does_not_wait_for_it(self):
+        plan = make_plan(jobs=[{"name": "nopcb", "args": ARGS + ["--no-altium"]}])
+        self.desktop.altium = False
+        popen = FakePopen(self.clock, [{"end_after": 60, "rc": 0, "events": [(1, self.created_run("run_na"))],
+                                        "on_end": self.finish_run("run_na", s21=varying_s21())}])
+        self.runner(plan, popen).run()
+        self.assertEqual(self.state(plan)["jobs"]["nopcb"]["status"], "done")
+        self.assertFalse(any("Altium" in line for line in self.alerts(plan)))
+
+
 class DesktopProbes(unittest.TestCase):
     def setUp(self):
         logging_quiet()
@@ -932,6 +987,23 @@ class DesktopProbes(unittest.TestCase):
         with self.patch_processes(FakeProcess("SLDWORKS.EXE")),                 mock.patch.object(sr, "_solidworks_app", return_value=app):
             self.assertEqual(self.desk.solidworks_documents(),
                              [("D:/x/box.SLDPRT", True), ("D:/x/lid.SLDPRT", False)])
+
+    def test_a_document_whose_path_cannot_be_read_is_noted_and_documents_close_by_title(self):
+        from unittest import mock
+
+        class NoPath(FakeDoc):
+            def GetPathName(self):
+                raise RuntimeError("no path")
+
+        app = FakeSolidWorks()
+        app.first = NoPath("", False, None)
+        with self.patch_processes(FakeProcess("SLDWORKS.EXE")),                 mock.patch.object(sr, "_solidworks_app", return_value=app):
+            self.assertEqual(self.desk.solidworks_documents(), [("", False)])   # unknown path: never foreign
+        self.assertTrue(any("path could not be read" in note for note in self.desk.drain_notes()))
+        app2 = FakeSolidWorks()
+        with mock.patch.object(sr, "_solidworks_app", return_value=app2):
+            self.desk.close_solidworks_documents(["D:/main/base_parts/box.SLDPRT"])
+        self.assertEqual(app2.closed, ["box.SLDPRT"])
 
     def test_closing_documents_reports_the_ones_that_refused(self):
         from unittest import mock

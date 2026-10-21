@@ -71,8 +71,8 @@ BAND_LABELS = ("2-10", "10-17", "17-20")
 
 GEOMETRY_CAUSE = "the geometry was built but the queue was unreachable, so nothing was handed over"
 ERROR_TEXT = "Error in Solving"
-TASK_ID_RE = re.compile(r"\b([A-Za-z][A-Za-z0-9-]*_\d{8}_\d{6}_\d{6})\b")
-PROCESSING_RE = re.compile(r"Processing task ([A-Za-z][A-Za-z0-9-]*_\d{8}_\d{6}_\d{6})\b")
+TASK_ID_RE = re.compile(r"\b([A-Za-z][A-Za-z0-9_-]*?_\d{8}_\d{6}_\d{6})\b")
+PROCESSING_RE = re.compile(r"Processing task ([A-Za-z][A-Za-z0-9_-]*?_\d{8}_\d{6}_\d{6})\b")
 RUN_ID_RE = re.compile(r"(?:Created|Resuming) run (run_[0-9A-Za-z_]+)")
 # Failures a resume cures: the pipeline printed one of these and stopped.
 TRANSIENT = (
@@ -437,6 +437,16 @@ class Desktop:
         self.worker_log_path = self.logs / "ansys_analyze_worker.log"
         self.clock = clock
         self.heartbeat = Heartbeat()
+        self.notes: List[str] = []
+
+    def drain_notes(self) -> List[str]:
+        """What the desktop probes could not read since the last call; the runner journals them."""
+        notes, self.notes = self.notes, []
+        return notes
+
+    def altium_running(self) -> bool:
+        return any((proc.info.get("name") or "").upper() == "X2.EXE"
+                   for proc in psutil.process_iter(["name"]))
 
     def queue_reachable(self) -> bool:
         return os.path.isdir(self.queue_root)
@@ -498,6 +508,8 @@ class Desktop:
             return []
         app = _solidworks_app()
         if app is None:
+            self.notes.append("SolidWorks is running but its COM object could not be attached: no document "
+                              "check was made for this job")
             return []
         documents: List[Tuple[str, bool]] = []
         try:
@@ -505,7 +517,9 @@ class Desktop:
             while doc is not None and len(documents) < 500:
                 try:
                     path = str(doc.GetPathName() or "")
-                except Exception:
+                except Exception as exc:
+                    self.notes.append(f"SolidWorks: a document's path could not be read ({exc}); "
+                                      "it cannot be judged foreign")
                     path = ""
                 try:
                     dirty = bool(doc.GetSaveFlag())
@@ -513,8 +527,8 @@ class Desktop:
                     dirty = False
                 documents.append((path, dirty))
                 doc = doc.GetNext()
-        except Exception:
-            pass
+        except Exception as exc:
+            self.notes.append(f"SolidWorks: the document list stopped early ({exc})")
         return documents
 
     def close_solidworks_documents(self, paths_to_close: Sequence[str]) -> List[Tuple[str, str]]:
@@ -525,7 +539,7 @@ class Desktop:
             return [(path, "SolidWorks is no longer running") for path in paths_to_close]
         for path in paths_to_close:
             try:
-                app.CloseDoc(path)
+                app.CloseDoc(os.path.basename(path))   # the title: the file name, as the design code uses
             except Exception as exc:
                 failures.append((path, str(exc)))
         return failures
@@ -666,6 +680,10 @@ def judge_combo(folder: Path, combo_id: str, combo: dict, eigen_combo: Optional[
         return "failed", "the paired eigenmode task failed, and the driven run uses its modes", None, None
     if errors is None:
         return "failed", "the worker log could not be read, so the solve cannot be confirmed", None, None
+    unseen = [name for name in (task, eigen_task) if name and name not in errors]
+    if unseen:
+        return unfinished, (f"worker log has no record of task {unseen[0]}, so the solve cannot be "
+                            "confirmed"), None, None
     sweep, problem = read_sweep(folder, combo_id)
     if problem is not None:
         return unfinished, problem, None, None
@@ -885,6 +903,7 @@ class SweepRunner:
         if not force and self.last_status_at is not None and now - self.last_status_at < 60.0:
             return
         self.last_status_at = now
+        self.obs["queue"] = self.desktop.queue_counts()
         jobs = self.state.get("jobs", {})
         counts = {key: 0 for key in ("done", "invalid", "failed", "timeout", "running", "pending")}
         for record in jobs.values():
@@ -932,7 +951,7 @@ class SweepRunner:
             self.journal.info(f"Resolved: {key}")
 
     # -- preflight ------------------------------------------------------------
-    def check_problems(self) -> Dict[str, str]:
+    def check_problems(self, job_args: Optional[List[str]] = None) -> Dict[str, str]:
         """What stops a job starting now, keyed by problem. Read-only."""
         problems: Dict[str, str] = {}
         reachable = self.desktop.queue_reachable()
@@ -954,8 +973,9 @@ class SweepRunner:
         if titles:
             problems["modal"] = ("Altium has a dialog open (" + "; ".join(titles) + "): dismiss it. Altium "
                                  "refuses scripts while a dialog is open")
-        if reachable:
-            self.obs["queue"] = self.desktop.queue_counts()
+        if "--no-altium" not in (job_args or []) and not self.desktop.altium_running():
+            problems["altium"] = ("Altium (X2.EXE) is not running: open it yourself. The runner never starts "
+                                  "Altium, and a job's Altium step would start it")
         return problems
 
     def preflight(self, job_name: str) -> bool:
@@ -977,14 +997,17 @@ class SweepRunner:
             now = self.clock()
             if last_check is None or now - last_check >= PREFLIGHT_EVERY_S:
                 last_check = now
-                problems = self.check_problems()
-                for key in ("queue", "heartbeat", "locked", "modal"):
+                problems = self.check_problems(self._job_args(job_name))
+                for key in ("queue", "heartbeat", "locked", "modal", "altium"):
                     self._episode(f"preflight {key}", key in problems, problems.get(key, ""))
                 if not problems:
                     self.journal.info(f"Preflight passed for {job_name}.")
                     return True
                 self.write_status("waiting", waiting=sorted(problems.values()))
             self.sleep(TICK_S)
+
+    def _job_args(self, job_name: str) -> Optional[List[str]]:
+        return next((list(job.args) for job in self.plan.jobs if job.name == job_name), None)
 
     def wait_for_previous_child(self, job_name: str, record: dict) -> bool:
         """A pipeline process left by an earlier runner may still be working on this job.
@@ -1007,6 +1030,8 @@ class SweepRunner:
 
     def close_foreign_solidworks(self, job_name: str) -> None:
         documents = self.desktop.solidworks_documents()
+        for note in self.desktop.drain_notes():
+            self.journal.alert(f"Before {job_name}: {note}")
         foreign = foreign_documents(documents, self.project_root, self.main_root)
         if not foreign:
             return
@@ -1320,6 +1345,8 @@ def dry_run(plan: Plan, folder: Path, desktop, project_root: Path, runs_root: Pa
     problems = runner.check_problems()
     out("Preflight now: " + ("all clear" if not problems else "; ".join(sorted(problems.values()))))
     documents = desktop.solidworks_documents()
+    for note in desktop.drain_notes():
+        out(f"SolidWorks note: {note}")
     foreign = foreign_documents(documents, project_root, main_checkout_of(project_root))
     out(f"SolidWorks: {len(documents)} document(s) open, {len(foreign)} from another checkout"
         + (f" (would close, without saving: {', '.join(foreign)})" if foreign else ""))
