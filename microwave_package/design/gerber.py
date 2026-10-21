@@ -24,7 +24,7 @@ from __future__ import annotations
 
 from typing import Dict, List, Tuple
 
-from . import cavity, screws
+from . import cavity, pcb_outline, screws
 
 _SCALE = 1_000_000          # 4.6 format, millimetres
 
@@ -108,11 +108,29 @@ def copper_layer(copper: Dict[str, list], side: str, name: str) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _rounded_profile(hl: float, hs: float, radius: float) -> List[str]:
+    """A closed profile with the four corners as G03 arcs (counter-clockwise,
+    I/J from each arc's start to its centre), joined by straight edges."""
+    arcs = pcb_outline.corner_arcs(hl, hs, radius)
+    start = arcs[0][1]
+    out = [f"X{_c(start[0])}Y{_c(start[1])}D02*"]
+    for k, (centre, arc_start, arc_end) in enumerate(arcs):
+        out.append("G03*")
+        out.append(f"X{_c(arc_end[0])}Y{_c(arc_end[1])}"
+                   f"I{_c(centre[0] - arc_start[0])}J{_c(centre[1] - arc_start[1])}D01*")
+        nxt = arcs[(k + 1) % len(arcs)][1]
+        out.append("G01*")
+        out.append(f"X{_c(nxt[0])}Y{_c(nxt[1])}D01*")
+    return out
+
+
 def outline_layer(values: Dict[str, float], name: str) -> str:
-    """The board outline, as a closed 0.1 mm profile, plus the die's
-    opening where it goes through the board."""
+    """The board outline, as a closed 0.1 mm profile -- its corners as arcs
+    when the PCB is rounded -- plus the die's opening where it goes through
+    the board."""
     length = values.get("pcb_length", 50.0)
     side = values.get("pcb_side", 25.0)
+    radius = pcb_outline.corner_radius_of(values)
     ap = _Apertures()
     ap.get("C", 0.1)
     body = ["D10*"]
@@ -123,7 +141,10 @@ def outline_layer(values: Dict[str, float], name: str) -> str:
         out += [f"X{_c(x)}Y{_c(y)}D01*" for x, y in pts[1:]]
         return out
 
-    body += box(length / 2.0, side / 2.0)
+    if radius > 0.0:
+        body += _rounded_profile(length / 2.0, side / 2.0, radius)
+    else:
+        body += box(length / 2.0, side / 2.0)
     cav = cavity.plan(values)
     if not cav.is_empty and cav.through:
         body += box(cav.half_length, cav.half_side)

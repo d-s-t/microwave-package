@@ -21,7 +21,7 @@ import datetime as _dt
 from typing import Dict, List, Optional, Tuple
 
 from ..workflow import simple_pdf
-from . import cavity, cpw, screws
+from . import cavity, cpw, pcb_outline, screws
 
 # Standard drawing scales to pick from, largest first.
 _SCALES = (20.0, 10.0, 5.0, 4.0, 2.5, 2.0, 1.0, 0.5)
@@ -37,6 +37,10 @@ FINISH_NOTE = (
     "if the board is to be wire-bonded; ENIG (Au 0.05-0.1 um) is acceptable for a connector-only board. "
     "Do not use HASL or immersion tin/silver on bond pads."
 )
+
+# Decided by the user, 2026-10-19: the vias are filled with copper, so the
+# board has no open via bores. The HFSS model already draws them as solid posts.
+VIA_NOTE = "Vias: copper-filled, plated shut and planarised; no open via bores."
 
 
 def parse_package_copper(text: str) -> Dict[str, list]:
@@ -84,7 +88,7 @@ def drill_table(values: Dict[str, float], copper: Dict[str, list]) -> List[dict]
     for _x, _y, _dia, hole in copper.get("via", []):
         vias[round(hole, 4)] = vias.get(round(hole, 4), 0) + 1
     for hole, count in sorted(vias.items()):
-        rows.append({"diameter": hole, "count": count, "plated": True, "what": "via (plated through)"})
+        rows.append({"diameter": hole, "count": count, "plated": True, "what": "via (plated, copper-filled)"})
     plan = screws.plan(values)
     if plan is not None:
         rows.append({"diameter": plan.clearance_diameter, "count": len(plan.positions),
@@ -160,9 +164,25 @@ def build(
         page.line(px(x1), py(y1), px(x2), py(y2))
     page.gray(0)
 
-    # Outline.
+    # Outline. A rounded PCB is drawn along its own arcs (a polyline of
+    # the same points the copper is checked against), with one callout
+    # for the four corners; a sharp one is the rectangle.
+    radius = pcb_outline.corner_radius_of(values)
     page.line_width(0.5)
-    page.rect(px(-length / 2), py(-side / 2), length * scale, side * scale)
+    if radius > 0.0:
+        pts = pcb_outline.outline_points(length / 2, side / 2, radius, steps=16)
+        for (x1, y1), (x2, y2) in zip(pts, pts[1:] + pts[:1]):
+            page.line(px(x1), py(y1), px(x2), py(y2))
+        # Leader from the callout to the middle of the top-left arc (135 degrees).
+        arc_u = -length / 2 + radius - radius * 0.7071
+        arc_v = side / 2 - radius + radius * 0.7071
+        lead_x, lead_y = px(-length / 2) - 14.0, py(side / 2) + 9.0
+        page.line_width(0.25)
+        page.line(px(arc_u), py(arc_v), lead_x, lead_y)
+        page.text(lead_x - 1.0, lead_y + 1.0, f"R{radius:.1f} TYP 4 PLCS", MIN_TEXT_PT)
+        page.line_width(0.5)
+    else:
+        page.rect(px(-length / 2), py(-side / 2), length * scale, side * scale)
     if not cav.is_empty:
         page.line_width(0.25)
         page.dash(2, 1)
@@ -259,10 +279,13 @@ def build(
         f"2. Controlled impedance: 50 ohm grounded coplanar waveguide; signal trace {trace * 1000:.0f} um, gap {gap_note} "
         "(minimum trace and gap on the board). Etch tolerance +/- 10 um on trace and gap.",
         "3. " + FINISH_NOTE,
-        f"4. Outline {length:g} x {side:g} mm, tolerance +/- 0.05 mm; routed. Hole position tolerance +/- 0.05 mm.",
-        "5. Solder mask and legend: as given by the mask and silkscreen layers of the Gerber set.",
-        "6. Fabrication files: Gerber RS-274X, Excellon NC drill (plated and non-plated), ODB++, IPC-2581 as supplied.",
-        "7. All dimensions in millimetres. Do not scale from this drawing.",
+        "4. " + VIA_NOTE,
+        f"5. Outline {length:g} x {side:g} mm"
+        + (f", corners R{radius:.1f} (4 places)" if radius > 0.0 else "")
+        + ", tolerance +/- 0.05 mm; routed. Hole position tolerance +/- 0.05 mm.",
+        "6. Solder mask and legend: as given by the mask and silkscreen layers of the Gerber set.",
+        "7. Fabrication files: Gerber RS-274X, Excellon NC drill (plated and non-plated), ODB++, IPC-2581 as supplied.",
+        "8. All dimensions in millimetres. Do not scale from this drawing.",
     ]
     ny = area_y0 + area_h - 2
     nx = 20.0

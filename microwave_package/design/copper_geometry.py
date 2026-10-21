@@ -1153,3 +1153,45 @@ def clear_cavity_area(
     tool.name = "cavity_area_cut"
     modeler.subtract(list(targets), ["cavity_area_cut"], keep_originals=False)
     log(f"Cleared the die's opening out of {', '.join(targets)}.")
+
+
+def copper_reaching_corners(copper: BoardCopper, half_length: float, half_side: float,
+                            radius: float) -> Tuple[bool, bool]:
+    """Whether any plane-type copper, and any via, reaches a rounded corner.
+
+    Returns `(planes, vias)`. Planes are tracks, pads and regions on either
+    layer; vias are the posts. Each is decided from its bounding box, which
+    is conservative (see `pcb_outline`), so the caller only has to clip the
+    bodies behind a True: a clean board with no feature near a corner pays
+    for no boolean at all.
+    """
+    from . import pcb_outline
+
+    def hits(bounds) -> bool:
+        return pcb_outline.reaches_corner(bounds, half_length, half_side, radius)
+
+    planes = False
+    for track in copper.tracks:
+        half = track.width / 2.0
+        if hits((min(track.x1, track.x2) - half, min(track.y1, track.y2) - half,
+                 max(track.x1, track.x2) + half, max(track.y1, track.y2) + half)):
+            planes = True
+    for pad in copper.pads:
+        xs = [u for u, _v in pad.corners()]
+        ys = [v for _u, v in pad.corners()]
+        if hits((min(xs), min(ys), max(xs), max(ys))):
+            planes = True
+    for region in copper.regions:
+        if not region.points:
+            continue
+        xs = [u for u, _v in region.points]
+        ys = [v for _u, v in region.points]
+        if hits((min(xs), min(ys), max(xs), max(ys))):
+            planes = True
+
+    vias = any(
+        hits((via.x - via.diameter / 2.0, via.y - via.diameter / 2.0,
+              via.x + via.diameter / 2.0, via.y + via.diameter / 2.0))
+        for via in copper.vias
+    )
+    return planes, vias
