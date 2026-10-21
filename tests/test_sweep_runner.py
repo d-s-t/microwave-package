@@ -1001,7 +1001,7 @@ class DesktopProbes(unittest.TestCase):
             self.assertEqual(self.desk.solidworks_documents(), [("", False)])   # unknown path: never foreign
         self.assertTrue(any("path could not be read" in note for note in self.desk.drain_notes()))
         app2 = FakeSolidWorks()
-        with mock.patch.object(sr, "_solidworks_app", return_value=app2):
+        with mock.patch.object(sr, "_solidworks_app", return_value=app2),                 mock.patch.object(sr.Desktop, "_sw_running", return_value=True):
             self.desk.close_solidworks_documents(["D:/main/base_parts/box.SLDPRT"])
         self.assertEqual(app2.closed, ["box.SLDPRT"])
 
@@ -1009,12 +1009,12 @@ class DesktopProbes(unittest.TestCase):
         from unittest import mock
         app = FakeSolidWorks()
         app.refuse = {"bad.SLDPRT"}
-        with mock.patch.object(sr, "_solidworks_app", return_value=app):
+        with mock.patch.object(sr, "_solidworks_app", return_value=app),                 mock.patch.object(sr.Desktop, "_sw_running", return_value=True):
             failures = self.desk.close_solidworks_documents(["good.SLDPRT", "bad.SLDPRT"])
         self.assertEqual(app.closed, ["good.SLDPRT"])
         self.assertEqual([path for path, _ in failures], ["bad.SLDPRT"])
         from unittest import mock as _m
-        with _m.patch.object(sr, "_solidworks_app", return_value=None):
+        with _m.patch.object(sr, "_solidworks_app", return_value=None),                 _m.patch.object(sr.Desktop, "_sw_running", return_value=True):
             self.assertEqual(len(self.desk.close_solidworks_documents(["x.SLDPRT"])), 1)
 
     def test_heartbeat_file_age_uses_its_timestamp_then_its_changes(self):

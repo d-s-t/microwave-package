@@ -498,6 +498,10 @@ class Desktop:
         return [title or "(untitled)" for pid, cls, title in _visible_windows()
                 if pid in altium and cls == "TMessageForm"]
 
+    def _sw_running(self) -> bool:
+        return any((proc.info.get("name") or "").upper() == "SLDWORKS.EXE"
+                   for proc in psutil.process_iter(["name"]))
+
     def solidworks_documents(self) -> List[Tuple[str, bool]]:
         """(path, unsaved changes) of every document SolidWorks has open. Empty when it is not running.
 
@@ -506,7 +510,7 @@ class Desktop:
         if not any((proc.info.get("name") or "").upper() == "SLDWORKS.EXE"
                    for proc in psutil.process_iter(["name"])):
             return []
-        app = _solidworks_app()
+        app = _solidworks_app(running=True)
         if app is None:
             self.notes.append("SolidWorks is running but its COM object could not be attached: no document "
                               "check was made for this job")
@@ -533,7 +537,7 @@ class Desktop:
 
     def close_solidworks_documents(self, paths_to_close: Sequence[str]) -> List[Tuple[str, str]]:
         """Close these documents WITHOUT saving. Returns (path, error) for each that failed."""
-        app = _solidworks_app()
+        app = _solidworks_app(running=self._sw_running())
         failures: List[Tuple[str, str]] = []
         if app is None:
             return [(path, "SolidWorks is no longer running") for path in paths_to_close]
@@ -593,8 +597,15 @@ def _visible_windows() -> List[Tuple[int, str, str]]:
 _COM_READY = False
 
 
-def _solidworks_app():
-    """The running SolidWorks, or None. Never starts it."""
+def _solidworks_app(running: bool):
+    """The SolidWorks session to read or close documents in, or None. Only when SolidWorks is running.
+
+    GetActiveObject first. On this PC GetActiveObject cannot see the running session, so Dispatch is
+    the fallback: it attaches to the running session, as the pipeline's own SolidWorks step does.
+    Nothing is started: without a running SolidWorks this returns None.
+    """
+    if not running:
+        return None
     try:
         import pythoncom
         import win32com.client
@@ -609,6 +620,10 @@ def _solidworks_app():
         _COM_READY = True
     try:
         return win32com.client.GetActiveObject("SldWorks.Application")
+    except Exception:
+        pass
+    try:
+        return win32com.client.Dispatch("SldWorks.Application")
     except Exception:
         return None
 
