@@ -69,6 +69,7 @@ BANDS = s11_analysis.BANDS[:3]
 BAND_KEYS = ("2_10", "10_17", "17_20")
 BAND_LABELS = ("2-10", "10-17", "17-20")
 
+GEOMETRY_CAUSE = "the geometry was built but the queue was unreachable, so nothing was handed over"
 ERROR_TEXT = "Error in Solving"
 TASK_ID_RE = re.compile(r"\b([A-Za-z][A-Za-z0-9-]*_\d{8}_\d{6}_\d{6})\b")
 PROCESSING_RE = re.compile(r"Processing task ([A-Za-z][A-Za-z0-9-]*_\d{8}_\d{6}_\d{6})\b")
@@ -575,6 +576,9 @@ def _visible_windows() -> List[Tuple[int, str, str]]:
     return found
 
 
+_COM_READY = False
+
+
 def _solidworks_app():
     """The running SolidWorks, or None. Never starts it."""
     try:
@@ -582,10 +586,13 @@ def _solidworks_app():
         import win32com.client
     except ImportError:
         return None
-    try:
-        pythoncom.CoInitialize()
-    except Exception:
-        pass
+    global _COM_READY
+    if not _COM_READY:
+        try:
+            pythoncom.CoInitialize()
+        except Exception:
+            pass
+        _COM_READY = True
     try:
         return win32com.client.GetActiveObject("SldWorks.Application")
     except Exception:
@@ -832,6 +839,7 @@ class SweepRunner:
         self.blocked = False
         self.log_growth = LogGrowth()
         self.stop_seen = False
+        self.last_status_at: Optional[float] = None
 
     # -- state --------------------------------------------------------------
     @property
@@ -868,10 +876,15 @@ class SweepRunner:
         write_json_atomic(self.state_path, self.state)
 
     # -- status ---------------------------------------------------------------
-    def write_status(self, state_name: Optional[str] = None, waiting: Optional[List[str]] = None) -> None:
+    def write_status(self, state_name: Optional[str] = None, waiting: Optional[List[str]] = None,
+                     force: bool = False) -> None:
+        """status.json. Rewritten once a minute, and at once when forced (a job changed state)."""
+        now = self.clock()
         if state_name:
             self.state_name = state_name
-        now = self.clock()
+        if not force and self.last_status_at is not None and now - self.last_status_at < 60.0:
+            return
+        self.last_status_at = now
         jobs = self.state.get("jobs", {})
         counts = {key: 0 for key in ("done", "invalid", "failed", "timeout", "running", "pending")}
         for record in jobs.values():
@@ -1109,6 +1122,7 @@ class SweepRunner:
             record["log_offset"] = None
         self.save()
         render_results(self.folder, self.plan, self._all_rows(), self.clock())
+        self.write_status(force=True)
         self.journal.info(f"Job {job_name}: {status}" + (f" -- {reason}" if reason else ""))
         if status in ("failed", "timeout", "invalid"):
             self.journal.alert(f"Job {job_name} is {status}: {reason}")
@@ -1145,7 +1159,7 @@ class SweepRunner:
             cmd = job_command(self.plan, job, record["run_id"])
             self.journal.info(f"Starting {job.name} (attempt {record['attempts']}): " + " ".join(cmd))
             self.save()
-            self.write_status("running")
+            self.write_status("running", force=True)
             proc = self.launch(cmd, log_path)
             record["child_pid"] = proc.pid
             record["child_create_time"] = self.desktop.create_time(proc.pid)
@@ -1166,41 +1180,65 @@ class SweepRunner:
             rc = -1 if outcome.rc is None else outcome.rc
             stage = self.run_stage(record)
             tail = read_text_tail(log_path)
-            if rc == 0 and stage == "complete":
+            environment = self._environment_cause(tail, outcome.blocked)
+            finished_ok = rc == 0 and stage == "complete"
+            rows: List[dict] = []
+            verdict: Tuple[str, str] = ("failed", "")
+            if finished_ok:
                 rows = self.evaluate(job.name, record, finished=True)
-                status, reason = job_verdict(rows)
-                return self.finish(job.name, record, status, reason, rows)
+                verdict = job_verdict(rows)
+                if verdict[0] != "failed" or environment is None:
+                    return self.finish(job.name, record, verdict[0], verdict[1], rows)
+                # Combinations failed while the screen was locked or a dialog
+                # was open: the pipeline went on without them. A resume redoes them.
+                cause: Optional[str] = environment
+            elif rc == 0 and stage == "geometry_ready":
+                cause = GEOMETRY_CAUSE
+            elif rc != 0 and environment is not None:
+                cause = environment
+            else:
+                cause = None
 
-            # A failure a resume cures (a locked screen, an Altium dialog, a
-            # refused SolidWorks document), or a run that was only half
-            # handed over, goes back to the start of the job rather than
-            # counting as a failure. At most MAX_INTERRUPTIONS times.
-            retry_reason = None
-            if rc == 0 and stage == "geometry_ready":
-                retry_reason = "the geometry was built but the queue was unreachable, so nothing was handed over"
-            elif rc != 0:
-                retry_reason = next((text for needle, text in TRANSIENT if needle in tail), None)
-                if retry_reason is None and outcome.blocked:
-                    retry_reason = "the screen was locked or an Altium dialog was open during the job"
-            if retry_reason and record.get("interruptions", 0) < MAX_INTERRUPTIONS:
+            # A failure a resume cures goes back to the start of the job rather
+            # than counting as a failure, at most MAX_INTERRUPTIONS times.
+            if cause is not None and record.get("interruptions", 0) < MAX_INTERRUPTIONS:
                 record["interruptions"] = record.get("interruptions", 0) + 1
-                record.update(status="pending", reason=f"interrupted: {retry_reason}; resuming the run")
+                record.update(status="pending", reason=f"interrupted: {cause}; resuming the run")
                 self.save()
-                if rc != 0:
-                    self.journal.alert(f"Job {job.name} interrupted ({retry_reason}); it resumes once the "
-                                       "preflight passes.")
+                if cause == GEOMETRY_CAUSE:
+                    self.journal.info(f"Job {job.name} interrupted ({cause}); resuming.")
                 else:
-                    self.journal.info(f"Job {job.name} interrupted ({retry_reason}); resuming.")
+                    self.journal.alert(f"Job {job.name} interrupted ({cause}); it resumes once the "
+                                       "preflight passes.")
                 continue
-            if rc == 0:
-                reason = retry_reason or f"the run ended at stage {stage!r}, not complete"
-            elif retry_reason:
-                reason = (f"{retry_reason} (gave up after {MAX_INTERRUPTIONS} resumes); "
-                          f"last line: {last_error_line(tail)}")
+
+            if not rows:
+                rows = self.evaluate(job.name, record, finished=False)
+            if cause is not None:
+                if finished_ok:
+                    detail = verdict[1]
+                elif rc != 0:
+                    detail = f"exit code {rc}: {last_error_line(tail)}"
+                else:
+                    detail = f"the run ended at stage {stage!r}"
+                reason = f"{cause} (gave up after {MAX_INTERRUPTIONS} resumes)" + (f"; {detail}" if detail else "")
+            elif finished_ok:
+                reason = verdict[1]
+            elif rc == 0:
+                reason = f"the run ended at stage {stage!r}, not complete"
             else:
                 reason = f"exit code {rc}: {last_error_line(tail) or 'no error line in the log'}"
-            rows = self.evaluate(job.name, record, finished=False)
             return self.finish(job.name, record, "failed", reason, rows)
+
+    @staticmethod
+    def _environment_cause(tail: str, blocked: bool) -> Optional[str]:
+        """Why a child failed when the cause is the desktop or a share, not the solve; None otherwise."""
+        for needle, text_of_cause in TRANSIENT:
+            if needle in tail:
+                return text_of_cause
+        if blocked:
+            return "the screen was locked or an Altium dialog was open during the job"
+        return None
 
     def run(self) -> int:
         self.load_state()
@@ -1210,7 +1248,7 @@ class SweepRunner:
             self.journal.info("STOP file present at start: exiting. Remove it to start the sweep.")
             self.write_status("stopped")
             return EXIT_OK
-        self.write_status("starting")
+        self.write_status("starting", force=True)
         failures = False
         stopped = False
         for job in self.plan.jobs:
@@ -1232,7 +1270,7 @@ class SweepRunner:
                     self.journal.alert("Stopping after the failed job (--stop-on-error).")
                     break
         state_name = "stopped" if stopped else ("finished-with-failures" if failures else "finished")
-        self.write_status(state_name)
+        self.write_status(state_name, force=True)
         self.journal.info(f"Sweep {self.plan.name}: {state_name}.")
         return EXIT_FAILURES if failures else EXIT_OK
 

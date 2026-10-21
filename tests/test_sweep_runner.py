@@ -825,6 +825,28 @@ class DuringAJob(RunnerFixture):
         self.assertIn("--resume", popen.calls[1])
         self.assertEqual(self.state(plan)["jobs"]["one"]["status"], "done")
 
+    def test_combinations_that_fail_while_the_screen_is_locked_are_redone(self):
+        plan = make_plan()
+
+        def lock_during_build(proc):
+            self.desktop.locked = True
+            proc.append("2026-10-21 14:00:00,000 INFO: Created run run_fc with 1 combination(s)")
+
+        def unlock(clock):
+            if clock.sleeps == 30:
+                self.desktop.locked = False
+
+        self.clock.on_sleep = unlock
+        popen = FakePopen(self.clock, [
+            {"end_after": 200, "rc": 0, "events": [(70, lock_during_build)],
+             "on_end": self.finish_run("run_fc", s21=None, queue_status="failed")},
+            {"end_after": 60, "rc": 0, "on_end": self.finish_run("run_fc", s21=varying_s21())},
+        ])
+        self.runner(plan, popen).run()
+        self.assertEqual(len(popen.calls), 2)
+        self.assertIn("--resume", popen.calls[1])
+        self.assertEqual(self.state(plan)["jobs"]["one"]["status"], "done")
+
     def test_repeated_interruptions_give_up_as_a_failure(self):
         plan = make_plan()
         scripts = [{"end_after": 30, "rc": 1,
@@ -836,6 +858,134 @@ class DuringAJob(RunnerFixture):
         job = self.state(plan)["jobs"]["one"]
         self.assertEqual(job["status"], "failed")
         self.assertIn("gave up", job["reason"])
+
+
+class FakeProcess:
+    def __init__(self, name, pid=None):
+        self.info = {"name": name, "pid": pid if pid is not None else 1}
+
+
+class FakeDoc:
+    def __init__(self, path, dirty, nxt=None):
+        self.path, self.dirty, self.nxt = path, dirty, nxt
+
+    def GetPathName(self):
+        return self.path
+
+    def GetSaveFlag(self):
+        return self.dirty
+
+    def GetNext(self):
+        return self.nxt
+
+
+class FakeSolidWorks:
+    def __init__(self, documents=()):
+        self.first = None
+        for path, dirty in reversed(list(documents)):
+            self.first = FakeDoc(path, dirty, self.first)
+        self.closed = []
+        self.refuse = set()
+
+    def GetFirstDocument(self):
+        return self.first
+
+    def CloseDoc(self, path):
+        if path in self.refuse:
+            raise RuntimeError("dialog")
+        self.closed.append(path)
+
+
+class DesktopProbes(unittest.TestCase):
+    def setUp(self):
+        logging_quiet()
+        self.tmp = Path(tempfile.mkdtemp(prefix="probe_"))
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.clock = FakeClock()
+        self.desk = sr.Desktop(self.tmp / "queue", clock=self.clock.now)
+
+    def patch_processes(self, *processes):
+        from unittest import mock
+        return mock.patch.object(sr.psutil, "process_iter", return_value=list(processes))
+
+    def test_screen_locked_follows_logonui(self):
+        with self.patch_processes(FakeProcess("explorer.exe")):
+            self.assertFalse(self.desk.screen_locked())
+        with self.patch_processes(FakeProcess("explorer.exe"), FakeProcess("LogonUI.exe")):
+            self.assertTrue(self.desk.screen_locked())
+
+    def test_altium_dialog_is_a_message_form_of_x2_only(self):
+        from unittest import mock
+        windows = [(77, "TMessageForm", "Confirm"), (99, "TMessageForm", "Other"),
+                   (77, "TPanel", "Panel"), (77, "TMessageForm", "")]
+        with self.patch_processes(FakeProcess("X2.EXE", pid=77), FakeProcess("notepad.exe", pid=99)),                 mock.patch.object(sr, "_visible_windows", return_value=windows):
+            self.assertEqual(self.desk.altium_modal_titles(), ["Confirm", "(untitled)"])
+        with self.patch_processes(FakeProcess("notepad.exe", pid=99)),                 mock.patch.object(sr, "_visible_windows", return_value=windows):
+            self.assertEqual(self.desk.altium_modal_titles(), [])
+
+    def test_solidworks_is_not_started_and_documents_are_listed_when_running(self):
+        from unittest import mock
+        app = FakeSolidWorks([("D:/x/box.SLDPRT", True), ("D:/x/lid.SLDPRT", False)])
+        with self.patch_processes(FakeProcess("explorer.exe")),                 mock.patch.object(sr, "_solidworks_app", return_value=app) as get_app:
+            self.assertEqual(self.desk.solidworks_documents(), [])
+            get_app.assert_not_called()
+        with self.patch_processes(FakeProcess("SLDWORKS.EXE")),                 mock.patch.object(sr, "_solidworks_app", return_value=app):
+            self.assertEqual(self.desk.solidworks_documents(),
+                             [("D:/x/box.SLDPRT", True), ("D:/x/lid.SLDPRT", False)])
+
+    def test_closing_documents_reports_the_ones_that_refused(self):
+        from unittest import mock
+        app = FakeSolidWorks()
+        app.refuse = {"bad.SLDPRT"}
+        with mock.patch.object(sr, "_solidworks_app", return_value=app):
+            failures = self.desk.close_solidworks_documents(["good.SLDPRT", "bad.SLDPRT"])
+        self.assertEqual(app.closed, ["good.SLDPRT"])
+        self.assertEqual([path for path, _ in failures], ["bad.SLDPRT"])
+        from unittest import mock as _m
+        with _m.patch.object(sr, "_solidworks_app", return_value=None):
+            self.assertEqual(len(self.desk.close_solidworks_documents(["x.SLDPRT"])), 1)
+
+    def test_heartbeat_file_age_uses_its_timestamp_then_its_changes(self):
+        self.desk.logs.mkdir(parents=True)
+        path = self.desk.heartbeat_path
+        path.write_text('{"state": "running"}')
+        os.utime(path, (self.clock.now() - 600, self.clock.now() - 600))
+        self.assertAlmostEqual(self.desk.heartbeat_age_minutes(), 10.0, places=2)
+        self.clock.t += 60
+        os.utime(path, (self.clock.now() - 1, self.clock.now() - 1))
+        self.assertAlmostEqual(self.desk.heartbeat_age_minutes(), 0.0, places=2)
+        path.unlink()
+        self.assertIsNone(self.desk.heartbeat_age_minutes())
+
+    def test_queue_counts_and_unreachable_queue(self):
+        self.assertIsNone(self.desk.queue_counts())
+        for sub, names in (("pending", ["a.task.json", "b.task.json", ".tmp_x.json"]), ("in_progress", ["c.task.json"])):
+            (self.desk.queue_root / sub).mkdir(parents=True, exist_ok=True)
+            for name in names:
+                (self.desk.queue_root / sub / name).write_text("{}")
+        self.assertEqual(self.desk.queue_counts(), {"pending": 2, "in_progress": 1})
+
+    def test_worker_errors_read_from_the_log_offset(self):
+        self.desk.logs.mkdir(parents=True)
+        before = f"INFO: Processing task {OTHER_TASK} (run)\n"
+        self.desk.worker_log_path.write_text(before + "ERROR: Error in Solving Setup Setup_1\n", encoding="utf-8")
+        offset = len(before.encode("utf-8"))
+        with open(self.desk.worker_log_path, "a", encoding="utf-8") as handle:
+            handle.write(f"INFO: Processing task {TASK} (run)\nERROR: Error in Solving Setup Setup_1\n")
+        # Only the lines after the offset count: the earlier error is OTHER_TASK's and is not read.
+        self.assertEqual(self.desk.worker_errors(offset), {TASK: 1})
+        self.assertEqual(self.desk.worker_errors(0), {OTHER_TASK: 1, TASK: 1})
+
+    def test_process_alive_checks_the_start_time(self):
+        from unittest import mock
+        proc = mock.Mock()
+        proc.create_time.return_value = 100.0
+        with mock.patch.object(sr.psutil, "Process", return_value=proc):
+            self.assertTrue(self.desk.process_alive(42, 100.4))
+            self.assertFalse(self.desk.process_alive(42, 200.0))
+        with mock.patch.object(sr.psutil, "Process", side_effect=sr.psutil.NoSuchProcess(42)):
+            self.assertFalse(self.desk.process_alive(42, 100.0))
+        self.assertFalse(self.desk.process_alive(None, None))
 
 
 class Control(RunnerFixture):

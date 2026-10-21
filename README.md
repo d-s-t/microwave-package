@@ -404,6 +404,27 @@ options described below; the finer factors are settings in the web form.
 Run `python -m microwave_package.pipeline --help` for every analysis
 setting -- they are grouped by which solution type they apply to.
 
+### Solver presets
+
+Five settings decide how hard the worker works on each solve: `max_passes`,
+`min_passes`, `min_converged`, `max_delta_s` and `max_delta_f`. They come as two
+named sets, so a quick look and a result that will be quoted cannot be mixed up:
+
+| preset | max passes | min passes | min converged | max delta S | max delta F | a solve takes |
+|---|---|---|---|---|---|---|
+| `quick` | 4 | 1 | 1 | 0.05 | 5.0 | about 20 min (not converged) |
+| `converged` | 99 | 3 | 2 | 0.02 | 3.0 | 4.5 to 10 h |
+
+```
+python -m microwave_package.pipeline --preset converged --sweep pedestal_depth=0.1 ...
+```
+
+A flag given explicitly (for example `--max-passes 10`) wins over the preset.
+The run's saved settings (`run_config.json`) record the preset as
+`solver_preset` and the settings that were overridden as `solver_overrides`.
+Without `--preset` the five settings are the solver defaults, which are the
+converged values. The web form has no preset: its runs record the five values only.
+
 ### If the queue share is unreachable
 
 Both entry points treat a temporarily-unreachable
@@ -548,6 +569,49 @@ Runs every pre-manufacturing check that needs no simulation (layout, CPW gap,
 fabricator limits, screws, cryogenic expansion) and lists the ones that do as
 manual with how to do each. Options and the checklist itself are in
 [PRE_MANUFACTURING.md](PRE_MANUFACTURING.md).
+
+## Long sweeps
+
+A sweep that runs for hours or days without anyone watching is run by the
+sweep runner. It takes a plan (a JSON file: one pipeline job per entry, and a
+preset for the whole plan) and runs the jobs one after another. The runbook is
+[SWEEPS.md](SWEEPS.md); the examples are in `sweeps/examples/`.
+
+```
+python -m microwave_package.sweep_runner sweeps/examples/depth_converged.json
+python -m microwave_package.sweep_runner sweeps/examples/depth_converged.json --dry-run
+```
+
+Before each job it waits, alerting once per problem, until the worker's
+heartbeat is under 15 minutes old, the queue folder is reachable, the screen is
+unlocked and no Altium dialog is open. SolidWorks documents left open by another
+worktree are closed, without saving, so the next build can open its own. Then it
+starts the pipeline as its own child process, with `--preset` from the plan, and
+supervises it:
+
+- a wall-time limit per job (16 hours by default; `max_job_hours` in the plan).
+  Only the child process is terminated when the limit is reached;
+- a watchdog: an alert when the worker heartbeat is over 30 minutes old, and
+  "worker looks hung" when the heartbeat and the worker log have both been quiet
+  for 90 minutes;
+- resume, not failure, when a job breaks on a locked screen, an Altium dialog or
+  a refused SolidWorks document: the job resumes its run with `--resume`, at most
+  three times.
+
+Each combination is then checked. A combination whose S21 is identical at every
+point is invalid, and so is one whose task the worker logged as `Error in
+Solving`, even though the worker marked the task done. Results go to
+`sweeps/<plan name>/results.csv` and `results.md`: one row per job and
+combination, with the date, the solver settings, the mean S11 and S21 in
+2-10, 10-17 and 17-20 GHz, and the share of points with S21 above -3 dB.
+
+Everything the runner writes goes to `sweeps/<plan name>/`: `state.json`,
+`results.*`, `alerts.txt`, `runner.log`, `status.json` (rewritten every
+minute) and one log per attempt in `logs/`. That folder is not committed; only
+`sweeps/examples/` is. Create a `STOP` file in it to finish the current job and
+exit, or a `PAUSE` file to hold back the next job until it is removed. Running
+the same command again resumes the sweep: finished jobs are skipped and a job
+that was running resumes its run.
 
 ## Output
 
