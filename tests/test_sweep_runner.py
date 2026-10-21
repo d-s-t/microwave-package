@@ -881,15 +881,20 @@ class FakeProcess:
 
 
 class FakeDoc:
+    """SolidWorks getters without arguments are properties in its type library."""
+
     def __init__(self, path, dirty, nxt=None):
         self.path, self.dirty, self.nxt = path, dirty, nxt
 
+    @property
     def GetPathName(self):
         return self.path
 
+    @property
     def GetSaveFlag(self):
         return self.dirty
 
+    @property
     def GetNext(self):
         return self.nxt
 
@@ -902,6 +907,7 @@ class FakeSolidWorks:
         self.closed = []
         self.refuse = set()
 
+    @property
     def GetFirstDocument(self):
         return self.first
 
@@ -992,6 +998,7 @@ class DesktopProbes(unittest.TestCase):
         from unittest import mock
 
         class NoPath(FakeDoc):
+            @property
             def GetPathName(self):
                 raise RuntimeError("no path")
 

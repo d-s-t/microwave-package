@@ -517,20 +517,22 @@ class Desktop:
             return []
         documents: List[Tuple[str, bool]] = []
         try:
-            doc = app.GetFirstDocument()
+            # Parameterless getters are properties in SolidWorks' type library (the design code reads
+            # drawing.GetTitle that way), so they are read, not called.
+            doc = app.GetFirstDocument
             while doc is not None and len(documents) < 500:
                 try:
-                    path = str(doc.GetPathName() or "")
+                    path = str(doc.GetPathName or "")
                 except Exception as exc:
                     self.notes.append(f"SolidWorks: a document's path could not be read ({exc}); "
                                       "it cannot be judged foreign")
                     path = ""
                 try:
-                    dirty = bool(doc.GetSaveFlag())
+                    dirty = bool(doc.GetSaveFlag)
                 except Exception:
                     dirty = False
                 documents.append((path, dirty))
-                doc = doc.GetNext()
+                doc = doc.GetNext
         except Exception as exc:
             self.notes.append(f"SolidWorks: the document list stopped early ({exc})")
         return documents
