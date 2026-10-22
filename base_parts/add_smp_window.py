@@ -1,7 +1,7 @@
 """
 Grows the two SMP connector windows in the lid (base_parts/lid_inside.SLDPRT) by
-`smp_window_extra` on each side, keeping their centres, rounds their corners with R
-`smp_window_radius`, and switches the optional corner reliefs (SMP_Relief) off by equation.
+`smp_window_extra` on each side, keeping their centres, and rounds their corners with R
+`smp_window_radius`.
 
 Run once, on the machine with SolidWorks, with nothing else using it:
 
@@ -19,21 +19,13 @@ with it. Four sketch fillets, one per corner, round the window (their radius dim
 are linked to smp_window_radius, as add_chip_pocket_radius.py does for the chip window).
 The -x window is the copy made by the 'lid' pattern, so it takes the same change.
 
-The relief circles are switched off by an equation in the part, the same way Cut-Extrude8
-is switched off by route_chip_clearence:
-
-    "SMP_Relief" = IIF ( "smp_relief_on" > 0.5 , 0 , 1 )
-
 Checks, in memory, one step at a time. The lid volume is in mm3, tolerance 1e-3 mm3:
-  1. the relief switch: the eight relief cuts (8 x 1.5 x A(0.6), A from smp_relief_area)
-     come out, so the volume rises by that much;
-  2. the window grows with sharp corners: two windows, each (5.6^2 - 5.1^2) x 1.5 deeper,
+  1. the window grows with sharp corners: two windows, each (5.6^2 - 5.1^2) x 1.5 deeper,
      less the channel shortened by the extra at each end (route_width x extra x
      route_clearence per connector), so the volume falls by the rest;
-  3. the eight R corners (four per window) give back (1 - pi/4) R^2 x 1.5 each.
+  2. the eight R corners (four per window) give back (1 - pi/4) R^2 x 1.5 each.
 The part is saved only when every check passes. A failed run leaves the file as it was on
-disk. Refuses to run with smp_relief_on = 1: the reliefs are then the old ones, which
-add_smp_relief.py places, and this script's steps assume they are off.
+disk.
 """
 import argparse
 import math
@@ -52,13 +44,12 @@ from microwave_package.design import step_generation as sg  # noqa: E402
 INPUT_DIM_ON_CREATE = 10     # swInputDimValOnCreate: the Modify box that blocks automation
 MM = 0.001
 SKETCH = "Sketch3"          # the window and channel sketch of the lid's +x half
-RELIEF_FEATURE = "SMP_Relief"
 RADIUS_EQUATION = "smp_window_radius"
 CREATE_RADIUS = 1.0          # mm: the radius the fillets are made at, before linking
 TOL = 1e-3                   # mm
 VOLUME_TOL = 1e-3            # mm^3
 OLD_WINDOW_SIDE = 5.1        # mm: port_length = port_width before smp_window_extra
-LID_PARAMS = ("smp_window_extra", "smp_window_radius", "smp_relief_on")
+LID_PARAMS = ("smp_window_extra", "smp_window_radius")
 
 
 def null():
@@ -181,9 +172,6 @@ def main():
     root = os.path.dirname(os.path.abspath(__file__))
     part = os.path.join(root, "lid_inside.SLDPRT")
     values = eq.get_numeric_parameters(eq.read_file(str(paths.DEFAULT_EQUATIONS_FILE)))
-    if cons.smp_relief_enabled(values):
-        sys.exit("smp_relief_on is 1 in default.txt: this script switches the reliefs off and "
-                 "assumes they are off -- nothing was changed")
     reason = cons.check_smp_window(values)
     if reason:
         sys.exit(reason + " -- nothing was changed")
@@ -193,18 +181,13 @@ def main():
     depth = float(values["lid_width"])
     route_width = float(values.get("route_width", 1.2))
     route_depth = float(values.get("route_clearence", 0.3))
-    relief_area = cons.smp_relief_area(float(values.get(cons.SMP_RELIEF_RADIUS_PARAM,
-                                                        cons.DEFAULT_SMP_RELIEF_RADIUS)),
-                                       float(values.get(cons.SMP_RELIEF_INSET_PARAM,
-                                                        cons.DEFAULT_SMP_RELIEF_INSET)))
-    expected_relief = 8 * depth * relief_area
     expected_window = (-2 * depth * (win["length"] * win["width"] - OLD_WINDOW_SIDE ** 2)
                        + 2 * route_width * extra * route_depth)
     expected_fillets = 8 * depth * (1 - math.pi / 4) * radius ** 2
     print(f"smp_window_extra {extra:g} mm, smp_window_radius {radius:g} mm; window x "
           f"{win['xi']:.3f} .. {win['xo']:.3f}, z +-{win['hw']:.3f}")
-    print(f"expected volume steps (mm3): relief off {expected_relief:+.6f}, window {expected_window:+.6f}, "
-          f"corners {expected_fillets:+.6f}, total {expected_relief + expected_window + expected_fillets:+.6f}")
+    print(f"expected volume steps (mm3): window {expected_window:+.6f}, corners {expected_fillets:+.6f}, "
+          f"total {expected_window + expected_fillets:+.6f}")
 
     app, err = sg.connect_solidworks()
     if not app:
@@ -223,27 +206,14 @@ def main():
         v0 = volume(m)
         print("volume as it is (mm3)", round(v0, 4))
 
-        # 1. the relief feature is switched off by equation
-        names = []
-        f = m.FirstFeature
-        while f is not None:
-            names.append(f.Name)
-            f = f.GetNextFeature
-        if RELIEF_FEATURE not in names:
-            sys.exit(f"{RELIEF_FEATURE} is not in the part -- nothing was changed")
-        if not any(em.Equation(i).replace(" ", "").startswith(f'"{RELIEF_FEATURE}"=') for i in range(em.GetCount)):
-            em.Add2(-1, f'"{RELIEF_FEATURE}"= IIF ( "smp_relief_on" > 0.5 , 0 , 1 )', True)
-        v1 = volume(m)
-        check("relief switch", v1 - v0, expected_relief)
-
-        # 2. the window grows about its centre; the channel's end and deep end follow the wall
+        # 1. the window grows about its centre; the channel's end and deep end follow the wall
         set_equation(em, "D1@Sketch3", '"D1@Sketch3"="port_space"-"smp_window_extra"')
         set_equation(em, "D2@Sketch3", '"D2@Sketch3"="port_length"+2*"smp_window_extra"')
         set_equation(em, "D3@Sketch3", '"D3@Sketch3"="port_width"+2*"smp_window_extra"')
         v2 = volume(m)
-        check("window grown (sharp corners)", v2 - v1, expected_window)
+        check("window grown (sharp corners)", v2 - v0, expected_window)
 
-        # 3. the four corners of each window are rounded R
+        # 2. the four corners of each window are rounded R
         sm = m.SketchManager
         edit_sketch(m, sm)
         xi, xo, hw = win["xi"], win["xo"], win["hw"]
@@ -287,8 +257,7 @@ def main():
             print("linked", name, "to", RADIUS_EQUATION)
         v3 = volume(m)
         check("corners rounded", v3 - v2, expected_fillets)
-        check("total", v3 - v0, expected_relief + expected_window + expected_fillets)
-        print("relief feature suppressed:", m.FeatureByName(RELIEF_FEATURE).IsSuppressed)
+        check("total", v3 - v0, expected_window + expected_fillets)
 
         if not args.no_save:
             e = win32com.client.VARIANT(pythoncom.VT_BYREF | pythoncom.VT_I4, 0)

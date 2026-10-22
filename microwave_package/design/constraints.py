@@ -441,22 +441,10 @@ DEFAULT_SMP_WINDOW_RADIUS = 1.0
 SMP_WINDOW_MIN_CLEARANCE = 0.15
 SMP_HOUSING_SIZE = 5.0            # mm, in plan (x and z)
 SMP_HOUSING_CUT = 0.42            # mm, each plan corner cut back this much at 45 degrees
-# The OPTIONAL corner reliefs: circles at the window corners, cut only with
-# smp_relief_on = 1. Off by default, since the R arcs clear the housing without them.
-SMP_RELIEF_ON_PARAM = "smp_relief_on"
-DEFAULT_SMP_RELIEF_ON = 0
-SMP_RELIEF_RADIUS_PARAM = "smp_relief_radius"
-DEFAULT_SMP_RELIEF_RADIUS = 1.0
-SMP_RELIEF_INSET_PARAM = "smp_relief_inset"
-DEFAULT_SMP_RELIEF_INSET = 0.6
-# The least lid left between a relief circle and the route channel's end, the
-# outside edge or a screw countersink, in mm. A design choice, not a fact of the
-# lid, and the user may overrule it. It was 0.5 mm (PR #87). Lowered to 0.45 mm
-# on 2026-10-22: with the default inset the circle stands 0.477 mm from the
-# channel's end, and the channel is only 0.3 mm deep in a 1.5 mm plate. The
-# layout check reports the margin.
-SMP_RELIEF_MIN_CLEARANCE = 0.45
-SMP_RELIEF_AREA_STEPS = 200000                  # Simpson intervals for the removed area
+# The least lid kept between the SMP window and the route channel's corner arcs, the outside
+# edge and every screw countersink, in mm. A design choice, not a fact of the lid, and the user
+# may overrule it. 0.45 mm (lowered from 0.5 mm on 2026-10-22).
+SMP_WINDOW_LID_CLEARANCE = 0.45
 
 
 def smp_window(values: Dict[str, float]) -> Dict[str, float]:
@@ -470,102 +458,6 @@ def smp_window(values: Dict[str, float]) -> Dict[str, float]:
     width = values.get("port_width", 5.1) + 2.0 * extra
     return {"xo": xo, "xi": xo - length, "hw": width / 2.0, "length": length, "width": width,
             "r": float(values.get(SMP_WINDOW_RADIUS_PARAM, DEFAULT_SMP_WINDOW_RADIUS))}
-
-
-def smp_relief_enabled(values: Dict[str, float]) -> bool:
-    """Whether the optional SMP corner reliefs are cut (smp_relief_on = 1; off by default)."""
-    return float(values.get(SMP_RELIEF_ON_PARAM, DEFAULT_SMP_RELIEF_ON)) > 0.5
-
-
-def smp_relief_centres(values: Dict[str, float]) -> list:
-    """The eight relief centres (x, z) in the lid's frame, mm, for smp_relief_on = 1. Each
-    is `smp_relief_inset` inside the two walls of one corner of the two SMP windows
-    (smp_window). At inset 0 they are the window corners, the old dog-bone."""
-    inset = float(values.get(SMP_RELIEF_INSET_PARAM, DEFAULT_SMP_RELIEF_INSET))
-    w = smp_window(values)
-    zc = w["hw"] - inset
-    return [(sx * x, sz * zc) for x in (w["xi"] + inset, w["xo"] - inset) for sx in (1, -1) for sz in (1, -1)]
-
-
-def smp_relief_area(radius: float, inset: float) -> float:
-    """The lid material one relief removes at one window corner, mm2: the circle's area
-    outside the corner's quadrant (u >= 0, v >= 0, measured inward from the two walls),
-    that is pi R^2 less the part inside the quadrant. Simpson's rule in u. At inset 0 it
-    is 3 pi / 4 R^2."""
-    lo, hi = max(0.0, inset - radius), inset + radius
-    n = SMP_RELIEF_AREA_STEPS
-    h = (hi - lo) / n
-    total = 0.0
-    for i in range(n + 1):
-        u = lo + i * h
-        half = math.sqrt(max(0.0, radius * radius - (u - inset) ** 2))
-        length = max(0.0, (inset + half) - max(0.0, inset - half))
-        total += (1 if i in (0, n) else (4 if i % 2 else 2)) * length
-    return math.pi * radius * radius - total * h / 3.0
-
-
-def smp_relief_route_gap(values: Dict[str, float], centre: tuple) -> float:
-    """Lid left, mm, between one relief circle and the route channel. The channel is
-    route_width wide and runs from the inner window wall toward the centre, so the nearest
-    point of it to the circle is the channel's end corner: this is the exact distance from
-    the circle's centre to the channel's end, less the radius. (The bare |z| gap would
-    ignore the end and read 0.35 mm at the default inset, where the true gap is 0.477.)"""
-    radius = float(values.get(SMP_RELIEF_RADIUS_PARAM, DEFAULT_SMP_RELIEF_RADIUS))
-    inner = smp_window(values)["xi"]
-    half_channel = values.get("route_width", 1.2) / 2.0
-    cx, cz = centre
-    return math.hypot(max(0.0, abs(cx) - inner), max(0.0, abs(cz) - half_channel)) - radius
-
-
-def check_smp_relief(values: Dict[str, float]) -> Optional[str]:
-    """Why the OPTIONAL relief circles at the SMP pocket corners cannot be cut, or None.
-    Only the layout check calls this with smp_relief_on = 1 (off by default: see
-    check_smp_window for the window that the housing has to fit in).
-
-    The eight reliefs are circles of `smp_relief_radius`, each centred `smp_relief_inset`
-    inside the two walls of a corner of the two 5.1 mm connector windows in the lid
-    (base_parts/add_smp_relief.py cuts them). Each must cover its window corner, which
-    stays sharp in the CAD, and keep SMP_RELIEF_MIN_CLEARANCE of lid from the route
-    channel's end, the outside edge and every screw countersink.
-    """
-    radius = float(values.get(SMP_RELIEF_RADIUS_PARAM, DEFAULT_SMP_RELIEF_RADIUS))
-    if radius <= 0:
-        return ("smp_relief_radius must be above 0: each SMP pocket corner is over-cut with a "
-                "circle of that radius, and a zero circle is not cut")
-    inset = float(values.get(SMP_RELIEF_INSET_PARAM, DEFAULT_SMP_RELIEF_INSET))
-    if inset < 0 or math.hypot(inset, inset) >= radius:
-        return (f"smp_relief_inset {_fmt(inset)} mm does not cover the window corner: the circle must reach "
-                f"it, so inset x sqrt 2 must be under smp_relief_radius ({_fmt(radius)} mm), an inset under "
-                f"{_fmt(radius / math.sqrt(2.0))} mm")
-    from . import screws
-
-    half_length = values.get("pcb_length", 50.0) / 2.0
-    half_side = values.get("pcb_side", 25.0) / 2.0
-    countersink = screws.COUNTERSINK_DIAMETER / 2.0
-    plan = screws.plan(values)
-    holes = list(plan.positions) if plan is not None else []
-    for cx, cz in smp_relief_centres(values):
-        edge = min(half_length - (abs(cx) + radius), half_side - (abs(cz) + radius))
-        if edge < SMP_RELIEF_MIN_CLEARANCE:
-            return (f"the SMP pocket relief at ({_fmt(cx)}, {_fmt(cz)}) mm leaves {_fmt(edge)} mm of lid "
-                    f"to the outside edge, under {_fmt(SMP_RELIEF_MIN_CLEARANCE)} mm -- reduce smp_relief_radius")
-        gap = smp_relief_route_gap(values, (cx, cz))
-        if gap < SMP_RELIEF_MIN_CLEARANCE:
-            return (f"the SMP pocket relief at ({_fmt(cx)}, {_fmt(cz)}) mm leaves {_fmt(gap)} mm to the "
-                    f"route channel's end, under {_fmt(SMP_RELIEF_MIN_CLEARANCE)} mm -- lower smp_relief_inset "
-                    f"or route_width, or reduce smp_relief_radius")
-        for u, v in holes:
-            gap = math.hypot(cx - u, cz - v) - radius - countersink
-            if gap < SMP_RELIEF_MIN_CLEARANCE:
-                return (f"the SMP pocket relief at ({_fmt(cx)}, {_fmt(cz)}) mm leaves {_fmt(gap)} mm to a "
-                        f"screw countersink at ({_fmt(u)}, {_fmt(v)}) mm, under "
-                        f"{_fmt(SMP_RELIEF_MIN_CLEARANCE)} mm -- reduce smp_relief_radius or screw_inset")
-    return None
-
-
-# The lid margin the window keeps from the channel's corner arcs, the outside edge and every
-# screw countersink: the same 0.45 mm as the relief checks.
-SMP_WINDOW_LID_CLEARANCE = SMP_RELIEF_MIN_CLEARANCE
 
 
 def _window_clearance(x: float, z: float, w: Dict[str, float]) -> float:
@@ -816,14 +708,10 @@ def check_layout(values: Dict[str, float], mat_pcb: Optional[str] = None,
     if reason:
         return reason
     # The lid's SMP windows hold the connector housing and keep clear of the channel, the edge
-    # and the screws. The optional corner reliefs (smp_relief_on = 1) are checked the same way.
+    # and the screws.
     reason = check_smp_window(values)
     if reason:
         return reason
-    if smp_relief_enabled(values):
-        reason = check_smp_relief(values)
-        if reason:
-            return reason
 
     # A bare board has no die: no opening, no bond fingers and nothing
     # to keep clear of them, so the room a die would need is not asked

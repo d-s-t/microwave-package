@@ -41,9 +41,6 @@ LABELS: Dict[str, str] = {
     "pedestal_shape": "Pedestal recess shape (0 square, 1 circle)",
     "pedestal_corner_radius": "Pedestal recess corner radius (square)",
     "chip_pocket_radius": "Chip window corner radius (lid)",
-    "smp_relief_radius": "SMP pocket corner relief radius (lid)",
-    "smp_relief_inset": "SMP pocket relief centre inset (lid)",
-    "smp_relief_on": "SMP pocket corner reliefs on (lid)",
     "smp_window_extra": "SMP window growth per side (lid)",
     "smp_window_radius": "SMP window corner radius (lid)",
     "bonding_clearence": "Wire-bond clearance",
@@ -118,18 +115,19 @@ SCREWS_PARAM = "screws_on"
 # on/off pinned for the whole run; the groove's size is swept like any other.
 VENTS_PARAM = "vents_on"
 
-# The SMP corner reliefs flag: 0 (the default) leaves the optional relief
-# circles out of the lid; 1 cuts them (design.constraints.SMP_RELIEF_ON_PARAM).
-SMP_RELIEF_ON_PARAM = "smp_relief_on"
-BOOLEAN_PARAMETERS = {NO_CHIP_PARAM, SCREWS_PARAM, VENTS_PARAM, SMP_RELIEF_ON_PARAM}
+BOOLEAN_PARAMETERS = {NO_CHIP_PARAM, SCREWS_PARAM, VENTS_PARAM}
 
 # Parameters this project no longer has. The distortion option (no_distortion,
-# and the distortion_radius / distortion_x / distortion_y geometry under it) was
-# removed, so no run creates them any more. Old runs still store them in their
+# and the distortion_radius / distortion_x / distortion_y geometry under it) and the
+# optional SMP corner reliefs (smp_relief_on, smp_relief_radius, smp_relief_inset)
+# were removed, so no run creates them any more. Old runs still store them in their
 # config, state and results, so they are dropped on read (run_manager.Run.load,
 # compare) and never reach the form, the sweep or a plot. Old folders and files
 # are left as they were.
-RETIRED_PARAMETERS = frozenset({"no_distortion", "distortion_radius", "distortion_x", "distortion_y"})
+RETIRED_PARAMETERS = frozenset({
+    "no_distortion", "distortion_radius", "distortion_x", "distortion_y",
+    "smp_relief_on", "smp_relief_radius", "smp_relief_inset",
+})
 
 
 def is_retired(name: str) -> bool:
@@ -181,7 +179,7 @@ GROUPS: List[dict] = [
         "names": [
             "port_count", "port_length", "port_width", "port_space",
             "chip_leg", "pedestal_corner_radius", "chip_pocket_radius", "smp_window_extra", "smp_window_radius",
-            "smp_relief_on", "smp_relief_radius", "smp_relief_inset", "bonding_clearence",
+            "bonding_clearence",
             "route_width", "route_clearence", "route_chip_clearence",
         ],
     },
