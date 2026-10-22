@@ -3,6 +3,11 @@ Relief circles at the eight corners of the two SMP connector windows in the lid
 (base_parts/lid_inside.SLDPRT), driven by `smp_relief_radius` and `smp_relief_inset`
 in default.txt.
 
+The reliefs are OPTIONAL: smp_relief_on = 0 (off) is the default, and then the part's SMP_Relief
+feature is suppressed by equation ("SMP_Relief" = IIF(smp_relief_on > 0.5, 0, 1), set up by
+base_parts/add_smp_window.py), so the checks below would find no relief. Set smp_relief_on = 1 in
+default.txt before running this script; the script refuses to run with it at 0.
+
 Run once, on the machine with SolidWorks, with nothing else using it:
 
     python base_parts/add_smp_relief.py --depth 1.5 [--redo] [--no-save]
@@ -122,6 +127,9 @@ def main():
     root = os.path.dirname(os.path.abspath(__file__))
     part = os.path.join(root, "lid_inside.SLDPRT")
     values = eq.get_numeric_parameters(eq.read_file(str(paths.DEFAULT_EQUATIONS_FILE)))
+    if not cons.smp_relief_enabled(values):
+        sys.exit("smp_relief_on is 0 in default.txt: the SMP reliefs are off, so there is nothing to "
+                 "cut or check -- set smp_relief_on = 1 first -- nothing was changed")
     radius = float(values.get(RADIUS_EQUATION, cons.DEFAULT_SMP_RELIEF_RADIUS))
     inset = float(values.get(cons.SMP_RELIEF_INSET_PARAM, cons.DEFAULT_SMP_RELIEF_INSET))
     depth = args.depth

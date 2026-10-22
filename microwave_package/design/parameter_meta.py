@@ -43,6 +43,9 @@ LABELS: Dict[str, str] = {
     "chip_pocket_radius": "Chip window corner radius (lid)",
     "smp_relief_radius": "SMP pocket corner relief radius (lid)",
     "smp_relief_inset": "SMP pocket relief centre inset (lid)",
+    "smp_relief_on": "SMP pocket corner reliefs on (lid)",
+    "smp_window_extra": "SMP window growth per side (lid)",
+    "smp_window_radius": "SMP window corner radius (lid)",
     "bonding_clearence": "Wire-bond clearance",
     "route_width": "Lid relief width",
     "route_clearence": "Lid relief depth",
@@ -122,7 +125,11 @@ SCREWS_PARAM = "screws_on"
 # the screw bores breathe out of the box's side (see design.venting). A plain
 # on/off pinned for the whole run; the groove's size is swept like any other.
 VENTS_PARAM = "vents_on"
-BOOLEAN_PARAMETERS = {DISTORTION_PARAM, NO_CHIP_PARAM, SCREWS_PARAM, VENTS_PARAM}
+
+# The SMP corner reliefs flag: 0 (the default) leaves the optional relief
+# circles out of the lid; 1 cuts them (design.constraints.SMP_RELIEF_ON_PARAM).
+SMP_RELIEF_ON_PARAM = "smp_relief_on"
+BOOLEAN_PARAMETERS = {DISTORTION_PARAM, NO_CHIP_PARAM, SCREWS_PARAM, VENTS_PARAM, SMP_RELIEF_ON_PARAM}
 
 VENT_GEOMETRY_PARAMETERS = ["vent_width", "vent_depth"]
 
@@ -195,7 +202,8 @@ GROUPS: List[dict] = [
         "collapsed": False,
         "names": [
             "port_count", "port_length", "port_width", "port_space",
-            "chip_leg", "pedestal_corner_radius", "chip_pocket_radius", "smp_relief_radius", "smp_relief_inset", "bonding_clearence",
+            "chip_leg", "pedestal_corner_radius", "chip_pocket_radius", "smp_window_extra", "smp_window_radius",
+            "smp_relief_on", "smp_relief_radius", "smp_relief_inset", "bonding_clearence",
             "route_width", "route_clearence", "route_chip_clearence",
         ],
     },
