@@ -40,7 +40,9 @@
 
 "pedestal_corner_radius"= 1.0	' radius of the rounded corners of the square pedestal recess (pedestal_shape 0), in mm. The recess corners are milled, and a 1 mm end mill cannot cut a sharper one. Must be above 0 (a SolidWorks fillet cannot be zero) and less than half pedestal_size (see design/pedestal.py). Not used by the circle.
 
-"smp_relief_radius"= 1.0	' radius of the dog-bone relief circles at the four corners of each SMP connector pocket in the lid, in mm: the 1 mm end mill cuts each corner with a circle of its own radius, centred on the corner, so the square connector (5.0 x 4.1 mm, sharp corners) fits. Must be above 0. Built by base_parts/add_smp_relief.py.
+"smp_relief_radius"= 1.0	' radius of the relief circles at the four corners of each SMP connector pocket in the lid, in mm: the 1 mm end mill cuts each corner with a circle of its own radius, centred smp_relief_inset inside the two walls of that corner. The SMP housing is 5.0 x 5.0 mm in plan (4.1 mm high) with its corners cut back about 0.42 mm, so the circles clear it. Must be above 0, and the circle must cover the window's sharp corner (smp_relief_inset x sqrt 2 below it). Built by base_parts/add_smp_relief.py.
+
+"smp_relief_inset"= 0.6 ' how far in, in mm, each relief circle is centred inside the two walls of its pocket corner (the circle bites smp_relief_radius - smp_relief_inset into the lid). 0 puts the centre on the corner (the old dog-bone, 3 pi/4 R^2 removed per corner); 0.6 leaves 0.4 mm of bite. Changing it needs add_smp_relief.py --redo (the centres are placed by coordinate). Must be at least 0 and below smp_relief_radius / sqrt 2. The layout check (design/constraints.py) refuses insets that leave too little lid.
 
 "chip_pocket_radius"= 1.0	' radius of the four inside corners of the 7.5 mm chip window in the lid plug, in mm. The window is milled, and a 1 mm end mill cannot cut a sharper inside corner. Must be above 0 (a SolidWorks fillet cannot be zero). Built by base_parts/add_chip_pocket_radius.py.
 

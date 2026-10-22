@@ -634,46 +634,95 @@ def pcb_corner_floor(cavity_radius: float, wall_gap: float = PCB_WALL_GAP) -> fl
 
 SMP_RELIEF_RADIUS_PARAM = "smp_relief_radius"
 DEFAULT_SMP_RELIEF_RADIUS = 1.0
-# The least lid left between a relief circle and the channel, the outside edge
-# or a screw countersink, in mm. A design choice (the lid is 1.5 mm thick and the
-# relief must not break out of the plate); the layout check reports the margin.
-SMP_RELIEF_MIN_CLEARANCE = 0.5
+SMP_RELIEF_INSET_PARAM = "smp_relief_inset"
+DEFAULT_SMP_RELIEF_INSET = 0.6
+# The least lid left between a relief circle and the route channel's end, the
+# outside edge or a screw countersink, in mm. A design choice, not a fact of the
+# lid, and the user may overrule it. It was 0.5 mm (PR #87). Lowered to 0.45 mm
+# on 2026-10-22: with the default inset the circle stands 0.477 mm from the
+# channel's end, and the channel is only 0.3 mm deep in a 1.5 mm plate. The
+# layout check reports the margin.
+SMP_RELIEF_MIN_CLEARANCE = 0.45
+SMP_RELIEF_AREA_STEPS = 200000                  # Simpson intervals for the removed area
+
+
+def smp_relief_centres(values: Dict[str, float]) -> list:
+    """The eight relief centres (x, z) in the lid's frame, mm. Each is `smp_relief_inset`
+    inside the two walls of one corner of the two 5.1 mm connector windows (the inner
+    wall at 13.9 mm, the outer at 19.0 mm, the sides at +-2.55 mm). At inset 0 they are
+    the window corners, the old dog-bone."""
+    inset = float(values.get(SMP_RELIEF_INSET_PARAM, DEFAULT_SMP_RELIEF_INSET))
+    outer = values.get("pcb_length", 50.0) / 2.0 - values.get("port_space", 6.0)
+    inner = outer - values.get("port_length", 5.1)
+    zc = values.get("port_width", 5.1) / 2.0 - inset
+    return [(sx * x, sz * zc) for x in (inner + inset, outer - inset) for sx in (1, -1) for sz in (1, -1)]
+
+
+def smp_relief_area(radius: float, inset: float) -> float:
+    """The lid material one relief removes at one window corner, mm2: the circle's area
+    outside the corner's quadrant (u >= 0, v >= 0, measured inward from the two walls),
+    that is pi R^2 less the part inside the quadrant. Simpson's rule in u. At inset 0 it
+    is 3 pi / 4 R^2."""
+    lo, hi = max(0.0, inset - radius), inset + radius
+    n = SMP_RELIEF_AREA_STEPS
+    h = (hi - lo) / n
+    total = 0.0
+    for i in range(n + 1):
+        u = lo + i * h
+        half = math.sqrt(max(0.0, radius * radius - (u - inset) ** 2))
+        length = max(0.0, (inset + half) - max(0.0, inset - half))
+        total += (1 if i in (0, n) else (4 if i % 2 else 2)) * length
+    return math.pi * radius * radius - total * h / 3.0
+
+
+def smp_relief_route_gap(values: Dict[str, float], centre: tuple) -> float:
+    """Lid left, mm, between one relief circle and the route channel. The channel is
+    route_width wide and runs from the inner window wall toward the centre, so the nearest
+    point of it to the circle is the channel's end corner: this is the exact distance from
+    the circle's centre to the channel's end, less the radius. (The bare |z| gap would
+    ignore the end and read 0.35 mm at the default inset, where the true gap is 0.477.)"""
+    radius = float(values.get(SMP_RELIEF_RADIUS_PARAM, DEFAULT_SMP_RELIEF_RADIUS))
+    inner = values.get("pcb_length", 50.0) / 2.0 - values.get("port_space", 6.0) - values.get("port_length", 5.1)
+    half_channel = values.get("route_width", 1.2) / 2.0
+    cx, cz = centre
+    return math.hypot(max(0.0, abs(cx) - inner), max(0.0, abs(cz) - half_channel)) - radius
 
 
 def check_smp_relief(values: Dict[str, float]) -> Optional[str]:
-    """Why the dog-bone reliefs at the SMP pocket corners cannot be cut, or None.
+    """Why the relief circles at the SMP pocket corners cannot be cut, or None.
 
-    The eight reliefs are circles of `smp_relief_radius`, centred on the corners
-    of the two 5.1 mm connector pockets in the lid (base_parts/add_smp_relief.py).
-    Each must keep SMP_RELIEF_MIN_CLEARANCE of lid from the route channel, from
-    the outside edge and from every screw countersink.
+    The eight reliefs are circles of `smp_relief_radius`, each centred `smp_relief_inset`
+    inside the two walls of a corner of the two 5.1 mm connector windows in the lid
+    (base_parts/add_smp_relief.py cuts them). Each must cover its window corner, which
+    stays sharp in the CAD, and keep SMP_RELIEF_MIN_CLEARANCE of lid from the route
+    channel's end, the outside edge and every screw countersink.
     """
     radius = float(values.get(SMP_RELIEF_RADIUS_PARAM, DEFAULT_SMP_RELIEF_RADIUS))
     if radius <= 0:
         return ("smp_relief_radius must be above 0: each SMP pocket corner is over-cut with a "
                 "circle of that radius, and a zero circle is not cut")
+    inset = float(values.get(SMP_RELIEF_INSET_PARAM, DEFAULT_SMP_RELIEF_INSET))
+    if inset < 0 or math.hypot(inset, inset) >= radius:
+        return (f"smp_relief_inset {_fmt(inset)} mm does not cover the window corner: the circle must reach "
+                f"it, so inset x sqrt 2 must be under smp_relief_radius ({_fmt(radius)} mm), an inset under "
+                f"{_fmt(radius / math.sqrt(2.0))} mm")
     from . import screws
 
     half_length = values.get("pcb_length", 50.0) / 2.0
     half_side = values.get("pcb_side", 25.0) / 2.0
-    outer = half_length - values.get("port_space", 6.0)
-    inner = outer - values.get("port_length", 5.1)
-    half_port = values.get("port_width", 5.1) / 2.0
-    channel = values.get("route_width", 1.2) / 2.0
     countersink = screws.COUNTERSINK_DIAMETER / 2.0
     plan = screws.plan(values)
     holes = list(plan.positions) if plan is not None else []
-    centres = [(sx * x, sz * half_port) for x in (inner, outer) for sx in (1, -1) for sz in (1, -1)]
-    for cx, cz in centres:
+    for cx, cz in smp_relief_centres(values):
         edge = min(half_length - (abs(cx) + radius), half_side - (abs(cz) + radius))
         if edge < SMP_RELIEF_MIN_CLEARANCE:
             return (f"the SMP pocket relief at ({_fmt(cx)}, {_fmt(cz)}) mm leaves {_fmt(edge)} mm of lid "
                     f"to the outside edge, under {_fmt(SMP_RELIEF_MIN_CLEARANCE)} mm -- reduce smp_relief_radius")
-        gap = abs(cz) - radius - channel
+        gap = smp_relief_route_gap(values, (cx, cz))
         if gap < SMP_RELIEF_MIN_CLEARANCE:
             return (f"the SMP pocket relief at ({_fmt(cx)}, {_fmt(cz)}) mm leaves {_fmt(gap)} mm to the "
-                    f"route channel, under {_fmt(SMP_RELIEF_MIN_CLEARANCE)} mm -- reduce smp_relief_radius "
-                    f"or route_width")
+                    f"route channel's end, under {_fmt(SMP_RELIEF_MIN_CLEARANCE)} mm -- lower smp_relief_inset "
+                    f"or route_width, or reduce smp_relief_radius")
         for u, v in holes:
             gap = math.hypot(cx - u, cz - v) - radius - countersink
             if gap < SMP_RELIEF_MIN_CLEARANCE:

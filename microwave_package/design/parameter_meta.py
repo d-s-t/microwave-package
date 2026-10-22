@@ -42,6 +42,7 @@ LABELS: Dict[str, str] = {
     "pedestal_corner_radius": "Pedestal recess corner radius (square)",
     "chip_pocket_radius": "Chip window corner radius (lid)",
     "smp_relief_radius": "SMP pocket corner relief radius (lid)",
+    "smp_relief_inset": "SMP pocket relief centre inset (lid)",
     "bonding_clearence": "Wire-bond clearance",
     "route_width": "Lid relief width",
     "route_clearence": "Lid relief depth",
@@ -194,7 +195,7 @@ GROUPS: List[dict] = [
         "collapsed": False,
         "names": [
             "port_count", "port_length", "port_width", "port_space",
-            "chip_leg", "pedestal_corner_radius", "chip_pocket_radius", "smp_relief_radius", "bonding_clearence",
+            "chip_leg", "pedestal_corner_radius", "chip_pocket_radius", "smp_relief_radius", "smp_relief_inset", "bonding_clearence",
             "route_width", "route_clearence", "route_chip_clearence",
         ],
     },

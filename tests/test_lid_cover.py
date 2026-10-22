@@ -96,10 +96,13 @@ class TestLayoutCheckOfTheLid(unittest.TestCase):
         self.assertIsNone(constraints.check_layout(values(route_width=needed + 0.01), TMM))
         self.assertIsNotNone(constraints.check_layout(values(route_width=needed - 0.05), TMM))
 
-    def test_a_channel_with_room_to_spare_is_accepted(self):
-        # 2.0 mm, not 3.0: the SMP pocket reliefs (smp_relief_radius, at z = 2.55 mm) leave
-        # 0.55 mm to a 2.0 mm channel, and a 3.0 mm one would come within 0.05 mm of them.
-        self.assertIsNone(constraints.check_layout(values(route_width=2.0), TMM))
+    def test_the_default_channel_leaves_the_smp_reliefs_room(self):
+        # 1.2 mm: the SMP reliefs (smp_relief_inset 0.6) stand 0.48 mm from the channel's end.
+        self.assertIsNone(constraints.check_layout(values(route_width=1.2), TMM))
+
+    def test_a_channel_too_wide_for_the_smp_reliefs_is_refused(self):
+        # 2.0 mm would come within 0.12 mm of the reliefs at the window corners (test_smp_relief).
+        self.assertIn("route channel's end", constraints.check_layout(values(route_width=2.0), TMM))
 
     def test_a_relief_with_no_depth_is_refused(self):
         reason = constraints.check_layout(values(route_clearence=0.0), TMM)
