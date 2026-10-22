@@ -62,8 +62,6 @@
 
 "bonding_clearence"= 0.6	' how far out from the die the lid must stay clear; the bond fingers sit midway between the PCB opening and this
 
-"no_distortion" = 1 ' (boolean) when set to 1, no distortions are present. when set to 0, distortions are added to the box and holes to the PCB.
-
 "no_chip" = 0 ' (boolean) when set to 1, the bare board: no chip, opening, pedestal or wire bonds, just the CPW from one connector to the other. 0 builds the full package.
 
 "screws_on" = 1 ' (boolean) when set to 1, four M2 countersunk screws hold the lid, PCB and box together at the PCB corners. 0 builds without them.
@@ -89,12 +87,6 @@
 "vent_width" = 0.5 ' width of each vent groove (a 0.5 mm groove has a 300 GHz cutoff, over ten times the 26 GHz band top)
 
 "vent_depth" = 0.3 ' depth of each vent groove, down from the top face of the box floor (the face the PCB rests on)
-
-"distortion_radius" = 0.6
-
-"distortion_x" = 0.0
-
-"distortion_y" = 0.8
 
 "cpw_trace_width"= 0.2	' width of the CPW signal trace on the PCB (the gap is solved for 50 ohm, not typed)
 

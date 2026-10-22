@@ -228,7 +228,7 @@ class TestViaGrid(unittest.TestCase):
 
 class TestViaGridAtRunCreation(unittest.TestCase):
     """A combination whose via grid would come out sparse is skipped when
-    the run is created, like a distortion that does not fit. Before, it
+    the run is created, like any layout the checks refuse. Before, it
     was only refused once the Altium stage reached it, by which time
     SolidWorks had already built its solid."""
 
@@ -265,15 +265,3 @@ class TestViaGridAtRunCreation(unittest.TestCase):
         reasons = self.skip_reasons(use_altium=False)
         self.assertEqual(reasons, {0.5: None, 0.6: None})
 
-    def test_a_distortion_that_does_not_fit_is_still_the_reason_given(self):
-        """Both are wrong here. The distortion check comes first, as it
-        always has, so its message is the one that shows."""
-        run = Run.create(
-            [SweepParameter(name="via_max_spacing", values=[0.5])],
-            dict(pipeline.DEFAULT_ANALYSIS_SETTINGS, use_altium=True),
-            parameter_defaults={"via_diameter": 0.4, "via_min_spacing": 0.2,
-                                "no_distortion": 0, "distortion_radius": 100.0},
-        )
-        (combo,) = run.state["combos"].values()
-        self.assertIn("distortion", combo["skip_reason"].lower())
-        self.assertNotIn("via_max_spacing", combo["skip_reason"])

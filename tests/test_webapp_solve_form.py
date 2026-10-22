@@ -139,7 +139,7 @@ class TestTheFormItself(unittest.TestCase):
         names = [m.group(1) for m in (re.search(r'name="([a-z_0-9]+)"', tag) for tag in tags) if m]
         counts = collections.Counter(names)
         # Radio groups legitimately share a name; nothing else may.
-        radios = {"solution_type", "distortion_mode"}
+        radios = {"solution_type"}
         repeated = {n for n, k in counts.items() if k > 1} - radios
         self.assertEqual(repeated, set())
 

@@ -22,7 +22,7 @@ across it; the 5880/TMM defaults are not what matters here, the shapes are).
 | 7 | Gap between lid_inside and box wall | none in the model (lid is the cavity size) | n/a | Real parts have a fit clearance, which is open to the top |
 | 8 | 35 um copper steps under the lid, film between board and floor | micron-scale | virtual leaks, not pockets | Where it matters (the CPW slots) the relief channel covers them |
 | 9 | Plated vias | 0.3 mm barrels through the board | yes, when the box is assembled | **Pending PI decision (fill, cap or vent). Not handled here.** |
-| 10 | Distortion pockets (`no_distortion` = 0) | experimental geometry | blind pockets in the box under holes in the PCB | Not vented: an experiment, not a build. If it is ever built, it needs the same treatment as 5 |
+| 10 | Distortion pockets (`no_distortion` = 0), removed 2026-10-22 | was an experimental geometry: blind pockets in the box under holes in the PCB | blind pockets (no route out) | Not applicable: the option is gone from the project and no run builds it. If it is ever reintroduced it needs the same treatment as 5 |
 
 ## The vents
 

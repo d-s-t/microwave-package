@@ -105,7 +105,7 @@ def check(values: Dict[str, float]) -> Optional[str]:
 
     Only a recess under a die is checked: a bare board (`no_chip`) has no
     recess, and `pedestal_depth` 0 cuts none. Returns a sentence naming the
-    parameter to change, in the style of `constraints.check_combination`.
+    parameter to change, in the style of the other checks in `constraints`.
     """
     if parameter_meta.is_bare_board(values) or values.get("pedestal_depth", 0.0) <= 0:
         return None

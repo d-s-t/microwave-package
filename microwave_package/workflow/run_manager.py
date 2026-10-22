@@ -222,6 +222,35 @@ def _equation_file_values() -> Dict[str, float]:
         return {}
 
 
+def _without_retired_config(config: dict) -> dict:
+    """An old run's config with the retired parameters (parameter_meta.RETIRED_PARAMETERS)
+    left out. Done in memory on load only: the run's file on disk is not rewritten."""
+    config = dict(config)
+    if "parameter_defaults" in config:
+        config["parameter_defaults"] = {
+            name: value for name, value in config["parameter_defaults"].items()
+            if not parameter_meta.is_retired(name)}
+    if "sweep_params" in config:
+        config["sweep_params"] = [
+            spec for spec in config["sweep_params"] if not parameter_meta.is_retired(spec.get("name", ""))]
+    return config
+
+
+def _without_retired_state(state: dict) -> dict:
+    """An old run's state with the retired parameters left out of each combination's values."""
+    combos = state.get("combos")
+    if not isinstance(combos, dict):
+        return state
+
+    def strip(combo):
+        if not isinstance(combo, dict) or not isinstance(combo.get("params"), dict):
+            return combo
+        return {**combo, "params": {name: value for name, value in combo["params"].items()
+                                    if not parameter_meta.is_retired(name)}}
+
+    return {**state, "combos": {cid: strip(combo) for cid, combo in combos.items()}}
+
+
 def _skip_reason(values: Dict[str, float], use_altium: bool) -> Optional[str]:
     """Why a combination will not be built, decided when its run is
     created, or None when it will be.
@@ -230,10 +259,9 @@ def _skip_reason(values: Dict[str, float], use_altium: bool) -> Optional[str]:
     Altium there are no vias to place, so the via parameters cannot make
     a combination unbuildable.
     """
-    reason = constraints.check_combination(values)
-    if reason is None and use_altium:
-        reason = constraints.check_bare_pedestal(values) or constraints.check_via_grid(values)
-    return reason
+    if use_altium:
+        return constraints.check_bare_pedestal(values) or constraints.check_via_grid(values)
+    return None
 
 
 def equation_file_values() -> Dict[str, float]:
@@ -335,7 +363,7 @@ class Run:
         if part_of is not None:
             run.config["part_of"] = part_of.run_id
             run.config["part_role"] = role
-        combos = combinations(sweep_params, parameter_defaults)
+        combos = combinations(sweep_params)
 
         # Each combination's full geometry -- the equations file's values
         # with the run's pinned values and then the combo's own on top --
@@ -390,8 +418,8 @@ class Run:
     @classmethod
     def load(cls, run_id: str) -> "Run":
         run = cls(run_id)
-        run.config = cls._read_json(run.config_path)
-        run.state = cls._read_json(run.state_path)
+        run.config = _without_retired_config(cls._read_json(run.config_path))
+        run.state = _without_retired_state(cls._read_json(run.state_path))
         return run
 
     @classmethod
@@ -419,6 +447,7 @@ class Run:
             swept = [
                 {"label": parameter_meta.label_for(p["name"]), "n": len(p.get("values", []))}
                 for p in config.get("sweep_params", [])
+                if not parameter_meta.is_retired(p["name"])
             ]
             progress_state, shown_stage = state, state.get("stage")
             if shown_stage == "eigenmodes" and config.get("eigen_run_id"):

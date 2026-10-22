@@ -95,76 +95,18 @@ def pin_bare_board_pedestal(
     return defaults
 
 
-def combinations(
-    sweep_params: List[SweepParameter],
-    parameter_defaults: Optional[Dict[str, float]] = None,
-) -> List[Dict[str, float]]:
+def combinations(sweep_params: List[SweepParameter]) -> List[Dict[str, float]]:
     """Cartesian product across every swept parameter's values.
 
     With nothing swept this is a single combination with no varying
     parameters -- a run that only pins defaults still builds one model,
     rather than none at all.
-
-    The distortion's own geometry is the exception: those parameters only
-    mean anything where the distortion is actually built, so they expand
-    the distorted combinations alone rather than every combination. See
-    `_expand_distortion_geometry`. `parameter_defaults` is what the run
-    pinned, which is where the distortion flag sits when it is not itself
-    being swept.
     """
-    geometry = [p for p in sweep_params if p.name in parameter_meta.DISTORTION_GEOMETRY_PARAMETERS]
-    rest = [p for p in sweep_params if p.name not in parameter_meta.DISTORTION_GEOMETRY_PARAMETERS]
-
-    if not rest:
-        base = [{}]
-    else:
-        names = [p.name for p in rest]
-        value_lists = [p.values for p in rest]
-        base = [dict(zip(names, combo)) for combo in itertools.product(*value_lists)]
-
-    if not geometry:
-        return base
-    return _expand_distortion_geometry(base, geometry, parameter_defaults or {})
-
-
-def is_distorted(combo: Dict[str, float], parameter_defaults: Dict[str, float]) -> bool:
-    """Whether this combination builds the distorted geometry.
-
-    The flag is in the combo itself when the run sweeps both variants,
-    and in the run's pinned values when it does not. Absent from both --
-    which only happens if the equations file has no such flag -- means
-    the undistorted model, matching the file's own default.
-    """
-    flag = combo.get(parameter_meta.DISTORTION_PARAM,
-                     parameter_defaults.get(parameter_meta.DISTORTION_PARAM, 1))
-    return float(flag) == 0
-
-
-def _expand_distortion_geometry(
-    base: List[Dict[str, float]], geometry: List[SweepParameter],
-    parameter_defaults: Dict[str, float],
-) -> List[Dict[str, float]]:
-    """Multiply out the distortion geometry, but only over the distorted
-    combinations.
-
-    A run doing both variants of a two-value PCB length, sweeping the
-    distortion radius over two values, gets 2 clean combinations (one per
-    PCB length) and 4 distorted ones (per PCB length, per radius) -- not
-    8. Sweeping the geometry of a run with no distorted combination at
-    all adds nothing, and the caller warns about that rather than
-    silently multiplying the run out.
-    """
-    names = [p.name for p in geometry]
-    value_lists = [p.values for p in geometry]
-    products = [dict(zip(names, values)) for values in itertools.product(*value_lists)]
-
-    expanded = []
-    for combo in base:
-        if not is_distorted(combo, parameter_defaults):
-            expanded.append(combo)
-            continue
-        expanded.extend({**combo, **product} for product in products)
-    return expanded
+    if not sweep_params:
+        return [{}]
+    names = [p.name for p in sweep_params]
+    value_lists = [p.values for p in sweep_params]
+    return [dict(zip(names, combo)) for combo in itertools.product(*value_lists)]
 
 
 def combo_id_for(combo: Dict[str, float]) -> str:
@@ -174,9 +116,7 @@ def combo_id_for(combo: Dict[str, float]) -> str:
     Values are written in the unit the parameter is presented in, so the
     id matches what was typed into the form -- the sub-millimetre ones
     carry a `um` suffix to say so. The combo's own values stay in
-    millimetres; only this label changes. The distortion flag is spelled
-    out as "with_distortion" / "without_distortion" rather than 0 / 1
-    (see parameter_meta.combo_id_part).
+    millimetres; only this label changes (see parameter_meta.combo_id_part).
     """
     parts = [parameter_meta.combo_id_part(name, value) for name, value in combo.items()]
     return "_".join(parts) if parts else "default"

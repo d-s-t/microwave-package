@@ -85,7 +85,7 @@ class TestOneCombinationsPhases(unittest.TestCase):
         self.assertEqual(combo_state(states), "done")
 
     def test_a_skipped_combination_skips_every_phase(self):
-        states = phase_states(combo(skip_reason="the distortion does not fit"))
+        states = phase_states(combo(skip_reason="the layout does not fit"))
         self.assertEqual(set(states.values()), {"skipped"})
         self.assertEqual(combo_state(states), "skipped")
 

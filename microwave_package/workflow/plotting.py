@@ -344,9 +344,9 @@ def apply_filters(df: pd.DataFrame, filters: Dict[str, List[str]]) -> pd.DataFra
     plot then says.
 
     A row with no value in the column at all is not at any of its
-    values, so no choice among them hides it: unticking one distortion
-    radius hides the points at that radius, not a compared run -- or an
-    undistorted combination -- that never had a distortion.
+    values, so no choice among them hides it: unticking one value of a
+    swept parameter hides the points at that value, not a compared run
+    that never swept it.
     """
     for column, allowed in filters.items():
         if column not in df.columns:
