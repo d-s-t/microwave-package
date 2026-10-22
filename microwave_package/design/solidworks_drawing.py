@@ -250,8 +250,11 @@ def lid_layout(values: Dict[str, float], thickness_mm: float,
     side = _g(values, "pcb_side", 25.0)
     plan = screws.plan(values)
     scale = pick_scale(length, side, 150, 62)
-    port_len = _g(values, "port_length", 5.1)
-    outer = length / 2 - _g(values, "port_space", 6.0)      # far edge of a connector pocket
+    # The SMP window: the old 5.1 mm pocket grown by smp_window_extra on each side (see
+    # design/constraints.py smp_window), so its far edge moves out and its near edge moves in.
+    extra = _g(values, "smp_window_extra", 0.25)
+    port_len = _g(values, "port_length", 5.1) + 2 * extra   # the window's length
+    outer = length / 2 - _g(values, "port_space", 6.0) + extra   # far edge of a connector window
     inner = outer - port_len                                # its near edge
     channel = _g(values, "route_width", 1.0)
 
@@ -797,7 +800,7 @@ def layout_for_part(model, part: str, values: Dict[str, float],
     if part == "box":
         return box_layout(values, height_mm)
     inner_edge = (_g(values, "pcb_length", 50.0) / 2 - _g(values, "port_space", 6.0)
-                  - _g(values, "port_length", 5.1))
+                  - _g(values, "port_length", 5.1) - _g(values, "smp_window_extra", 0.25))
     measured = measure_relief(model, inner_edge)
     log(f"lid relief depths measured off the part: {measured}")
     return lid_layout(values, height_mm, measured)

@@ -62,13 +62,17 @@ class TestCentres(unittest.TestCase):
         for c in want:
             self.assertTrue(any(abs(c[0] - g[0]) < 1e-9 and abs(c[1] - g[1]) < 1e-9 for g in got), c)
 
-    def test_the_default_centres_are_0p6_inside_the_walls(self):
+    def test_the_centres_are_0p6_inside_the_old_5p1_mm_walls_with_no_extra(self):
         want = [(sx * x, sz * 1.95) for x in (14.5, 18.4) for sx in (1, -1) for sz in (1, -1)]
+        self.assertCentres(constraints.smp_relief_centres(defaults(smp_window_extra=0.0)), want)
+
+    def test_the_centres_are_0p6_inside_the_grown_window_at_the_default_extra(self):
+        want = [(sx * x, sz * 2.2) for x in (14.25, 18.65) for sx in (1, -1) for sz in (1, -1)]
         self.assertCentres(constraints.smp_relief_centres(defaults()), want)
 
     def test_inset_zero_is_the_old_window_corners(self):
         want = [(sx * x, sz * 2.55) for x in (13.9, 19.0) for sx in (1, -1) for sz in (1, -1)]
-        self.assertCentres(constraints.smp_relief_centres(defaults(smp_relief_inset=0.0)), want)
+        self.assertCentres(constraints.smp_relief_centres(defaults(smp_relief_inset=0.0, smp_window_extra=0.0)), want)
 
 
 class TestArea(unittest.TestCase):
@@ -123,14 +127,14 @@ class TestCheck(unittest.TestCase):
 
 class TestFit(unittest.TestCase):
     def test_the_housing_clears_the_reliefs_by_0p39_at_the_default_inset(self):
-        self.assertAlmostEqual(corner_clearance(defaults()), 0.386, places=3)
+        self.assertAlmostEqual(corner_clearance(defaults(smp_window_extra=0.0)), 0.386, places=3)
 
     def test_an_inset_of_0p85_leaves_only_0p07_at_the_housing_corners(self):
         # Below the 0.1 mm margin: the number behind the choice of 0.6.
-        self.assertAlmostEqual(corner_clearance(defaults(smp_relief_inset=0.85)), 0.069, places=3)
+        self.assertAlmostEqual(corner_clearance(defaults(smp_relief_inset=0.85, smp_window_extra=0.0)), 0.069, places=3)
 
     def test_the_route_gap_at_the_default_inset_is_0p477(self):
-        values = defaults()
+        values = defaults(smp_window_extra=0.0)
         gap = min(constraints.smp_relief_route_gap(values, c) for c in constraints.smp_relief_centres(values))
         self.assertAlmostEqual(gap, 0.4771, places=3)
         self.assertGreaterEqual(gap, constraints.SMP_RELIEF_MIN_CLEARANCE)

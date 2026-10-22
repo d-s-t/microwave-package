@@ -632,6 +632,23 @@ def pcb_corner_floor(cavity_radius: float, wall_gap: float = PCB_WALL_GAP) -> fl
     return max(0.0, cavity_radius - PCB_GAP_FACTOR * wall_gap)
 
 
+# The SMP connector windows in the lid (see smp_window). The window is the old 5.1 mm
+# square grown by smp_window_extra on each side, about its centre, and its corners are
+# R smp_window_radius arcs (the 1 mm end mill cannot cut a sharp inside corner). The
+# connector housing (5.0 mm square in plan, its four corners cut back 0.42 mm; AEDT,
+# 2026-10-22) sits in the window.
+SMP_WINDOW_EXTRA_PARAM = "smp_window_extra"
+DEFAULT_SMP_WINDOW_EXTRA = 0.25
+SMP_WINDOW_RADIUS_PARAM = "smp_window_radius"
+DEFAULT_SMP_WINDOW_RADIUS = 1.0
+# The least lid the housing keeps inside its window, at the corners, the ends and the sides.
+SMP_WINDOW_MIN_CLEARANCE = 0.15
+SMP_HOUSING_SIZE = 5.0            # mm, in plan (x and z)
+SMP_HOUSING_CUT = 0.42            # mm, each plan corner cut back this much at 45 degrees
+# The OPTIONAL corner reliefs: circles at the window corners, cut only with
+# smp_relief_on = 1. Off by default, since the R arcs clear the housing without them.
+SMP_RELIEF_ON_PARAM = "smp_relief_on"
+DEFAULT_SMP_RELIEF_ON = 0
 SMP_RELIEF_RADIUS_PARAM = "smp_relief_radius"
 DEFAULT_SMP_RELIEF_RADIUS = 1.0
 SMP_RELIEF_INSET_PARAM = "smp_relief_inset"
@@ -646,16 +663,32 @@ SMP_RELIEF_MIN_CLEARANCE = 0.45
 SMP_RELIEF_AREA_STEPS = 200000                  # Simpson intervals for the removed area
 
 
+def smp_window(values: Dict[str, float]) -> Dict[str, float]:
+    """The +x SMP connector window in the lid's frame, mm: its outer wall `xo`, inner wall
+    `xi`, the z walls at +-`hw`, its length and width, and the corner radius `r`. The old
+    window was 13.9 .. 19.0 by +-2.55 (5.1 mm square); each side grows by
+    `smp_window_extra` about the centre, so the default 0.25 gives 13.65 .. 19.25 by +-2.80."""
+    extra = float(values.get(SMP_WINDOW_EXTRA_PARAM, DEFAULT_SMP_WINDOW_EXTRA))
+    xo = values.get("pcb_length", 50.0) / 2.0 - values.get("port_space", 6.0) + extra
+    length = values.get("port_length", 5.1) + 2.0 * extra
+    width = values.get("port_width", 5.1) + 2.0 * extra
+    return {"xo": xo, "xi": xo - length, "hw": width / 2.0, "length": length, "width": width,
+            "r": float(values.get(SMP_WINDOW_RADIUS_PARAM, DEFAULT_SMP_WINDOW_RADIUS))}
+
+
+def smp_relief_enabled(values: Dict[str, float]) -> bool:
+    """Whether the optional SMP corner reliefs are cut (smp_relief_on = 1; off by default)."""
+    return float(values.get(SMP_RELIEF_ON_PARAM, DEFAULT_SMP_RELIEF_ON)) > 0.5
+
+
 def smp_relief_centres(values: Dict[str, float]) -> list:
-    """The eight relief centres (x, z) in the lid's frame, mm. Each is `smp_relief_inset`
-    inside the two walls of one corner of the two 5.1 mm connector windows (the inner
-    wall at 13.9 mm, the outer at 19.0 mm, the sides at +-2.55 mm). At inset 0 they are
-    the window corners, the old dog-bone."""
+    """The eight relief centres (x, z) in the lid's frame, mm, for smp_relief_on = 1. Each
+    is `smp_relief_inset` inside the two walls of one corner of the two SMP windows
+    (smp_window). At inset 0 they are the window corners, the old dog-bone."""
     inset = float(values.get(SMP_RELIEF_INSET_PARAM, DEFAULT_SMP_RELIEF_INSET))
-    outer = values.get("pcb_length", 50.0) / 2.0 - values.get("port_space", 6.0)
-    inner = outer - values.get("port_length", 5.1)
-    zc = values.get("port_width", 5.1) / 2.0 - inset
-    return [(sx * x, sz * zc) for x in (inner + inset, outer - inset) for sx in (1, -1) for sz in (1, -1)]
+    w = smp_window(values)
+    zc = w["hw"] - inset
+    return [(sx * x, sz * zc) for x in (w["xi"] + inset, w["xo"] - inset) for sx in (1, -1) for sz in (1, -1)]
 
 
 def smp_relief_area(radius: float, inset: float) -> float:
@@ -682,14 +715,16 @@ def smp_relief_route_gap(values: Dict[str, float], centre: tuple) -> float:
     the circle's centre to the channel's end, less the radius. (The bare |z| gap would
     ignore the end and read 0.35 mm at the default inset, where the true gap is 0.477.)"""
     radius = float(values.get(SMP_RELIEF_RADIUS_PARAM, DEFAULT_SMP_RELIEF_RADIUS))
-    inner = values.get("pcb_length", 50.0) / 2.0 - values.get("port_space", 6.0) - values.get("port_length", 5.1)
+    inner = smp_window(values)["xi"]
     half_channel = values.get("route_width", 1.2) / 2.0
     cx, cz = centre
     return math.hypot(max(0.0, abs(cx) - inner), max(0.0, abs(cz) - half_channel)) - radius
 
 
 def check_smp_relief(values: Dict[str, float]) -> Optional[str]:
-    """Why the relief circles at the SMP pocket corners cannot be cut, or None.
+    """Why the OPTIONAL relief circles at the SMP pocket corners cannot be cut, or None.
+    Only the layout check calls this with smp_relief_on = 1 (off by default: see
+    check_smp_window for the window that the housing has to fit in).
 
     The eight reliefs are circles of `smp_relief_radius`, each centred `smp_relief_inset`
     inside the two walls of a corner of the two 5.1 mm connector windows in the lid
@@ -729,6 +764,101 @@ def check_smp_relief(values: Dict[str, float]) -> Optional[str]:
                 return (f"the SMP pocket relief at ({_fmt(cx)}, {_fmt(cz)}) mm leaves {_fmt(gap)} mm to a "
                         f"screw countersink at ({_fmt(u)}, {_fmt(v)}) mm, under "
                         f"{_fmt(SMP_RELIEF_MIN_CLEARANCE)} mm -- reduce smp_relief_radius or screw_inset")
+    return None
+
+
+# The lid margin the window keeps from the channel's corner arcs, the outside edge and every
+# screw countersink: the same 0.45 mm as the relief checks.
+SMP_WINDOW_LID_CLEARANCE = SMP_RELIEF_MIN_CLEARANCE
+
+
+def _window_clearance(x: float, z: float, w: Dict[str, float]) -> float:
+    """Least lid, mm, from the point (x, z), inside the window, to its outline: the flat walls,
+    or the R arc where the point lies in a corner."""
+    z = abs(z)
+    r = w["r"]
+    if z > w["hw"] - r and (x < w["xi"] + r or x > w["xo"] - r):
+        cx = w["xi"] + r if x < w["xi"] + r else w["xo"] - r
+        return r - math.hypot(x - cx, z - (w["hw"] - r))
+    return min(x - w["xi"], w["xo"] - x, w["hw"] - z)
+
+
+def _window_gap(x: float, z: float, w: Dict[str, float]) -> float:
+    """Lid, mm, from the point (x, z), outside the window, to its outline. The window is the
+    core rectangle [xi + r, xo - r] x [-(hw - r), hw - r] grown by r."""
+    r = w["r"]
+    dx = max(w["xi"] + r - x, 0.0, x - (w["xo"] - r))
+    dz = max(abs(z) - (w["hw"] - r), 0.0)
+    return math.hypot(dx, dz) - r
+
+
+def smp_window_clearances(values: Dict[str, float]) -> Dict[str, float]:
+    """Least lid, mm, between the +x connector housing and its window, by part. `corners`:
+    the four cut-back housing corners against the R arcs. `ends`: the housing's two end faces
+    against the flat outer and inner walls. `sides`: its long faces against the flat z walls.
+    The housing's corners are the only points on the arcs (the flat parts are the walls), and
+    the least clearance along an edge of the housing is at one of its ends, because the arc
+    is convex: the distance to its centre is convex along the edge."""
+    w = smp_window(values)
+    outer = values.get("pcb_length", 50.0) / 2.0 - values.get("port_space", 6.0)
+    inner = outer - SMP_HOUSING_SIZE
+    half = SMP_HOUSING_SIZE / 2.0
+    corners = [_window_clearance(x, z, w) for x, z in (
+        (outer, half - SMP_HOUSING_CUT), (outer - SMP_HOUSING_CUT, half),
+        (inner + SMP_HOUSING_CUT, half), (inner, half - SMP_HOUSING_CUT))]
+    return {"corners": min(corners),
+            "ends": min(w["xo"] - outer, inner - w["xi"]),
+            "sides": w["hw"] - half}
+
+
+def check_smp_window(values: Dict[str, float]) -> Optional[str]:
+    """Why the SMP connector windows in the lid cannot be milled, or None.
+
+    The window is the old 5.1 mm square grown by smp_window_extra on each side, with R
+    smp_window_radius corners. It must hold the 5.0 x 5.0 mm connector housing with
+    SMP_WINDOW_MIN_CLEARANCE of lid to spare at its corners, ends and sides, and keep
+    SMP_WINDOW_LID_CLEARANCE of lid from the route channel's corner arcs, the outside edge
+    and every screw countersink.
+    """
+    extra = float(values.get(SMP_WINDOW_EXTRA_PARAM, DEFAULT_SMP_WINDOW_EXTRA))
+    if extra < 0:
+        return (f"smp_window_extra {_fmt(extra)} mm is negative: the window grows from the 5.1 mm "
+                f"square by that much on each side, so it cannot be smaller than that")
+    radius = float(values.get(SMP_WINDOW_RADIUS_PARAM, DEFAULT_SMP_WINDOW_RADIUS))
+    if radius <= 0:
+        return ("smp_window_radius must be above 0: the window corners are milled with a 1 mm end "
+                "mill, and a zero radius is not cut (a SolidWorks fillet cannot be zero)")
+    w = smp_window(values)
+    half_side = min(w["length"], w["width"]) / 2.0
+    if radius >= half_side:
+        return (f"smp_window_radius {_fmt(radius)} mm is not less than half the window's side "
+                f"({_fmt(half_side)} mm) -- reduce it")
+    clear = smp_window_clearances(values)
+    for part in ("corners", "ends", "sides"):
+        if clear[part] < SMP_WINDOW_MIN_CLEARANCE - 1e-9:
+            return (f"the SMP window is too small for the connector housing: it leaves {clear[part]:.3f} mm "
+                    f"at the housing's {part}, under {_fmt(SMP_WINDOW_MIN_CLEARANCE)} mm -- raise "
+                    f"smp_window_extra (now {_fmt(extra)} mm)")
+    # The channel's end sits on the flat inner wall, between the corner arcs, which start at
+    # z = hw - r. A channel wider than that leaves the wall too soon and runs into an arc.
+    half_channel = values.get("route_width", 1.2) / 2.0
+    if half_channel > w["hw"] - radius - SMP_WINDOW_LID_CLEARANCE:
+        return (f"the route channel (route_width {_fmt(2 * half_channel)} mm) reaches the SMP window's corner "
+                f"arcs, leaving under {_fmt(SMP_WINDOW_LID_CLEARANCE)} mm of lid -- reduce route_width or "
+                f"smp_window_extra")
+    from . import screws
+
+    countersink = screws.COUNTERSINK_DIAMETER / 2.0
+    plan = screws.plan(values)
+    for u, v in (list(plan.positions) if plan is not None else []):
+        gap = _window_gap(abs(u), abs(v), w) - countersink
+        if gap < SMP_WINDOW_LID_CLEARANCE:
+            return (f"the SMP window leaves {_fmt(gap)} mm to the screw countersink at ({_fmt(u)}, {_fmt(v)}) mm, "
+                    f"under {_fmt(SMP_WINDOW_LID_CLEARANCE)} mm -- reduce smp_window_extra or screw_inset")
+    edge = min(values.get("pcb_length", 50.0) / 2.0 - w["xo"], values.get("pcb_side", 25.0) / 2.0 - w["hw"])
+    if edge < SMP_WINDOW_LID_CLEARANCE:
+        return (f"the SMP window leaves {_fmt(edge)} mm of lid to the outside edge, under "
+                f"{_fmt(SMP_WINDOW_LID_CLEARANCE)} mm -- reduce smp_window_extra")
     return None
 
 
@@ -889,10 +1019,15 @@ def check_layout(values: Dict[str, float], mat_pcb: Optional[str] = None,
     reason = check_cavity_corners(values)
     if reason:
         return reason
-    # The lid's SMP pocket reliefs keep clear of the channel, the edge and the screws.
-    reason = check_smp_relief(values)
+    # The lid's SMP windows hold the connector housing and keep clear of the channel, the edge
+    # and the screws. The optional corner reliefs (smp_relief_on = 1) are checked the same way.
+    reason = check_smp_window(values)
     if reason:
         return reason
+    if smp_relief_enabled(values):
+        reason = check_smp_relief(values)
+        if reason:
+            return reason
 
     # A bare board has no die: no opening, no bond fingers and nothing
     # to keep clear of them, so the room a die would need is not asked

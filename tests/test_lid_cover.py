@@ -97,12 +97,17 @@ class TestLayoutCheckOfTheLid(unittest.TestCase):
         self.assertIsNotNone(constraints.check_layout(values(route_width=needed - 0.05), TMM))
 
     def test_the_default_channel_leaves_the_smp_reliefs_room(self):
-        # 1.2 mm: the SMP reliefs (smp_relief_inset 0.6) stand 0.48 mm from the channel's end.
+        # 1.2 mm: the window's corner arcs start 1.8 mm out, clear of the channel's edge.
         self.assertIsNone(constraints.check_layout(values(route_width=1.2), TMM))
 
-    def test_a_channel_too_wide_for_the_smp_reliefs_is_refused(self):
-        # 2.0 mm would come within 0.12 mm of the reliefs at the window corners (test_smp_relief).
-        self.assertIn("route channel's end", constraints.check_layout(values(route_width=2.0), TMM))
+    def test_a_channel_too_wide_for_the_optional_smp_reliefs_is_refused(self):
+        # With smp_relief_on = 1, 2.0 mm (z +-1.0) comes within 0.34 mm of a relief (test_smp_relief).
+        self.assertIn("route channel's end",
+                      constraints.check_layout(values(route_width=2.0, smp_relief_on=1.0), TMM))
+
+    def test_a_wider_channel_still_ends_on_the_flat_window_wall_with_the_reliefs_off(self):
+        # Off by default: 2.0 mm (z +-1.0) still ends on the flat inner wall, which runs to z +-1.8.
+        self.assertIsNone(constraints.check_layout(values(route_width=2.0), TMM))
 
     def test_a_relief_with_no_depth_is_refused(self):
         reason = constraints.check_layout(values(route_clearence=0.0), TMM)

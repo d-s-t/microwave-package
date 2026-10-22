@@ -115,7 +115,8 @@ class TestLidLayout(unittest.TestCase):
 
     def test_inner_face_dimensions_the_pockets_and_the_channel(self):
         inner = expected(self.views()["inner"])
-        for value in (50.0, 25.0, 27.8, 38.0, 5.1, 1.0):
+        # The SMP windows grown by smp_window_extra 0.25: 13.65 .. 19.25, 5.6 mm long.
+        for value in (50.0, 25.0, 27.3, 38.5, 5.6, 1.0):
             self.assertIn(value, inner)
 
     def test_outer_face_has_the_countersunk_holes(self):
@@ -130,8 +131,8 @@ class TestLidLayout(unittest.TestCase):
 
     def test_pocket_positions_follow_the_port_space(self):
         inner = expected(self.views(port_space=8.0)["inner"])
-        self.assertIn(round(2 * (25 - 8.0), 3), inner)        # outer edges
-        self.assertIn(round(2 * (25 - 8.0 - 5.1), 3), inner)  # inner edges
+        self.assertIn(round(2 * (25 - 8.0 + 0.25), 3), inner)            # outer edges (window + 0.25)
+        self.assertIn(round(2 * (25 - 8.0 + 0.25 - 5.6), 3), inner)      # inner edges (window 5.6 long)
 
     def test_section_along_the_feedline_shows_the_thickness(self):
         sec = self.views()["sec_c"]
