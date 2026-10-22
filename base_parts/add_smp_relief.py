@@ -1,32 +1,36 @@
 """
-Dog-bone relief at the eight corners of the two SMP pockets in the lid
-(base_parts/lid_inside.SLDPRT), driven by `smp_relief_radius` in default.txt.
+Relief circles at the eight corners of the two SMP connector windows in the lid
+(base_parts/lid_inside.SLDPRT), driven by `smp_relief_radius` and `smp_relief_inset`
+in default.txt.
 
 Run once, on the machine with SolidWorks, with nothing else using it:
 
-    python base_parts/add_smp_relief.py --depth 1.5 [--no-save]
+    python base_parts/add_smp_relief.py --depth 1.5 [--redo] [--no-save]
 
-Why relief and not a rounded corner: the connector body is 5.0 x 4.1 mm with
-sharp corners and sits in the 5.1 mm pocket. A rounded R1 corner would cut into
-it (0.074 mm at best), so each corner of the pocket is over-cut with a circle
-of the tool radius, centred on the corner (a dog-bone). The square connector
-then fits in the square part of the pocket.
+Why reliefs: the SMP connector housing is 5.0 x 5.0 mm in plan and 4.1 mm high, with
+its four plan corners cut back about 0.42 mm at 45 degrees. It sits in the 5.1 x 5.1 mm
+window: flush with the outer wall, 0.10 mm from the inner wall, 0.05 mm from the long
+walls. Each window corner gets a circle of the tool radius (1.0 mm, the 1 mm end mill),
+centred `smp_relief_inset` (0.6 mm) inside the two walls that meet there. The circle
+covers the window corner and bites radius - inset (0.4 mm) into the lid, and the housing
+corners sit inside it with about 0.39 mm to spare. The window itself stays a sharp square
+in the CAD. Inset 0 puts each centre on the window corner: the old dog-bone of PR #87,
+which removed 3 pi/4 R^2 per corner and bit 1.0 mm into the lid.
 
-How it is built: the circles go in a NEW sketch on the lid's top face (y =
-1.5 mm), as their own cut, after the pocket. A circle drawn in the pocket's own
-sketch would overlap the pocket's lines, and the through-all cut that makes the
-pocket ignores that (it removed nothing, 2026-10-20). A separate cut over an
-existing void is what add_pedestal_shapes.py does too.
+How it is built: the circles go in a NEW sketch on the lid's top face (the face at
+z = 1.5 mm in the part), as their own cut, after the window cuts. A circle drawn in the
+window's own sketch would overlap its lines, and the through-all cut that makes the window
+ignores that (it removed nothing, 2026-10-20). The eight centres are placed by coordinate,
+not dimensioned, so changing smp_relief_inset in default.txt needs --redo to rebuild.
+Only the radius is linked to its equation.
 
-The eight centres are the corners of the two pockets: x = +-13.9 and +-19 mm,
-z = +-2.55 mm. The set is symmetric under x -> -x and z -> -z, so the sketch's
-own axes can be flipped without changing anything; the volume check below is
-what proves the centres sit on the corners.
-
-The cut is `--depth` deep (1.5 mm, the plate through: lid_width). The relief
-removes (3 pi / 4) R^2 x depth per corner (the circle's part outside the square
-corner): eight corners. The check runs in memory and refuses to save unless
-the volume change matches. The part is saved only when every check passes.
+--redo removes the SMP_Relief cut and the sketch it was cut from (the old reliefs), then
+cuts the new ones. Checks, in memory, before the save:
+  - the old reliefs remove 8 x depth x 3 pi/4 R^2 (when there are some);
+  - the new reliefs remove 8 x depth x A(inset) more, where A is smp_relief_area():
+    the lid material one relief removes at one corner. At inset 0 that is the same
+    3 pi/4 R^2. The lid volume changes by exactly that much (tolerance 1e-3 mm3).
+The part is saved only when every check passes.
 """
 import argparse
 import math
@@ -38,6 +42,7 @@ import win32com.client
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 from microwave_package import paths  # noqa: E402
+from microwave_package.design import constraints as cons  # noqa: E402
 from microwave_package.design import equations as eq  # noqa: E402
 from microwave_package.design import step_generation as sg  # noqa: E402
 
@@ -45,12 +50,8 @@ INPUT_DIM_ON_CREATE = 10
 MM = 0.001
 RADIUS_EQUATION = "smp_relief_radius"
 CUT_NAME = "SMP_Relief"
-CREATE_RADIUS = 1.0
 VOLUME_TOL = 1e-3
-TOP_FACE_POINT = (10.0, 8.0, 1.5)      # mm, a point on the lid's top face (y = 1.5)
-HALF_WIDTH = 2.55                       # half of the 5.1 mm port, along z
-INNER_X, OUTER_X = 13.9, 19.0           # the pocket's inner and outer ends, along x
-CENTRES = [(sx * x, sz * HALF_WIDTH) for x in (INNER_X, OUTER_X) for sx in (1, -1) for sz in (1, -1)]
+TOP_FACE_POINT = (10.0, 8.0, 1.5)      # mm, a point on the lid's top face (the face at z = 1.5)
 
 
 def null():
@@ -92,14 +93,47 @@ def volume(m):
     return m.Extension.CreateMassProperty.Volume * 1e9
 
 
+def remove_old_relief(m, names):
+    """Delete the SMP_Relief cut and the sketch it was cut from (the feature before it)."""
+    i = names.index(CUT_NAME)
+    sketch = names[i - 1] if i > 0 else ""
+    if not sketch.startswith("Sketch"):
+        sys.exit(f"the feature before {CUT_NAME} is {sketch!r}, not its sketch -- nothing was changed")
+    for name, kind in ((CUT_NAME, "BODYFEATURE"), (sketch, "SKETCH")):
+        m.ClearSelection2(True)
+        if not m.Extension.SelectByID2(name, kind, 0, 0, 0, False, 0, null(), 0):
+            sys.exit(f"could not select {name} to delete it -- nothing was changed")
+        m.EditDelete()
+    m.ClearSelection2(True)
+    left = feature_names(m)
+    if CUT_NAME in left or sketch in left:
+        sys.exit(f"{CUT_NAME} or {sketch} is still in the part -- nothing was saved")
+    return sketch
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--depth", type=float, required=True,
                     help="depth in mm of the relief cut from the top face (1.5, the plate through)")
+    ap.add_argument("--redo", action="store_true",
+                    help="replace the SMP_Relief cut already in the part (removes it and its sketch first)")
     ap.add_argument("--no-save", action="store_true")
     args = ap.parse_args()
     root = os.path.dirname(os.path.abspath(__file__))
     part = os.path.join(root, "lid_inside.SLDPRT")
+    values = eq.get_numeric_parameters(eq.read_file(str(paths.DEFAULT_EQUATIONS_FILE)))
+    radius = float(values.get(RADIUS_EQUATION, cons.DEFAULT_SMP_RELIEF_RADIUS))
+    inset = float(values.get(cons.SMP_RELIEF_INSET_PARAM, cons.DEFAULT_SMP_RELIEF_INSET))
+    depth = args.depth
+    centres = cons.smp_relief_centres(values)
+    a_corner = cons.smp_relief_area(radius, inset)
+    a_old = 3 * math.pi / 4 * radius ** 2
+    if abs(cons.smp_relief_area(radius, 0.0) - a_old) > 1e-6:
+        sys.exit("smp_relief_area(R, 0) is not 3 pi/4 R^2 -- nothing was changed")
+    print(f"radius {radius:g} mm, inset {inset:g} mm, depth {depth:g} mm; centres (mm):",
+          [(round(x, 3), round(z, 3)) for x, z in centres])
+    print(f"expected per corner: old {a_old:.6f} mm2, new {a_corner:.6f} mm2")
+
     app, err = sg.connect_solidworks()
     if not app:
         sys.exit(err)
@@ -112,11 +146,25 @@ def main():
             sys.exit(err)
         if os.path.normcase(m.GetPathName) != os.path.normcase(part):
             sys.exit(f"opened {m.GetPathName}, not {part} -- nothing was changed")
-        if CUT_NAME in feature_names(m):
-            sys.exit(f"{CUT_NAME} is already in the part -- nothing was changed")
+        names = feature_names(m)
+        had_old = CUT_NAME in names
+        if had_old and not args.redo:
+            sys.exit(f"{CUT_NAME} is already in the part -- nothing was changed (use --redo to replace it)")
         relink_and_import(m, root)
+        old_volume = volume(m)
+        print("volume as it is (mm3)", round(old_volume, 4))
+        if had_old:
+            sketch_old = remove_old_relief(m, names)
+            print("removed", CUT_NAME, "and", sketch_old)
         base = volume(m)
-        print("volume before the reliefs (mm3)", round(base, 4))
+        if had_old:
+            removed_old = base - old_volume
+            expected_old = 8 * depth * a_old
+            print("old reliefs removed (mm3)", round(removed_old, 4), "expected", round(expected_old, 4))
+            if abs(removed_old - expected_old) > VOLUME_TOL:
+                sys.exit(f"the old reliefs removed {removed_old:.4f} mm3, not {expected_old:.4f} -- "
+                         f"nothing was saved")
+        print("volume with no reliefs (mm3)", round(base, 4))
 
         before_names = feature_names(m)
         m.ClearSelection2(True)
@@ -125,9 +173,9 @@ def main():
             sys.exit("could not select the lid's top face -- nothing was changed")
         sm = m.SketchManager
         sm.InsertSketch(True)
-        for cx, cz in CENTRES:
+        for cx, cz in centres:
             m.ClearSelection2(True)
-            circle = sm.CreateCircle(cx * MM, cz * MM, 0, (cx + CREATE_RADIUS) * MM, cz * MM, 0)
+            circle = sm.CreateCircle(cx * MM, cz * MM, 0, (cx + radius) * MM, cz * MM, 0)
             if circle is None:
                 sys.exit("a relief circle was not made -- nothing was changed")
             circle.Select4(False, null())
@@ -142,9 +190,9 @@ def main():
             sys.exit(f"expected one new sketch, found {new_sketches} -- nothing was changed")
         sketch = new_sketches[0]
 
-        new = {k: v for k, v in radius_dims(m, sketch).items()}
-        if len(new) != len(CENTRES) or any(abs(v - CREATE_RADIUS) > 1e-6 for v in new.values()):
-            sys.exit(f"expected {len(CENTRES)} {CREATE_RADIUS:g} mm radius dimensions in {sketch}, "
+        new = radius_dims(m, sketch)
+        if len(new) != len(centres) or any(abs(v - radius) > 1e-6 for v in new.values()):
+            sys.exit(f"expected {len(centres)} {radius:g} mm radius dimensions in {sketch}, "
                      f"found {new} -- nothing was changed")
         for name in new:
             m.GetEquationMgr.Add2(-1, f'"{name}"="{RADIUS_EQUATION}"', True)
@@ -153,7 +201,7 @@ def main():
         m.ClearSelection2(True)
         if not m.Extension.SelectByID2(sketch, "SKETCH", 0, 0, 0, False, 0, null(), 0):
             sys.exit(f"could not select {sketch} for the cut -- nothing was changed")
-        feat = m.FeatureManager.FeatureCut4(True, False, False, 0, 0, args.depth * MM, 0, False, False,
+        feat = m.FeatureManager.FeatureCut4(True, False, False, 0, 0, depth * MM, 0, False, False,
                                             False, False, 0, 0, False, False, False, False, False, True,
                                             True, False, False, False, 0, 0, False, False)
         if feat is None:
@@ -162,13 +210,19 @@ def main():
         m.ClearSelection2(True)
 
         change = volume(m) - base
-        per_corner = 3 * math.pi / 4 * CREATE_RADIUS ** 2
-        expected = len(CENTRES) * per_corner * args.depth
-        print("volume change (mm3)", round(change, 4), "expected", round(-expected, 4),
-              f"(8 x 3 pi/4 R^2 x {args.depth:g})")
-        if abs(change + expected) > VOLUME_TOL:
-            sys.exit(f"the reliefs changed the volume by {change:+.4f} mm3, not {-expected:+.4f} -- "
+        expected = -8 * depth * a_corner
+        print("volume change from the new reliefs (mm3)", round(change, 4), "expected", round(expected, 4),
+              f"(8 x {depth:g} x -A({inset:g}))")
+        if abs(change - expected) > VOLUME_TOL:
+            sys.exit(f"the reliefs changed the volume by {change:+.4f} mm3, not {expected:+.4f} -- "
                      f"nothing was saved")
+        if had_old:
+            total = volume(m) - old_volume
+            expected_total = 8 * depth * (a_old - a_corner)
+            print("volume change from the old lid (mm3)", round(total, 4), "expected", round(expected_total, 4))
+            if abs(total - expected_total) > VOLUME_TOL:
+                sys.exit(f"the lid volume is {total:+.4f} mm3 from the old lid, not {expected_total:+.4f} -- "
+                         f"nothing was saved")
         if not args.no_save:
             e = win32com.client.VARIANT(pythoncom.VT_BYREF | pythoncom.VT_I4, 0)
             w = win32com.client.VARIANT(pythoncom.VT_BYREF | pythoncom.VT_I4, 0)
