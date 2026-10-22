@@ -25,7 +25,7 @@ from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 import pandas as pd
 
 from ..design import equations as eq
-from ..design import parameter_meta, sweep
+from ..design import parameter_meta
 from ..hfss import model_builder, registry
 from . import plotting
 from .run_manager import Run
@@ -102,15 +102,9 @@ def swept_names(runs: Iterable[Run]) -> List[str]:
     names: List[str] = []
     for run in runs:
         for name in run.sweep_param_names:
-            if name not in names:
+            if name not in names and not parameter_meta.is_retired(name):
                 names.append(name)
     return names
-
-
-def builds_distortion(run: Run, held: Dict[str, float]) -> bool:
-    """Whether any of this run's combinations has the distortion built."""
-    return (parameter_meta.DISTORTION_PARAM in run.sweep_param_names
-            or sweep.is_distorted({}, held))
 
 
 def held_values(run: Run) -> Dict[str, float]:
@@ -124,10 +118,7 @@ def held_values(run: Run) -> Dict[str, float]:
     oldest runs wrote into every combination rather than beside them, so
     a value all of a run's combinations share counts as pinned too.
 
-    The distortion's own geometry is dropped for a run built without the
-    distortion: the equations file still holds a radius for it, but no
-    such distortion was ever built, and a point plotted at that radius
-    would be a point about nothing.
+    Parameters that no longer exist (parameter_meta.RETIRED_PARAMETERS) are left out.
     """
     values = dict(run.parameter_defaults)
     combos = [combo.get("params") or {} for combo in run.state.get("combos", {}).values()]
@@ -141,10 +132,7 @@ def held_values(run: Run) -> Dict[str, float]:
     except OSError:
         content = ""
     values.update(eq.get_numeric_parameters(content))
-    if not builds_distortion(run, values):
-        for name in parameter_meta.DISTORTION_GEOMETRY_PARAMETERS:
-            values.pop(name, None)
-    return values
+    return {name: value for name, value in values.items() if not parameter_meta.is_retired(name)}
 
 
 def combined_results(entries: Sequence[Compared]) -> pd.DataFrame:
@@ -163,6 +151,8 @@ def combined_results(entries: Sequence[Compared]) -> pd.DataFrame:
         if not entry.has_results:
             continue
         df = entry.results.copy()
+        # Results from before the distortion option was removed still carry its columns.
+        df = df.drop(columns=[c for c in df.columns if parameter_meta.is_retired(c)])
         held = entry.held
         for name in swept:
             column = parameter_meta.column_name(name)
@@ -173,15 +163,7 @@ def combined_results(entries: Sequence[Compared]) -> pd.DataFrame:
                 df[column] = pd.to_numeric(df[name], errors="coerce") * parameter_meta.MICRONS_PER_MM
             if column in df.columns or name not in held:
                 continue
-            value = parameter_meta.to_display(name, held[name])
-            flag = parameter_meta.DISTORTION_PARAM
-            if name in parameter_meta.DISTORTION_GEOMETRY_PARAMETERS and flag in df.columns:
-                # A run that built both variants: only its distorted rows
-                # have a distortion for this to describe.
-                distorted = pd.to_numeric(df[flag], errors="coerce") == 0
-                df[column] = [value if d else float("nan") for d in distorted]
-            else:
-                df[column] = value
+            df[column] = parameter_meta.to_display(name, held[name])
         df[plotting.RUN_ID_COLUMN] = entry.run_id
         df[plotting.RUN_COLUMN] = entry.name
         frames.append(df)
@@ -361,7 +343,7 @@ def _parameter_rows(runs: Sequence[Run], held: Sequence[Dict[str, float]]) -> Li
 
     names: List[str] = []
     for values in swept + held:
-        names.extend(name for name in values if name not in names)
+        names.extend(name for name in values if name not in names and not parameter_meta.is_retired(name))
 
     rows = []
     for name in names:
@@ -371,9 +353,6 @@ def _parameter_rows(runs: Sequence[Run], held: Sequence[Dict[str, float]]) -> Li
                 values.append(_swept_text(name, run_swept[name]))
             elif name in run_held:
                 values.append(_value_text(name, run_held[name]))
-            elif (name in parameter_meta.DISTORTION_GEOMETRY_PARAMETERS
-                  and not builds_distortion(run, run_held)):
-                values.append(NOT_APPLICABLE)
             else:
                 values.append(NOT_RECORDED)
         rows.append(SettingRow("Geometry", parameter_meta.label_for(name), values))

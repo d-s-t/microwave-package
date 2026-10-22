@@ -262,8 +262,8 @@
 {% if rows.skipped_total %}
 <div class="note-box">
   <strong>{{ rows.skipped_total }} of {{ rows.total }} combination(s) were skipped</strong> --
-  their distortion does not fit on the PCB, or their via grid would come out sparser than asked
-  for, so no geometry is built for them. They are listed at the bottom of this page, with the
+  their layout does not fit (a dimension, the vias, the screws or the chip), or their via grid
+  would come out sparser than asked for, so no geometry is built for them. They are listed at the bottom of this page, with the
   parameter to change and by how much.
 </div>
 {% endif %}
@@ -540,9 +540,8 @@
    the same few things. #}
 <details class="collapsible">
   <summary>Skipped combinations <span class="muted">({{ rows.skipped_total }})</span></summary>
-  <p class="muted">These were never built -- their distortion does not fit on the PCB, or their
-    via grid would come out sparser than asked for. Each row says which parameter to change and
-    by how much.
+  <p class="muted">These were never built -- their layout does not fit, or their via grid would come
+    out sparser than asked for. Each row says which parameter to change and by how much.
     {% if rows.skipped_hidden %}
     Showing the first {{ rows.skipped_sample|length }}; {{ rows.skipped_hidden }} more are in
     <code>state.json</code>.

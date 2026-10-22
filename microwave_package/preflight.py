@@ -95,11 +95,9 @@ def _safely(check_id: str, group: str, title: str, fn: Callable[[], List[Check]]
 # ---------------------------------------------------------------------------
 
 def layout_checks(values, mat_pcb, mat_chip="silicon") -> List[Check]:
-    how = "automatic: constraints.check_combination / check_via_grid / check_layout (also run by every run)"
+    how = "automatic: constraints.check_via_grid / check_layout (also run by every run)"
     out = []
     for check_id, title, reason in (
-        ("layout.fit", "The geometry fits (box, board, connector, chip, bonds)",
-         constraints.check_combination(values)),
         ("layout.vias", "The via lattice is dense enough to be placed", constraints.check_via_grid(values)),
         ("layout.build", "The layout can be drawn (gap solves, fence fits, lid clears the trace, screws fit)",
          constraints.check_layout(values, mat_pcb, mat_chip)),

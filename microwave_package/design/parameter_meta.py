@@ -41,9 +41,6 @@ LABELS: Dict[str, str] = {
     "pedestal_shape": "Pedestal recess shape (0 square, 1 circle)",
     "pedestal_corner_radius": "Pedestal recess corner radius (square)",
     "chip_pocket_radius": "Chip window corner radius (lid)",
-    "smp_relief_radius": "SMP pocket corner relief radius (lid)",
-    "smp_relief_inset": "SMP pocket relief centre inset (lid)",
-    "smp_relief_on": "SMP pocket corner reliefs on (lid)",
     "smp_window_extra": "SMP window growth per side (lid)",
     "smp_window_radius": "SMP window corner radius (lid)",
     "bonding_clearence": "Wire-bond clearance",
@@ -72,7 +69,6 @@ LABELS: Dict[str, str] = {
     # metallisation
     "copper_thickness": "PCB copper thickness",
     "chip_metal_thickness": "Chip metal thickness",
-    "no_distortion": "Distortion",
     "no_chip": "Bare board (no chip)",
     "screws_on": "Corner screws",
     "screw_inset": "Screw inset from PCB edge",
@@ -84,10 +80,6 @@ LABELS: Dict[str, str] = {
     "screw_engagement": "Thread engagement in the box floor",
     "vent_width": "Vent groove width",
     "vent_depth": "Vent groove depth (below the floor top)",
-    # distortion geometry
-    "distortion_radius": "Distortion radius",
-    "distortion_x": "Distortion offset along feedline",
-    "distortion_y": "Distortion offset across feedline",
 }
 
 # Shown, typed, and reported in micrometres instead of millimetres.
@@ -104,15 +96,12 @@ INTEGER_PARAMETERS = {"port_count", "pedestal_shape"}
 
 # On/off flags in the equations file (a plain 0 or 1). The form gives
 # these their own named control instead of a value-or-range box, so they
-# are left out of the parameter groups below. `no_distortion` is the only
-# one: 1 builds the clean geometry, 0 adds distortions to the box and
-# holes to the PCB.
-DISTORTION_PARAM = "no_distortion"
+# are left out of the parameter groups below.
 
 # The bare-board flag: 1 builds only the PCB and its connectors -- a CPW
 # straight from one SMP to the other, with no die, opening, pedestal,
 # bond pads or wire bonds. It is a plain on/off pinned for the whole
-# run, never swept, so it has no mode table like the distortion does.
+# run, never swept.
 NO_CHIP_PARAM = "no_chip"
 
 # The corner-screws flag: 1 adds four M2 countersunk screws at the PCB's
@@ -126,10 +115,23 @@ SCREWS_PARAM = "screws_on"
 # on/off pinned for the whole run; the groove's size is swept like any other.
 VENTS_PARAM = "vents_on"
 
-# The SMP corner reliefs flag: 0 (the default) leaves the optional relief
-# circles out of the lid; 1 cuts them (design.constraints.SMP_RELIEF_ON_PARAM).
-SMP_RELIEF_ON_PARAM = "smp_relief_on"
-BOOLEAN_PARAMETERS = {DISTORTION_PARAM, NO_CHIP_PARAM, SCREWS_PARAM, VENTS_PARAM, SMP_RELIEF_ON_PARAM}
+BOOLEAN_PARAMETERS = {NO_CHIP_PARAM, SCREWS_PARAM, VENTS_PARAM}
+
+# Parameters this project no longer has. The distortion option (no_distortion,
+# and the distortion_radius / distortion_x / distortion_y geometry under it) and the
+# optional SMP corner reliefs (smp_relief_on, smp_relief_radius, smp_relief_inset)
+# were removed, so no run creates them any more. Old runs still store them in their
+# config, state and results, so they are dropped on read (run_manager.Run.load,
+# compare) and never reach the form, the sweep or a plot. Old folders and files
+# are left as they were.
+RETIRED_PARAMETERS = frozenset({
+    "no_distortion", "distortion_radius", "distortion_x", "distortion_y",
+    "smp_relief_on", "smp_relief_radius", "smp_relief_inset",
+})
+
+
+def is_retired(name: str) -> bool:
+    return name in RETIRED_PARAMETERS
 
 VENT_GEOMETRY_PARAMETERS = ["vent_width", "vent_depth"]
 
@@ -145,32 +147,6 @@ def is_bare_board(values) -> bool:
         return float(values.get(NO_CHIP_PARAM, 0)) > 0.5
     except (TypeError, ValueError):
         return False
-
-# The distortion's own geometry. These only mean anything when the
-# distortion is actually built (no_distortion = 0), so they are swept
-# across the distorted combinations only -- see sweep.combinations.
-#
-# TODO: draw these three in base_parts/parameters_visual.SLDDRW and
-# export them (base_parts/parameters_svg.py) as distortion_radius.svg,
-# distortion_x.svg and distortion_y.svg. Until those files exist the
-# form just leaves their drawing cell empty -- nothing else to change.
-DISTORTION_GEOMETRY_PARAMETERS = ["distortion_radius", "distortion_x", "distortion_y"]
-
-# The three choices the form's "Distortions" control offers, and the
-# `no_distortion` sweep values each expands to. A single value pins the
-# flag for the whole run; [0, 1] builds every other combination both ways.
-DISTORTION_MODES: Dict[str, List[int]] = {
-    "none": [1],
-    "with": [0],
-    "both": [0, 1],
-}
-DEFAULT_DISTORTION_MODE = "none"
-
-# How the flag's two values read as words -- used for combination ids and
-# anywhere the value is shown. The equation value is inverted from plain
-# English (no_distortion = 0 is the distorted model), so a folder named
-# "no_distortion-0" reads backwards; these do not.
-DISTORTION_VALUE_LABELS = {0: "with_distortion", 1: "without_distortion"}
 
 MILLIMETRE = "mm"
 MICROMETRE = "µm"
@@ -203,7 +179,7 @@ GROUPS: List[dict] = [
         "names": [
             "port_count", "port_length", "port_width", "port_space",
             "chip_leg", "pedestal_corner_radius", "chip_pocket_radius", "smp_window_extra", "smp_window_radius",
-            "smp_relief_on", "smp_relief_radius", "smp_relief_inset", "bonding_clearence",
+            "bonding_clearence",
             "route_width", "route_clearence", "route_chip_clearence",
         ],
     },
@@ -254,18 +230,6 @@ GROUPS: List[dict] = [
     },
 ]
 
-# The distortion's geometry gets its own group, rendered next to the
-# Distortions radio rather than among the groups above -- it only applies
-# to the combinations that are actually built distorted.
-DISTORTION_GROUP: dict = {
-    "title": "Distortion geometry",
-    "hint": "The size and placement of the distortion itself. These are only used by the "
-            "combinations built with distortions -- sweeping one adds its values to those "
-            "combinations alone.",
-    "names": DISTORTION_GEOMETRY_PARAMETERS,
-}
-
-
 def label_for(name: str) -> str:
     """The UI name for a parameter, falling back to the raw name so a
     parameter added to the equations file still shows up (unlabelled)
@@ -312,23 +276,10 @@ def _render(name: str, display_value: float) -> str:
     return f"{display_value:g}"
 
 
-def distortion_word(value) -> Optional[str]:
-    """"with_distortion" / "without_distortion" for a no_distortion flag
-    value (0 / 1), or None if it is neither."""
-    try:
-        return DISTORTION_VALUE_LABELS.get(int(round(float(value))))
-    except (TypeError, ValueError):
-        return None
-
-
 def format_value(name: str, value) -> str:
     """Render a millimetre value the way this parameter should read."""
     if value is None:
         return ""
-    if name == DISTORTION_PARAM:
-        word = distortion_word(value)
-        if word is not None:
-            return word
     try:
         return _render(name, to_display(name, value))
     except (TypeError, ValueError):
@@ -348,15 +299,8 @@ def combo_id_value(name: str, value) -> str:
 def combo_id_part(name: str, value) -> str:
     """One parameter's filesystem-safe piece of a combination id.
 
-    Usually `name-value` (e.g. "pcb_length-40", "chip_width-381um"). The
-    distortion flag is the exception: it contributes a single word,
-    "with_distortion" / "without_distortion", because "no_distortion-0"
-    as a folder name reads backwards (0 is the distorted one).
+    Usually `name-value` (e.g. "pcb_length-40", "chip_width-381um").
     """
-    if name == DISTORTION_PARAM:
-        word = distortion_word(value)
-        if word is not None:
-            return word
     safe_name = re.sub(r"[^A-Za-z0-9_]+", "_", name)
     safe_value = re.sub(r"[^A-Za-z0-9.]+", "_", combo_id_value(name, value))
     return f"{safe_name}-{safe_value}"
@@ -381,11 +325,9 @@ def grouped(names) -> List[dict]:
     the form rather than silently missing. Two kinds are left out here
     because the form gives them their own place: boolean flags (see
     BOOLEAN_PARAMETERS), which get a named control rather than a
-    value-or-range box, and the distortion geometry, which is rendered as
-    DISTORTION_GROUP beside the Distortions radio.
+    value-or-range box.
     """
-    excluded = BOOLEAN_PARAMETERS | set(DISTORTION_GEOMETRY_PARAMETERS)
-    remaining = [n for n in names if n not in excluded]
+    remaining = [n for n in names if n not in BOOLEAN_PARAMETERS and not is_retired(n)]
     result = []
     for group in GROUPS:
         present = [n for n in group["names"] if n in remaining]

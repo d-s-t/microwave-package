@@ -38,7 +38,7 @@ from markupsafe import Markup
 from ansys_analyze_common import queue_common
 
 from . import paths, pipeline
-from .design import constraints, parameter_meta
+from .design import parameter_meta
 from .design import equations as eq
 from .design.sweep import SweepParameter, expand_values, split_swept_and_fixed
 from .hfss import model_builder, registry
@@ -293,56 +293,6 @@ def _latest_run_id() -> Optional[str]:
     return runs[0]["run_id"] if runs else None
 
 
-def _distortion_mode_for(run: Run, combo_id: Optional[str]) -> str:
-    """Which "Distortions" radio to preselect when the form is opened from
-    an existing run: the mode that would reproduce how that run handled
-    the `no_distortion` flag.
-
-    A specific combination's own value wins -- that is the case where you
-    took one point of an old "both" sweep as the basis for a new run.
-    """
-    param = parameter_meta.DISTORTION_PARAM
-    if combo_id:
-        combo = run.state.get("combos", {}).get(combo_id) or {}
-        value = combo.get("params", {}).get(param)
-        if value is not None:
-            return "with" if float(value) == 0 else "none"
-    for spec in run.config.get("sweep_params", []):
-        if spec.get("name") == param:
-            values = {float(v) for v in spec.get("values", [])}
-            if len(values) > 1:
-                return "both"
-            return "with" if values == {0.0} else "none"
-    defaults = run.config.get("parameter_defaults", {})
-    if param in defaults:
-        return "with" if float(defaults[param]) == 0 else "none"
-    return parameter_meta.DEFAULT_DISTORTION_MODE
-
-
-def _distortion_group(parameters) -> Optional[dict]:
-    """The distortion-geometry group, limited to the parameters the
-    equations file actually has -- so this section simply disappears if
-    the file predates them."""
-    names = [n for n in parameter_meta.DISTORTION_GROUP["names"] if n in parameters]
-    return {**parameter_meta.DISTORTION_GROUP, "names": names} if names else None
-
-
-def _distortion_limits(parameters, values) -> dict:
-    """The largest each distortion parameter can be, for the form's hint.
-
-    Rendered server-side so the numbers are right before any script
-    runs; the page then recomputes them as the boxes change (the limits
-    move with the PCB and chip dimensions, not just with the distortion).
-    """
-    starting = {**parameters, **{name: value for name, value in values.items() if value is not None}}
-    maxima = constraints.max_values(starting)
-    return {
-        name: {"max": maximum, "note": constraints.limit_note(name, maximum)}
-        for name, maximum in maxima.items()
-        if name in parameters
-    }
-
-
 def _ticked(name: str, values: dict, parameters: dict) -> bool:
     """Whether a yes/no parameter's tick starts ticked: what the run the
     form starts from pinned for it, else what the equation file says -- so
@@ -362,16 +312,16 @@ def _form_starting_point(from_run: Optional[str], combo_id: Optional[str]):
     own values on top of whatever that run had pinned), which is the way
     to take a single point from a sweep and build a new sweep around it.
 
-    Returns (settings, values, loaded_from_run_id, distortion_mode).
+    Returns (settings, values, loaded_from_run_id).
     """
     run_id = from_run or _latest_run_id()
     if not run_id:
-        return dict(pipeline.DEFAULT_ANALYSIS_SETTINGS), {}, None, parameter_meta.DEFAULT_DISTORTION_MODE
+        return dict(pipeline.DEFAULT_ANALYSIS_SETTINGS), {}, None
     try:
         run = Run.load(run_id)
     except (OSError, ValueError, KeyError):
         logger.warning("Could not load settings from run %s", run_id)
-        return dict(pipeline.DEFAULT_ANALYSIS_SETTINGS), {}, None, parameter_meta.DEFAULT_DISTORTION_MODE
+        return dict(pipeline.DEFAULT_ANALYSIS_SETTINGS), {}, None
 
     settings = {**pipeline.DEFAULT_ANALYSIS_SETTINGS, **run.config.get("analysis_settings", {})}
     values = run.starting_values()
@@ -379,7 +329,7 @@ def _form_starting_point(from_run: Optional[str], combo_id: Optional[str]):
         combo = run.state.get("combos", {}).get(combo_id)
         if combo:
             values = {**run.parameter_defaults, **combo.get("params", {})}
-    return settings, values, run_id, _distortion_mode_for(run, combo_id)
+    return settings, values, run_id
 
 
 def _solve_settings_from_form(form) -> dict:
@@ -506,7 +456,7 @@ def index():
     content = eq.read_file(str(paths.DEFAULT_EQUATIONS_FILE))
     parameters = eq.get_numeric_parameters(content)
     runs = _runs_for_display(Run.list_runs())
-    settings, values, loaded_from, distortion_mode = _form_starting_point(
+    settings, values, loaded_from = _form_starting_point(
         request.args.get("from_run"), request.args.get("combo")
     )
     return render_template(
@@ -518,24 +468,18 @@ def index():
         # comes back here with the runs it was showing.
         compare_ids=set(filter(None, request.args.get("compare", "").split(","))),
         max_compare=compare.MAX_RUNS,
-        distortion_geometry_params=parameter_meta.DISTORTION_GEOMETRY_PARAMETERS,
         drawings=_parameter_drawings(),
         meta=parameter_meta,
         settings=settings,
         values={name: parameter_meta.format_value(name, value) for name, value in values.items()},
         loaded_from=loaded_from,
         loaded_combo=request.args.get("combo"),
-        has_distortion_param=parameter_meta.DISTORTION_PARAM in parameters,
         has_no_chip_param=parameter_meta.NO_CHIP_PARAM in parameters,
         no_chip_ticked=_ticked("no_chip", values, parameters),
         screws_ticked=_ticked("screws_on", values, parameters),
         has_screws_param=parameter_meta.SCREWS_PARAM in parameters,
         vents_ticked=_ticked("vents_on", values, parameters),
         has_vents_param=parameter_meta.VENTS_PARAM in parameters,
-        distortion_mode=distortion_mode,
-        distortion_group=_distortion_group(parameters),
-        distortion_limits=_distortion_limits(parameters, values),
-        constraint_payload=constraints.client_payload(),
         solution_types=registry.solution_types(),
         # Both types' controls are rendered and the form hides the one
         # that does not apply, so switching solution type is instant
@@ -585,7 +529,7 @@ def new_run():
     requested = []
     for name in available:
         if name in parameter_meta.BOOLEAN_PARAMETERS:
-            continue  # driven by its own control (see the "Distortions" radio below)
+            continue  # driven by its own control (a tick box on the form)
         spec = request.form.get(f"range_{name}", "").strip()
         if not spec:
             continue
@@ -601,19 +545,6 @@ def new_run():
             # anything downstream sees the numbers.
             values = [parameter_meta.to_model(name, value) for value in values]
             requested.append(SweepParameter(name=name, values=values))
-
-    # The "Distortions" radio: "none"/"with" pin the no_distortion flag
-    # for the whole run (one extra value on every combo, not a sweep
-    # dimension); "both" sweeps it over 0 and 1, building every other
-    # combination twice. Guarded on the flag actually being in the
-    # equations file, the same as every range box above.
-    mode = request.form.get("distortion_mode", parameter_meta.DEFAULT_DISTORTION_MODE)
-    if parameter_meta.DISTORTION_PARAM in available:
-        distortion_values = parameter_meta.DISTORTION_MODES.get(mode)
-        if distortion_values:
-            requested.append(SweepParameter(
-                name=parameter_meta.DISTORTION_PARAM, values=list(distortion_values)
-            ))
 
     # The "Bare board" tick pins no_chip for the whole run. Left unticked
     # it adds nothing, so the equation file's own 0 applies and an
@@ -647,22 +578,6 @@ def new_run():
     if not sweep_params and not parameter_defaults:
         return redirect(url_for("index"))
 
-    # A run with no distorted combination never uses the distortion's
-    # geometry, so sweeping it there would multiply the run out for
-    # nothing. Those values are dropped, and the run records why so the
-    # status page can say so rather than leaving you to notice the
-    # combination count did not change.
-    notes = []
-    if mode == "none":
-        ignored = [p.name for p in sweep_params if p.name in parameter_meta.DISTORTION_GEOMETRY_PARAMETERS]
-        if ignored:
-            sweep_params = [p for p in sweep_params if p.name not in ignored]
-            names = ", ".join(parameter_meta.label_for(n) for n in ignored)
-            notes.append(
-                f"This run builds no distorted geometry, so the sweep on {names} was ignored."
-            )
-            logger.info("Ignoring distortion-geometry sweep (%s) -- this run has no distorted combination.", names)
-
     # A bare board with a pedestal recess cannot be laid out, and every such
     # combination would be skipped. Say so here, before a run is created,
     # rather than starting a run that quietly builds nothing for them.
@@ -689,11 +604,8 @@ def new_run():
     except ValueError as complaint:
         return redirect(url_for("index", error=str(complaint)))
     label = request.form.get("label", "").strip()[:80]
-    if notes or label:
-        if notes:
-            run.config["notes"] = notes
-        if label:
-            run.config["label"] = label
+    if label:
+        run.config["label"] = label
         run.save()
     _start_pipeline_thread(run)
     return redirect(url_for("run_status", run_id=run.run_id))
@@ -1129,10 +1041,12 @@ def _read_results_csv(run):
     if not os.path.exists(csv_path):
         return None
     try:
-        return pd.read_csv(csv_path)
+        df = pd.read_csv(csv_path)
     except (OSError, ValueError):
         logger.warning("Could not read results for run %s", run.run_id)
         return None
+    # Results from before the distortion option was removed still have its columns.
+    return df.drop(columns=[c for c in df.columns if parameter_meta.is_retired(c)])
 
 
 def _results_frame(run):
@@ -1161,7 +1075,7 @@ def _plot_filters(args) -> Dict[str, list]:
 
     One `f_<column>` per swept parameter (and `f_mode` for a run with
     several modes), holding the values still
-    ticked (`f_distortion_radius=0.25,0.5`). A parameter with no entry is
+    ticked (`f_chip_width=0.25,0.5`). A parameter with no entry is
     not filtered, which is what leaving every box ticked means.
     """
     filters = {}

@@ -3,7 +3,7 @@ smp_window_clearances, check_smp_window) and base_parts/add_smp_window.py, which
 windows in SolidWorks by the same numbers.
 
 What is pinned:
-- the defaults: smp_window_extra 0.25 mm, smp_window_radius 1.0 mm, smp_relief_on 0. The +x
+- the defaults: smp_window_extra 0.25 mm, smp_window_radius 1.0 mm. The +x
   window is 13.65 .. 19.25 by +-2.80 (5.6 mm square, centre unchanged; the old one was 13.9 ..
   19.0 by +-2.55);
 - the 5.0 x 5.0 mm housing (corners cut back 0.42 mm) clears the window by 0.199 mm at its
@@ -11,9 +11,9 @@ What is pinned:
   sides; a brute-force distance to a sampled outline agrees;
 - the least extra that keeps 0.15 mm at the corners is 0.2118 mm: 0.20 is refused, with
   smp_window_extra named;
-- the lid volume the SolidWorks script must find is -2.822456 mm3 (relief off, window grown,
-  corners rounded), from the eight relief cuts coming out, the two windows growing with
-  their corners rounded, and the channel ending 0.25 mm sooner at each connector;
+- the lid volume change the SolidWorks script must find, with no reliefs, is -13.294778 mm3
+  (window grown, corners rounded): the two windows grow from 5.1 to 5.6 mm square with their
+  corners rounded, and the channel ends 0.25 mm sooner at each connector;
 - equation lines starting "smp_" stay under 400 characters: SolidWorks dropped longer new
   names from a linked equation file on 2026-10-22.
 
@@ -73,16 +73,17 @@ class TestWindow(unittest.TestCase):
         self.assertAlmostEqual(w["length"], 5.6, places=9)
         self.assertEqual(w["r"], 1.0)
 
-    def test_the_defaults_declare_the_new_parameters_and_the_reliefs_are_off(self):
+    def test_the_defaults_declare_the_window_parameters_and_the_reliefs_are_retired(self):
         v = defaults()
         self.assertEqual(v["smp_window_extra"], 0.25)
         self.assertEqual(v["smp_window_radius"], 1.0)
-        self.assertEqual(v["smp_relief_on"], 0.0)
-        for name in ("smp_window_extra", "smp_window_radius", "smp_relief_on"):
+        for name in ("smp_window_extra", "smp_window_radius"):
             self.assertIn(name, parameter_meta.LABELS)
-        self.assertIn("smp_relief_on", parameter_meta.BOOLEAN_PARAMETERS)
-        self.assertFalse(constraints.smp_relief_enabled(v))
-        self.assertTrue(constraints.smp_relief_enabled(defaults(smp_relief_on=1.0)))
+        for name in ("smp_relief_on", "smp_relief_radius", "smp_relief_inset"):
+            self.assertNotIn(name, v)
+            self.assertNotIn(name, parameter_meta.LABELS)
+            self.assertTrue(parameter_meta.is_retired(name))
+        self.assertNotIn("smp_relief_on", parameter_meta.BOOLEAN_PARAMETERS)
 
     def test_the_housing_clears_the_window_by_0p199_at_the_corners_0p25_at_the_ends_0p30_at_the_sides(self):
         c = constraints.smp_window_clearances(defaults())
@@ -135,17 +136,32 @@ class TestWindow(unittest.TestCase):
         self.assertIsNone(constraints.check_layout(defaults(), TMM))
         self.assertIn("smp_window_extra", constraints.check_layout(defaults(smp_window_extra=0.1), TMM))
 
-    def test_the_optional_reliefs_pass_the_layout_check_with_the_new_window(self):
-        self.assertIsNone(constraints.check_layout(defaults(smp_relief_on=1.0), TMM))
-
-    def test_the_lid_volume_the_script_must_find_is_minus_2p822456(self):
+    def test_the_lid_volume_change_the_script_must_find_with_no_reliefs_is_minus_13p294778(self):
+        # Each window's hole grows from 5.1 mm square to 5.6 mm with R1 corners (the corners give back
+        # (1 - pi/4) R^2 each); the channel ends 0.25 mm sooner at each connector.
         v = defaults()
         depth = v["lid_width"]
         w = constraints.smp_window(v)
         area_new = w["length"] * w["width"] - (4 - math.pi) * w["r"] ** 2
-        area_old = 5.1 ** 2 + 4 * constraints.smp_relief_area(1.0, 0.6)
         channel = 2 * v["route_width"] * v["smp_window_extra"] * v["route_clearence"]
-        self.assertAlmostEqual(-2 * depth * (area_new - area_old) + channel, -2.822456, delta=1e-5)
+        self.assertAlmostEqual(-2 * depth * (area_new - 5.1 ** 2) + channel, -13.294778, delta=1e-5)
+
+    def test_an_old_run_with_the_relief_keys_loads_without_them(self):
+        # Runs made before the relief option was removed still store its keys. Loading drops them
+        # in memory, as it does for the distortion keys; the window keys stay.
+        from microwave_package.workflow import run_manager
+        config = {
+            "parameter_defaults": {"smp_relief_on": 0.0, "smp_relief_radius": 1.0,
+                                  "smp_relief_inset": 0.6, "smp_window_extra": 0.25},
+            "sweep_params": [{"name": "smp_relief_inset", "values": [0.6]},
+                            {"name": "smp_window_extra", "values": [0.25]}],
+        }
+        out = run_manager._without_retired_config(config)
+        self.assertEqual(out["parameter_defaults"], {"smp_window_extra": 0.25})
+        self.assertEqual([s["name"] for s in out["sweep_params"]], ["smp_window_extra"])
+        state = {"combos": {"c1": {"params": {"smp_relief_on": 1.0, "smp_window_extra": 0.25}}}}
+        self.assertEqual(run_manager._without_retired_state(state)["combos"]["c1"]["params"],
+                         {"smp_window_extra": 0.25})
 
     def test_equation_lines_for_the_smp_window_stay_under_400_characters(self):
         with open(paths.DEFAULT_EQUATIONS_FILE, encoding="utf-8") as f:

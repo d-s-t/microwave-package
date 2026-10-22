@@ -1,234 +1,30 @@
 """
-Geometry constraints the distortion has to satisfy, and the check that
-decides whether one combination is buildable.
+Geometry constraints for one combination, and the check that decides whether
+it can be built.
 
-The distortion is a round feature cut into the PCB, offset from centre by
-(`distortion_x`, `distortion_y`). It has to stay clear of everything
-already occupying the board -- the chip and its wire bonds and the ports
-along the feedline, the signal route across it -- and inside the PCB
-outline. That gives two independent inequalities, one per axis, both
-written about a half-span because the layout is symmetric about centre:
-
-    along the feedline (x):
-        chip_length/2 + bonding_clearence + 2*distortion_radius
-            + distortion_x + port_length + port_space  <  pcb_length/2
-
-    across the feedline (y):
-        route_width/2 + 2*distortion_radius + distortion_y  <  pcb_side/2
-
-A combination that fails either one is not built: `step_generation`
-skips it and the run page shows why on its row (see `check_combination`).
-
-Order matters when reporting. The radius is checked first, with the
-offsets taken as 0 -- a radius that does not fit even centred is the
-real problem, and reporting it as "distortion_x is too large" would send
-you off adjusting the wrong number. Only once the radius fits are the
-two offsets checked, each against its own axis and independently of the
-other, so the message names exactly one parameter to change.
+Each check returns None when the combination is fine, or one sentence naming
+the parameter to change. `check_layout` runs them all, in order; the run page
+shows the reason on the combination's row.
 """
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
-from typing import Dict, List, Optional
+from typing import Dict, Optional
 
 from . import parameter_meta, pedestal
-
-
-@dataclass(frozen=True)
-class Constraint:
-    """One inequality: `terms` (a sum) must stay below `limit`.
-
-    Every name is an equations-file parameter; `limit` is `limit_param`
-    scaled by `limit_factor` (always a half-span here). `terms` maps a
-    parameter to how many times it appears in the sum.
-    """
-    axis: str
-    terms: Dict[str, float]
-    limit_param: str
-    limit_factor: float
-    offset_param: str          # the distortion offset this inequality bounds
-    description: str
-
-    def total(self, values: Dict[str, float], overrides: Optional[Dict[str, float]] = None) -> float:
-        merged = {**values, **(overrides or {})}
-        return sum(merged.get(name, 0.0) * weight for name, weight in self.terms.items())
-
-    def limit(self, values: Dict[str, float]) -> float:
-        return values.get(self.limit_param, 0.0) * self.limit_factor
-
-
-# 2 * distortion_radius in both: the feature has to clear its neighbour
-# on the near side and still fit its own width before the PCB edge.
-CONSTRAINTS: List[Constraint] = [
-    Constraint(
-        axis="x",
-        terms={
-            "chip_length": 0.5,
-            "bonding_clearence": 1.0,
-            "distortion_radius": 2.0,
-            "distortion_x": 1.0,
-            "port_length": 1.0,
-            "port_space": 1.0,
-        },
-        limit_param="pcb_length",
-        limit_factor=0.5,
-        offset_param="distortion_x",
-        description="along the feedline (chip, bonds, distortion and port must fit in half the PCB length)",
-    ),
-    Constraint(
-        axis="y",
-        terms={
-            "route_width": 0.5,
-            "distortion_radius": 2.0,
-            "distortion_y": 1.0,
-        },
-        limit_param="pcb_side",
-        limit_factor=0.5,
-        offset_param="distortion_y",
-        description="across the feedline (route and distortion must fit in half the PCB width)",
-    ),
-]
-
-RADIUS_PARAM = "distortion_radius"
 
 
 def _fmt(value: float) -> str:
     return f"{value:g}"
 
 
-def without_chip_room(values: Dict[str, float]) -> Dict[str, float]:
-    """The values with the room the chip and its bonds take set to zero,
-    when this is the bare board (`no_chip`); otherwise `values` itself.
-
-    The feedline inequality reserves chip_length/2 + bonding_clearence
-    for the die and its wires. A board with no die reserves none of it.
-    """
-    if not parameter_meta.is_bare_board(values):
-        return values
-    return {**values, "chip_length": 0.0, "bonding_clearence": 0.0}
-
-
-def _headroom(constraint: Constraint, values: Dict[str, float], free: str,
-              overrides: Optional[Dict[str, float]] = None) -> float:
-    """How large `free` can grow before this inequality is violated, with
-    every other term held at `values` (plus `overrides`)."""
-    without_free = constraint.total(values, {**(overrides or {}), free: 0.0})
-    return (constraint.limit(values) - without_free) / constraint.terms[free]
-
-
-def max_values(values: Dict[str, float]) -> Dict[str, float]:
-    """The largest each distortion parameter can take before a
-    combination stops fitting -- an exclusive bound, since the
-    inequalities are strict.
-
-    Computed the same way `check_combination` rejects, so the two never
-    disagree: the radius against both axes with the offsets at 0 (its
-    ceiling, whatever the offsets end up being), then each offset against
-    its own axis with the radius as given. A negative result means there
-    is no room at all and is reported as 0.
-    """
-    maxima: Dict[str, float] = {}
-    values = without_chip_room(values)
-
-    zeroed = {constraint.offset_param: 0.0 for constraint in CONSTRAINTS}
-    maxima[RADIUS_PARAM] = min(
-        _headroom(constraint, values, RADIUS_PARAM, zeroed) for constraint in CONSTRAINTS
-    )
-    for constraint in CONSTRAINTS:
-        maxima[constraint.offset_param] = _headroom(constraint, values, constraint.offset_param)
-
-    return {name: max(value, 0.0) for name, value in maxima.items()}
-
-
-def limit_note(name: str, maximum: float) -> str:
-    """The one-line hint the form shows under a distortion parameter."""
-    if maximum <= 0:
-        return "no room for this on the current PCB"
-    if name == RADIUS_PARAM:
-        return f"must stay under {_fmt(maximum)} mm (with both offsets at 0)"
-    return f"must stay under {_fmt(maximum)} mm (at this radius)"
-
-
-# Everything the form's live hint needs to recompute these in the
-# browser, so the numbers follow what is being typed rather than going
-# stale the moment a PCB dimension changes.
-def client_payload() -> dict:
-    involved = sorted({name for c in CONSTRAINTS for name in c.terms} |
-                      {c.limit_param for c in CONSTRAINTS})
-    return {
-        "radiusParam": RADIUS_PARAM,
-        "constraints": [
-            {
-                "terms": c.terms,
-                "limitParam": c.limit_param,
-                "limitFactor": c.limit_factor,
-                "offsetParam": c.offset_param,
-            }
-            for c in CONSTRAINTS
-        ],
-        # the unit each involved parameter is typed in, so the hint reads
-        # the boxes the same way the form submits them
-        "micron": {name: parameter_meta.is_micron(name) for name in involved},
-    }
-
-
-def check_combination(values: Dict[str, float]) -> Optional[str]:
-    """Why this combination cannot be built, or None if it can.
-
-    `values` is the full equations-file picture for one combination --
-    the file's own values with the run's pinned values and the combo's
-    own swept values applied on top. Only distorted combinations are
-    checked; see the module docstring for the order and why.
-    """
-    if float(values.get(parameter_meta.DISTORTION_PARAM, 1)) != 0:
-        return None  # no distortion in this one, so nothing to place
-    values = without_chip_room(values)
-
-    # 1. the radius alone, with both offsets taken as 0. A radius that
-    #    does not fit even centred is what has to change.
-    zeroed = {constraint.offset_param: 0.0 for constraint in CONSTRAINTS}
-    for constraint in CONSTRAINTS:
-        total = constraint.total(values, zeroed)
-        limit = constraint.limit(values)
-        if total >= limit:
-            largest = max(_headroom(constraint, values, RADIUS_PARAM, zeroed), 0.0)
-            return (
-                f"{parameter_meta.label_for(RADIUS_PARAM)} "
-                f"{_fmt(values.get(RADIUS_PARAM, 0.0))} mm is too large {constraint.description}: "
-                f"even centred it needs {_fmt(total)} mm of the {_fmt(limit)} mm available. "
-                f"Largest that fits here: under {_fmt(largest)} mm."
-            )
-
-    # 2. each offset, on its own axis, independently of the other.
-    for constraint in CONSTRAINTS:
-        total = constraint.total(values)
-        limit = constraint.limit(values)
-        if total >= limit:
-            offset = constraint.offset_param
-            largest = max(_headroom(constraint, values, offset), 0.0)
-            return (
-                f"{parameter_meta.label_for(offset)} "
-                f"{_fmt(values.get(offset, 0.0))} mm does not fit {constraint.description}: "
-                f"needs {_fmt(total)} mm of the {_fmt(limit)} mm available. "
-                f"Largest that fits here: under {_fmt(largest)} mm."
-            )
-
-    return None
-
-
 # --- layout feasibility ----------------------------------------------
 #
-# The inequalities above are about the distortion, and are checked at run
-# creation so an impossible combination is never handed to SolidWorks.
-# These are the equivalent for the Altium layout, and exist for the same
-# reason: it is much better to say "the via fence does not fit" up front
-# than to let the generator produce a board that is quietly wrong.
-#
-# They are kept separate from CONSTRAINTS rather than folded into it
-# because that machinery is shaped around one distortion offset per axis
-# -- it drives the max-value hints in the form -- and these are plain
-# geometric facts with no free offset to bound.
+# The checks below are run at run creation, so an impossible combination is
+# never handed to SolidWorks. They are also run again by `check_layout` just
+# before Altium. They exist for the same reason: it is much better to say
+# "the via fence does not fit" up front than to let the generator produce a
+# board that is quietly wrong.
 
 # How far the die's own copper is pulled back from the die's physical
 # edge -- MUST MATCH ChipCopperInset in base_parts/altium/
@@ -645,22 +441,10 @@ DEFAULT_SMP_WINDOW_RADIUS = 1.0
 SMP_WINDOW_MIN_CLEARANCE = 0.15
 SMP_HOUSING_SIZE = 5.0            # mm, in plan (x and z)
 SMP_HOUSING_CUT = 0.42            # mm, each plan corner cut back this much at 45 degrees
-# The OPTIONAL corner reliefs: circles at the window corners, cut only with
-# smp_relief_on = 1. Off by default, since the R arcs clear the housing without them.
-SMP_RELIEF_ON_PARAM = "smp_relief_on"
-DEFAULT_SMP_RELIEF_ON = 0
-SMP_RELIEF_RADIUS_PARAM = "smp_relief_radius"
-DEFAULT_SMP_RELIEF_RADIUS = 1.0
-SMP_RELIEF_INSET_PARAM = "smp_relief_inset"
-DEFAULT_SMP_RELIEF_INSET = 0.6
-# The least lid left between a relief circle and the route channel's end, the
-# outside edge or a screw countersink, in mm. A design choice, not a fact of the
-# lid, and the user may overrule it. It was 0.5 mm (PR #87). Lowered to 0.45 mm
-# on 2026-10-22: with the default inset the circle stands 0.477 mm from the
-# channel's end, and the channel is only 0.3 mm deep in a 1.5 mm plate. The
-# layout check reports the margin.
-SMP_RELIEF_MIN_CLEARANCE = 0.45
-SMP_RELIEF_AREA_STEPS = 200000                  # Simpson intervals for the removed area
+# The least lid kept between the SMP window and the route channel's corner arcs, the outside
+# edge and every screw countersink, in mm. A design choice, not a fact of the lid, and the user
+# may overrule it. 0.45 mm (lowered from 0.5 mm on 2026-10-22).
+SMP_WINDOW_LID_CLEARANCE = 0.45
 
 
 def smp_window(values: Dict[str, float]) -> Dict[str, float]:
@@ -674,102 +458,6 @@ def smp_window(values: Dict[str, float]) -> Dict[str, float]:
     width = values.get("port_width", 5.1) + 2.0 * extra
     return {"xo": xo, "xi": xo - length, "hw": width / 2.0, "length": length, "width": width,
             "r": float(values.get(SMP_WINDOW_RADIUS_PARAM, DEFAULT_SMP_WINDOW_RADIUS))}
-
-
-def smp_relief_enabled(values: Dict[str, float]) -> bool:
-    """Whether the optional SMP corner reliefs are cut (smp_relief_on = 1; off by default)."""
-    return float(values.get(SMP_RELIEF_ON_PARAM, DEFAULT_SMP_RELIEF_ON)) > 0.5
-
-
-def smp_relief_centres(values: Dict[str, float]) -> list:
-    """The eight relief centres (x, z) in the lid's frame, mm, for smp_relief_on = 1. Each
-    is `smp_relief_inset` inside the two walls of one corner of the two SMP windows
-    (smp_window). At inset 0 they are the window corners, the old dog-bone."""
-    inset = float(values.get(SMP_RELIEF_INSET_PARAM, DEFAULT_SMP_RELIEF_INSET))
-    w = smp_window(values)
-    zc = w["hw"] - inset
-    return [(sx * x, sz * zc) for x in (w["xi"] + inset, w["xo"] - inset) for sx in (1, -1) for sz in (1, -1)]
-
-
-def smp_relief_area(radius: float, inset: float) -> float:
-    """The lid material one relief removes at one window corner, mm2: the circle's area
-    outside the corner's quadrant (u >= 0, v >= 0, measured inward from the two walls),
-    that is pi R^2 less the part inside the quadrant. Simpson's rule in u. At inset 0 it
-    is 3 pi / 4 R^2."""
-    lo, hi = max(0.0, inset - radius), inset + radius
-    n = SMP_RELIEF_AREA_STEPS
-    h = (hi - lo) / n
-    total = 0.0
-    for i in range(n + 1):
-        u = lo + i * h
-        half = math.sqrt(max(0.0, radius * radius - (u - inset) ** 2))
-        length = max(0.0, (inset + half) - max(0.0, inset - half))
-        total += (1 if i in (0, n) else (4 if i % 2 else 2)) * length
-    return math.pi * radius * radius - total * h / 3.0
-
-
-def smp_relief_route_gap(values: Dict[str, float], centre: tuple) -> float:
-    """Lid left, mm, between one relief circle and the route channel. The channel is
-    route_width wide and runs from the inner window wall toward the centre, so the nearest
-    point of it to the circle is the channel's end corner: this is the exact distance from
-    the circle's centre to the channel's end, less the radius. (The bare |z| gap would
-    ignore the end and read 0.35 mm at the default inset, where the true gap is 0.477.)"""
-    radius = float(values.get(SMP_RELIEF_RADIUS_PARAM, DEFAULT_SMP_RELIEF_RADIUS))
-    inner = smp_window(values)["xi"]
-    half_channel = values.get("route_width", 1.2) / 2.0
-    cx, cz = centre
-    return math.hypot(max(0.0, abs(cx) - inner), max(0.0, abs(cz) - half_channel)) - radius
-
-
-def check_smp_relief(values: Dict[str, float]) -> Optional[str]:
-    """Why the OPTIONAL relief circles at the SMP pocket corners cannot be cut, or None.
-    Only the layout check calls this with smp_relief_on = 1 (off by default: see
-    check_smp_window for the window that the housing has to fit in).
-
-    The eight reliefs are circles of `smp_relief_radius`, each centred `smp_relief_inset`
-    inside the two walls of a corner of the two 5.1 mm connector windows in the lid
-    (base_parts/add_smp_relief.py cuts them). Each must cover its window corner, which
-    stays sharp in the CAD, and keep SMP_RELIEF_MIN_CLEARANCE of lid from the route
-    channel's end, the outside edge and every screw countersink.
-    """
-    radius = float(values.get(SMP_RELIEF_RADIUS_PARAM, DEFAULT_SMP_RELIEF_RADIUS))
-    if radius <= 0:
-        return ("smp_relief_radius must be above 0: each SMP pocket corner is over-cut with a "
-                "circle of that radius, and a zero circle is not cut")
-    inset = float(values.get(SMP_RELIEF_INSET_PARAM, DEFAULT_SMP_RELIEF_INSET))
-    if inset < 0 or math.hypot(inset, inset) >= radius:
-        return (f"smp_relief_inset {_fmt(inset)} mm does not cover the window corner: the circle must reach "
-                f"it, so inset x sqrt 2 must be under smp_relief_radius ({_fmt(radius)} mm), an inset under "
-                f"{_fmt(radius / math.sqrt(2.0))} mm")
-    from . import screws
-
-    half_length = values.get("pcb_length", 50.0) / 2.0
-    half_side = values.get("pcb_side", 25.0) / 2.0
-    countersink = screws.COUNTERSINK_DIAMETER / 2.0
-    plan = screws.plan(values)
-    holes = list(plan.positions) if plan is not None else []
-    for cx, cz in smp_relief_centres(values):
-        edge = min(half_length - (abs(cx) + radius), half_side - (abs(cz) + radius))
-        if edge < SMP_RELIEF_MIN_CLEARANCE:
-            return (f"the SMP pocket relief at ({_fmt(cx)}, {_fmt(cz)}) mm leaves {_fmt(edge)} mm of lid "
-                    f"to the outside edge, under {_fmt(SMP_RELIEF_MIN_CLEARANCE)} mm -- reduce smp_relief_radius")
-        gap = smp_relief_route_gap(values, (cx, cz))
-        if gap < SMP_RELIEF_MIN_CLEARANCE:
-            return (f"the SMP pocket relief at ({_fmt(cx)}, {_fmt(cz)}) mm leaves {_fmt(gap)} mm to the "
-                    f"route channel's end, under {_fmt(SMP_RELIEF_MIN_CLEARANCE)} mm -- lower smp_relief_inset "
-                    f"or route_width, or reduce smp_relief_radius")
-        for u, v in holes:
-            gap = math.hypot(cx - u, cz - v) - radius - countersink
-            if gap < SMP_RELIEF_MIN_CLEARANCE:
-                return (f"the SMP pocket relief at ({_fmt(cx)}, {_fmt(cz)}) mm leaves {_fmt(gap)} mm to a "
-                        f"screw countersink at ({_fmt(u)}, {_fmt(v)}) mm, under "
-                        f"{_fmt(SMP_RELIEF_MIN_CLEARANCE)} mm -- reduce smp_relief_radius or screw_inset")
-    return None
-
-
-# The lid margin the window keeps from the channel's corner arcs, the outside edge and every
-# screw countersink: the same 0.45 mm as the relief checks.
-SMP_WINDOW_LID_CLEARANCE = SMP_RELIEF_MIN_CLEARANCE
 
 
 def _window_clearance(x: float, z: float, w: Dict[str, float]) -> float:
@@ -907,7 +595,7 @@ def check_layout(values: Dict[str, float], mat_pcb: Optional[str] = None,
     its walls clear of the slots, is refused here too.
 
     Returns a sentence naming the parameter to change, in the same style
-    as `check_combination`.
+    as the other checks in this module.
     """
     def get(name: str, default: float = 0.0) -> float:
         return values.get(name, default)
@@ -1020,14 +708,10 @@ def check_layout(values: Dict[str, float], mat_pcb: Optional[str] = None,
     if reason:
         return reason
     # The lid's SMP windows hold the connector housing and keep clear of the channel, the edge
-    # and the screws. The optional corner reliefs (smp_relief_on = 1) are checked the same way.
+    # and the screws.
     reason = check_smp_window(values)
     if reason:
         return reason
-    if smp_relief_enabled(values):
-        reason = check_smp_relief(values)
-        if reason:
-            return reason
 
     # A bare board has no die: no opening, no bond fingers and nothing
     # to keep clear of them, so the room a die would need is not asked

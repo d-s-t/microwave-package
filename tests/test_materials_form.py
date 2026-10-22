@@ -111,7 +111,7 @@ class TestRenderingAnOutOfListMaterial(unittest.TestCase):
         settings = {**pipeline.DEFAULT_ANALYSIS_SETTINGS, "materials": materials}
         with mock.patch.object(
             webapp, "_form_starting_point",
-            return_value=(settings, {}, None, "none"),
+            return_value=(settings, {}, None),
         ):
             return self.client.get("/").get_data(as_text=True)
 

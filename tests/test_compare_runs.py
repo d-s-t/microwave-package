@@ -81,12 +81,11 @@ class RunsOnDisk(unittest.TestCase):
 
     def wire_bond_pair(self):
         """Two single-combination runs, identical but for the wire bonds."""
-        shared = {"pcb_length": 26.0, "bonding_clearence": 0.6, "no_distortion": 1,
-                  "distortion_radius": 0.6}
+        shared = {"pcb_length": 26.0, "bonding_clearence": 0.6}
         return (
-            make_run(WITH_BONDS, pinned={"no_distortion": 1}, analysis=settings(include_wirebonds=True),
+            make_run(WITH_BONDS, analysis=settings(include_wirebonds=True),
                      results=modes([5.8235, 5.8272, 14.15]), dimensions=shared, label="with bonds"),
-            make_run(WITHOUT_BONDS, pinned={"no_distortion": 1}, analysis=settings(include_wirebonds=False),
+            make_run(WITHOUT_BONDS, analysis=settings(include_wirebonds=False),
                      results=modes([5.8984, 5.9076, 14.24]), dimensions=shared, label="without bonds"),
         )
 
@@ -121,18 +120,51 @@ class CombiningResultsTests(RunsOnDisk):
         held = df[df[plotting.RUN_ID_COLUMN] == SWEEP_TWO]
         self.assertEqual(held["pedestal_depth"].tolist(), [1.0])
 
-    def test_a_run_without_the_distortion_has_no_distortion_radius(self):
-        """The equations file still holds a radius for it, but no such
-        distortion was built -- a point at that radius would be a lie."""
-        distorted = make_run(SWEEP_ONE, sweep=[("distortion_radius", [0.5, 1.0])],
-                             pinned={"no_distortion": 0},
-                             results=[{"mode": 1, "freq_ghz": 10.0, "distortion_radius": r, "combo_id": f"r{r}"}
+class RetiredParametersTests(RunsOnDisk):
+    """Runs from before the distortion option was removed still hold its
+    parameters. They are dropped on read, and their files are left alone."""
+
+    def old_pair(self):
+        distorted = make_run(SWEEP_ONE, pinned={"no_distortion": 0, "pcb_length": 26.0},
+                             sweep=[("distortion_radius", [0.5, 1.0]), ("pedestal_depth", [0.0, 1.0])],
+                             results=[{"mode": 1, "freq_ghz": 10.0, "distortion_radius": r,
+                                       "no_distortion": 0, "pedestal_depth": 0.0, "combo_id": f"r{r}"}
                                       for r in (0.5, 1.0)])
         clean = make_run(WITH_BONDS, pinned={"no_distortion": 1}, results=modes([5.8]),
-                         dimensions={"distortion_radius": 0.6, "no_distortion": 1})
+                         dimensions={"no_distortion": 1, "distortion_radius": 0.6})
+        return distorted, clean
+
+    def test_loading_an_old_run_drops_its_retired_settings(self):
+        self.old_pair()
+        run = Run.load(SWEEP_ONE)
+        self.assertEqual(run.parameter_defaults, {"pcb_length": 26.0})
+        self.assertEqual(run.sweep_param_names, ["pedestal_depth"])
+        self.assertNotIn("no_distortion", run.starting_values())
+        self.assertNotIn("distortion_radius", run.starting_values())
+
+    def test_the_run_on_disk_keeps_its_retired_settings(self):
+        self.old_pair()
+        with open(os.path.join(Run(SWEEP_ONE).run_dir, "run_config.json")) as f:
+            stored = json.load(f)
+        self.assertEqual(stored["parameter_defaults"]["no_distortion"], 0)
+        self.assertIn("distortion_radius", [p["name"] for p in stored["sweep_params"]])
+
+    def test_comparing_old_runs_leaves_their_retired_columns_out(self):
+        distorted, clean = self.old_pair()
         df = compare.combined_results(entries_for(distorted, clean))
-        clean_rows = df[df[plotting.RUN_ID_COLUMN] == WITH_BONDS]
-        self.assertTrue(clean_rows["distortion_radius"].isna().all())
+        for column in ("no_distortion", "distortion_radius"):
+            self.assertNotIn(column, df.columns)
+        self.assertEqual(compare.swept_names([distorted]), ["pedestal_depth"])
+        labels = [row.label for row in sum(compare.setting_rows([distorted, clean]), [])]
+        self.assertFalse([label for label in labels if "istortion" in label])
+
+    def test_the_form_opens_on_an_old_run_without_them(self):
+        self.old_pair()
+        settings_, values, loaded_from = webapp._form_starting_point(SWEEP_ONE, None)
+        self.assertEqual(loaded_from, SWEEP_ONE)
+        self.assertEqual(values["pcb_length"], 26.0)
+        self.assertNotIn("no_distortion", values)
+        self.assertNotIn("distortion_radius", values)
 
 
 class WhatDiffersTests(RunsOnDisk):
@@ -182,15 +214,6 @@ class WhatDiffersTests(RunsOnDisk):
         self.assertNotIn("Pedestal depth", [row.label for row in differing])
         row = next(row for row in shared if row.label == "Pedestal depth")
         self.assertEqual(row.values, ["0 mm", "0 mm"])
-
-    def test_distortion_geometry_does_not_apply_to_a_run_without_one(self):
-        distorted = make_run(SWEEP_ONE, sweep=[("distortion_radius", [0.5, 1.0])],
-                             pinned={"no_distortion": 0}, results=modes([10.0]))
-        clean = make_run(WITH_BONDS, pinned={"no_distortion": 1}, results=modes([5.8]),
-                         dimensions={"distortion_radius": 0.6})
-        rows = {row.label: row for row in sum(compare.setting_rows([distorted, clean]), [])}
-        self.assertEqual(rows["Distortion radius"].values[1], compare.NOT_APPLICABLE)
-
 
 class LiningUpTests(RunsOnDisk):
     def test_modes_line_up_across_runs(self):
@@ -252,23 +275,6 @@ class DefaultAxesTests(RunsOnDisk):
         axes = compare.default_axes(compare.combined_results(entries), ["pedestal_depth"], "Eigenmode")
         self.assertEqual(axes["x"], "pedestal_depth")
 
-    def test_no_run_is_left_off_the_plot_it_opens_on(self):
-        """A single run has no value on another run's distortion sweep, so
-        the plot opens on the runs themselves rather than drop it."""
-        distorted = make_run(SWEEP_ONE, sweep=[("distortion_radius", [0.5, 1.0])],
-                             pinned={"no_distortion": 0},
-                             results=[{"mode": 1, "freq_ghz": 10.0, "distortion_radius": r, "combo_id": f"r{r}"}
-                                      for r in (0.5, 1.0)])
-        clean = make_run(WITH_BONDS, pinned={"no_distortion": 1}, results=[
-            {**row, "mode": 1} for row in modes([5.8])])
-        entries = entries_for(distorted, clean)
-        df = compare.combined_results(entries)
-        axes = compare.default_axes(df, ["distortion_radius"], "Eigenmode")
-        self.assertEqual(axes["x"], plotting.RUN_COLUMN)
-        self.assertEqual(compare.runs_off_axes(df, axes["x"], axes["y"]), [])
-        self.assertEqual(compare.runs_off_axes(df, "distortion_radius", "freq_ghz"), ["B · " + WITH_BONDS])
-
-
 class PlottingSeveralRunsTests(RunsOnDisk):
     def setUp(self):
         super().setUp()
@@ -286,18 +292,28 @@ class PlottingSeveralRunsTests(RunsOnDisk):
         kept = plotting.apply_filters(self.df, {plotting.RUN_ID_COLUMN: [WITHOUT_BONDS]})
         self.assertEqual(kept[plotting.RUN_ID_COLUMN].unique().tolist(), [WITHOUT_BONDS])
 
+    def test_no_run_is_left_off_the_plot_it_opens_on(self):
+        """A single run has no value on another run's sweep, so the plot
+        opens on the runs themselves rather than drop it."""
+        swept = make_run(SWEEP_ONE, sweep=[("pedestal_depth", [0.0, 1.0])],
+                         results=[{"mode": 1, "freq_ghz": 10.0, "pedestal_depth": d, "combo_id": f"d{d}"}
+                                  for d in (0.0, 1.0)])
+        df = compare.combined_results(entries_for(swept, Run.load(WITH_BONDS)))
+        axes = compare.default_axes(df, ["pedestal_depth"], "Eigenmode")
+        self.assertEqual(axes["x"], plotting.RUN_COLUMN)
+        self.assertEqual(compare.runs_off_axes(df, axes["x"], axes["y"]), [])
+        self.assertEqual(compare.runs_off_axes(df, "pedestal_depth", "freq_ghz"), ["B · with bonds"])
+
     def test_filtering_a_parameter_keeps_the_runs_that_never_had_it(self):
-        """Unticking one distortion radius hides the points at that radius
-        -- not a run built without any distortion at all."""
-        distorted = make_run(SWEEP_ONE, sweep=[("distortion_radius", [0.5, 1.0])],
-                             pinned={"no_distortion": 0},
-                             results=[{"mode": 1, "freq_ghz": 10.0, "distortion_radius": r, "combo_id": f"r{r}"}
-                                      for r in (0.5, 1.0)])
-        clean = Run.load(WITH_BONDS)
-        df = compare.combined_results(entries_for(distorted, clean))
-        kept = plotting.apply_filters(df, {"distortion_radius": ["1"]})
+        """Unticking one value of a swept parameter hides the points at that
+        value -- not a compared run that never swept it."""
+        swept = make_run(SWEEP_ONE, sweep=[("pedestal_depth", [0.0, 1.0])],
+                         results=[{"mode": 1, "freq_ghz": 10.0, "pedestal_depth": d, "combo_id": f"d{d}"}
+                                  for d in (0.0, 1.0)])
+        df = compare.combined_results(entries_for(swept, Run.load(WITH_BONDS)))
+        kept = plotting.apply_filters(df, {"pedestal_depth": ["1"]})
         self.assertEqual(sorted(kept[plotting.RUN_ID_COLUMN].unique()), [SWEEP_ONE, WITH_BONDS])
-        self.assertEqual(kept.loc[kept[plotting.RUN_ID_COLUMN] == SWEEP_ONE, "distortion_radius"].tolist(), [1.0])
+        self.assertEqual(kept.loc[kept[plotting.RUN_ID_COLUMN] == SWEEP_ONE, "pedestal_depth"].tolist(), [1.0])
 
     def test_a_run_keeps_its_colour_when_the_others_are_filtered_out(self):
         colours = plotting.run_colours([entry.name for entry in self.entries])

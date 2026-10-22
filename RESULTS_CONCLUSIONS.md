@@ -708,8 +708,8 @@ finite-conductivity section).
    50 x 25 mm or larger, and size is the strongest lever found.
 2. Repeat the via-spacing sweep on the symmetric lattice, 0.1-20 GHz, and
    include 0.5-1.2 mm.
-3. Sweep distortion on the current design. The old result says the effect is
-   large.
+3. ~~Sweep distortion on the current design.~~ Dropped 2026-10-22: the
+   distortion option was removed from the project.
 4. Run the wire-bond comparison again with the sweep reaching past 17 GHz.
 5. Pick runs by dip position, not dip depth.
 6. **Re-run the pair `0929_102232` / `1005_130249` with fine windows, to

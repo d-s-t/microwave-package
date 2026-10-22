@@ -102,12 +102,6 @@ class TestConstraints(unittest.TestCase):
     def test_the_default_board_is_still_buildable_without_a_chip(self):
         self.assertIsNone(constraints.check_layout(bare()))
 
-    def test_a_bare_board_does_not_reserve_chip_room_for_the_distortion(self):
-        tight = dict(no_distortion=0, pcb_length=30.0, distortion_radius=1.0,
-                     distortion_x=0.0)
-        self.assertIsNotNone(constraints.check_combination(dict(defaults(), **tight)))
-        self.assertIsNone(constraints.check_combination(bare(**tight)))
-
     def test_the_via_fence_is_still_checked(self):
         """Not everything is waived: the fence needs the board's width."""
         self.assertIn("via fence", constraints.check_layout(bare(pcb_side=1.0)))
