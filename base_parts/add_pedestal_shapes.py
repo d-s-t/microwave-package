@@ -26,7 +26,8 @@ Both cut `pedestal_depth` down from the cavity floor, the face the PCB rests
 on, the face base_parts/add_vents.py sketches its grooves on. Both are added
 after the part's final mirror (`box`) and after the vents, and each is centred
 on the origin, so neither depends on the mirror. Both are suppressed when
-pedestal_depth is 0 or the part is a bare board (no_chip), as the vents are.
+pedestal_depth is 0 (bare board or not: a bare board's recess is under its solid
+copper, which the model carries on a skin).
 
 The part's equation link is re-pointed at THIS checkout's default.txt first
 (as add_pedestal_radius.py does), and the two new parameters are imported
@@ -61,12 +62,11 @@ DIAMETER_EQUATION = "pedestal_diameter"  # the circle's diameter
 CREATE_RADIUS = 1.0        # mm: the radius the fillets are made at, before linking
 HALF_SIZE = 6.25 / 2.0     # mm: the real die's half side, the size the recess is drawn at
 
-# The recesses are cut when there is a depth and the part is not a bare board
-# (no_chip), the same condition design/venting.py and add_vents.py use.
-SQUARE_SUPPRESS = ('IIF ( "pedestal_shape" < 0.5 , IIF ( "pedestal_depth" > 0 , '
-                   'IIF ( "no_chip" > 0.5 , 1 , 0 ) , 1 ) , 1 )')
-CIRCLE_SUPPRESS = ('IIF ( "pedestal_shape" > 0.5 , IIF ( "pedestal_depth" > 0 , '
-                   'IIF ( "no_chip" > 0.5 , 1 , 0 ) , 1 ) , 1 )')
+# The recesses are cut whenever there is a depth, bare board or not. A bare
+# board's recess sits under its solid bottom copper, which the HFSS model
+# carries on a skin (see hfss/vents.py build_recess_skin).
+SQUARE_SUPPRESS = ('IIF ( "pedestal_shape" < 0.5 , IIF ( "pedestal_depth" > 0 , 0 , 1 ) , 1 )')
+CIRCLE_SUPPRESS = ('IIF ( "pedestal_shape" > 0.5 , IIF ( "pedestal_depth" > 0 , 0 , 1 ) , 1 )')
 
 
 def null():
@@ -274,9 +274,32 @@ def link_radii(m, b, radii):
         print("linked", name, "to", RADIUS_EQUATION)
 
 
+def fix_recess_suppression(m, save=True):
+    """Rewrite the two recess suppression equations on a part that already has
+    them, so a bare board (no_chip) is no longer left without its recess."""
+    em = m.GetEquationMgr
+    for feature, suppress in ((SQUARE_FEATURE, SQUARE_SUPPRESS), (CIRCLE_FEATURE, CIRCLE_SUPPRESS)):
+        for i in range(em.GetCount):
+            if em.Equation(i).replace(" ", "").startswith(f'"{feature}"='):
+                em.Equation(i, f'"{feature}"=' + suppress)
+                print(feature, "suppression is now:", em.Equation(i))
+                break
+        else:
+            sys.exit(f"no {feature} suppression equation in the part -- nothing was saved")
+    m.ForceRebuild3(False)
+    if save:
+        err = win32com.client.VARIANT(pythoncom.VT_BYREF | pythoncom.VT_I4, 0)
+        warn = win32com.client.VARIANT(pythoncom.VT_BYREF | pythoncom.VT_I4, 0)
+        print("saved", m.Save3(1, err, warn), err.value, warn.value)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--no-save", action="store_true")
+    ap.add_argument("--fix-recess-suppression", action="store_true",
+                    help="on a part that already has the recess features, drop the no_chip term "
+                         "from both recess suppression equations and save (run once; not run "
+                         "by the code, needs SolidWorks)")
     args = ap.parse_args()
     root = os.path.dirname(os.path.abspath(__file__))
     part = os.path.join(root, "box.SLDPRT")
@@ -287,6 +310,13 @@ def main():
     app.SetUserPreferenceToggle(INPUT_DIM_ON_CREATE, False)
     m = None
     try:
+        if args.fix_recess_suppression:
+            m, err = sg.open_and_activate_part(app, part)
+            if not m:
+                sys.exit(err)
+            sg.link_equations(m, os.path.join(root, "default.txt"))
+            fix_recess_suppression(m, save=not args.no_save)
+            return
         m, err = sg.open_and_activate_part(app, part)
         if not m:
             sys.exit(err)

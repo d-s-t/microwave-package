@@ -163,7 +163,7 @@ class TestWhatIsChecked(unittest.TestCase):
         self.assertIn("must be above 0", reason)
 
     def test_the_layout_check_refuses_a_bare_board_with_a_zero_radius(self):
-        # pedestal_depth 0: a bare board's recess is refused by its own check first.
+        # pedestal_depth 0: there is no recess to check, so the cavity corner's own zero-radius refusal applies.
         reason = constraints.check_layout(
             defaults(no_chip=1.0, pedestal_depth=0.0, cavity_corner_radius=0.0))
         self.assertIn("must be above 0", reason)

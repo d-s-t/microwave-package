@@ -66,6 +66,39 @@ def build_vents(hfss, frame, stack, values, log=logger.info) -> Optional[List[st
     return names
 
 
+def build_recess_skin(hfss, frame, stack, values, log=logger.info) -> Optional[str]:
+    """Put the box back under a bare board's whole bottom copper over its recess.
+
+    A bare board has no opening, so its bottom copper is whole and lies over the
+    pedestal recess as well as the rim. As with a vent groove (see
+    `_restore_copper_skin`), the copper is drawn 35 um down into the floor, so
+    the recess would leave it half over air at its walls. The copper is
+    whole on the real board, so the recess's top two copper thicknesses are
+    given back to the box as a skin, and the air pocket under the board sits
+    below that skin, closed by the solid ground plane on every side.
+
+    Returns the skin's name, or None when there is nothing to skin: a die board
+    (its copper has an opening over the recess and sits on the rim), no recess,
+    or a copper layer drawn as a sheet.
+    """
+    from ..design import parameter_meta, pedestal
+
+    thickness = stack.copper_thickness
+    if thickness <= 0 or not parameter_meta.is_bare_board(values):
+        return None
+    if values.get("pedestal_depth", 0.0) <= 0:
+        return None
+    half = pedestal.recess_size(values) / 2.0 + SKIN_OVERLAP
+    origin, sizes = frame.box(-half, -half, half, half,
+                              stack.pcb_bottom - SKIN_DEPTH * thickness, SKIN_DEPTH * thickness)
+    skin = hfss.modeler.create_box(origin=origin, sizes=sizes)
+    skin.name = "recess_skin"
+    hfss.modeler.unite(["box", skin.name])
+    log(f"Bare board: the bottom copper over the pedestal recess is carried on a "
+        f"{SKIN_DEPTH * thickness * 1000:g} um skin of the box.")
+    return skin.name
+
+
 def _restore_copper_skin(hfss, frame, stack, values, vents, log) -> List[str]:
     """Put the box back under the board's bottom copper over each groove.
 

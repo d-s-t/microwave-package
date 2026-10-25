@@ -497,26 +497,6 @@ def index():
     )
 
 
-def _bare_pedestal_message(sweep_params, parameter_defaults) -> Optional[str]:
-    """The warning for a run that asks for a pedestal on a bare board, or None.
-
-    Checks the run's own values (pinned and swept) rather than building every
-    combination; the same rule as constraints.check_bare_pedestal."""
-    def values_of(name):
-        for param in sweep_params:
-            if param.name == name:
-                return list(param.values)
-        return [parameter_defaults[name]] if name in parameter_defaults else []
-
-    if 1.0 not in values_of(parameter_meta.NO_CHIP_PARAM):
-        return None
-    if any(depth > 0 for depth in values_of("pedestal_depth")):
-        return ("Not started: a bare board (no chip) has no die, so its bottom ground plane has "
-                "no opening for the pedestal recess. Set pedestal_depth to 0 for this run, or "
-                "untick Bare board.")
-    return None
-
-
 @app.route("/runs/new", methods=["POST"])
 def new_run():
     # A filled-in box means "use this"; an empty one leaves the parameter
@@ -551,11 +531,10 @@ def new_run():
     # ordinary run records exactly what it did before the option existed.
     if parameter_meta.NO_CHIP_PARAM in available and "no_chip" in request.form:
         requested.append(SweepParameter(name=parameter_meta.NO_CHIP_PARAM, values=[1.0]))
-        # The box's pedestal stands under the chip, where an ordinary
-        # board's bottom ground plane has its opening. A bare board's
-        # plane is whole, so a pedestal would run into it (AEDT: "box and
-        # pcb_copper_bottom intersect"). Zero is the value the box has
-        # always rebuilt cleanly with; a typed value still wins.
+        # A bare board with no pedestal asked for keeps the box's floor flat:
+        # zero is the value the box has always rebuilt cleanly with. A typed
+        # pedestal depth still wins, and a bare board with a recess is built
+        # with its bottom copper carried over the recess (see hfss/vents.py).
         if "pedestal_depth" in available and not any(
                 p.name == "pedestal_depth" for p in requested):
             requested.append(SweepParameter(name="pedestal_depth", values=[0.0]))
@@ -577,13 +556,6 @@ def new_run():
     sweep_params, parameter_defaults = split_swept_and_fixed(requested)
     if not sweep_params and not parameter_defaults:
         return redirect(url_for("index"))
-
-    # A bare board with a pedestal recess cannot be laid out, and every such
-    # combination would be skipped. Say so here, before a run is created,
-    # rather than starting a run that quietly builds nothing for them.
-    bare_pedestal = _bare_pedestal_message(sweep_params, parameter_defaults)
-    if bare_pedestal:
-        return redirect(url_for("index", error=bare_pedestal))
 
     solve_settings = _solve_settings_from_form(request.form)
     settings = {

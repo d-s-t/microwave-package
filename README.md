@@ -168,10 +168,12 @@ binaries driven by the chip parameters, so a bare-board STEP still
 carries whatever the pedestal and chip lid features make from
 `pedestal_depth`, `chip_length`, `chip_side` and `bonding_clearence`.
 Run creation, for the command line and the form alike, pins `pedestal_depth = 0`
-for a bare-board run (the pedestal stands where an ordinary board's bottom ground
-plane has its opening, so on a whole plane AEDT rejects the model as
-intersecting); a value typed or swept for it still wins, and the layout check
-refuses a bare board that keeps a pedestal, saying why. Eigenmode
+for a bare-board run that asks for no pedestal, so its floor stays flat. A value
+typed or swept for `pedestal_depth` still wins: a bare board may carry a recess
+(`pedestal_shape` 0 or 1) under its solid bottom copper. The HFSS model then gives
+the box back a skin under that copper over the recess (`hfss/vents.py`
+`build_recess_skin`), so the air pocket sits under the board, closed by the ground
+plane. Eigenmode
 runs solve normally, but the chip-field columns come back flagged
 "object 'chip' not found", since there is no chip to measure.
 

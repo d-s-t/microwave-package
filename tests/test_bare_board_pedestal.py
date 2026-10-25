@@ -4,7 +4,8 @@ The web form used to be the only place that pinned pedestal_depth = 0 for a
 bare board; the command line did not, so a CLI bare-board run kept the 0.5 mm
 recess under a whole ground plane and failed HFSS validation ("pcb_copper_bottom
 and box intersect"). The rule now lives in `sweep.pin_bare_board_pedestal`, applied
-by `pipeline.create_run`, and the layout check refuses what slips past it.
+by `pipeline.create_run`. A typed pedestal on a bare board is valid: it is a recess
+under the board's solid bottom copper (see hfss/vents.py build_recess_skin).
 
 Run: python -m unittest discover -s tests
 """
@@ -93,10 +94,14 @@ class TestTheLayoutCheck(unittest.TestCase):
         base = eq.get_numeric_parameters(eq.read_file(str(paths.DEFAULT_EQUATIONS_FILE)))
         return dict(base, **kw)
 
-    def test_a_bare_board_with_a_pedestal_is_refused_saying_why(self):
+    def test_a_bare_board_with_a_recess_is_not_refused_for_it(self):
         reason = constraints.check_layout(self.values(no_chip=1, pedestal_depth=0.5))
-        self.assertIn("pedestal_depth", reason)
-        self.assertIn("bare board", reason)
+        self.assertTrue(reason is None or "bare board" not in reason)
+
+    def test_a_bare_board_recess_is_checked_for_its_size(self):
+        # the same shape rule as a die board: a square as big as the die is refused
+        reason = constraints.check_layout(self.values(no_chip=1, pedestal_depth=0.5, pedestal_size=7.0))
+        self.assertIn("pedestal_size", reason)
 
     def test_a_bare_board_without_one_is_not_refused_for_it(self):
         reason = constraints.check_layout(self.values(no_chip=1, pedestal_depth=0))

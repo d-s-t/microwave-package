@@ -32,7 +32,7 @@ across it; the 5880/TMM defaults are not what matters here, the shapes are).
 
 * **Pedestal vent:** a groove in the top of the box floor, along z through the
   middle of the recess (x = 0), through the wall, out of both side faces.
-  Created only when `pedestal_depth` > 0 and the board is not a bare board (`no_chip` = 0): a bare board has no die and no opening in its bottom copper.
+  Created only when `pedestal_depth` > 0 and the board is not a bare board (`no_chip` = 0): a bare board has no die and no opening in its bottom copper. A bare board's recess is not a vent: its whole bottom copper lies over it, and the model gives the box back a skin under that copper (`hfss/vents.py` `build_recess_skin`) so the copper sits on solid metal.
 * **Screw vents:** from each tapped hole, along z to the nearest side face
   (3.5 mm and the wall away). Created only when `screws_on` = 1.
 

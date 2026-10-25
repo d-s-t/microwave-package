@@ -27,7 +27,7 @@ class TestFormBooleans(unittest.TestCase):
         self.client = webapp.app.test_client()
 
     def start(self, **extra):
-        # A bare board cannot carry a pedestal, so it is posted at 0 there.
+        # A bare board posted without a pedestal gets 0 (flat floor); a typed one would win.
         pedestal = "0" if "no_chip" in extra else "0.5"
         data = {"range_pedestal_depth": pedestal, **extra}
         with mock.patch.object(webapp, "_start_pipeline_thread") as started:
@@ -45,6 +45,15 @@ class TestFormBooleans(unittest.TestCase):
     def test_a_ticked_bare_board_is_pinned_and_an_unticked_one_is_left_to_the_file(self):
         self.assertEqual(self.start(no_chip="1").parameter_defaults["no_chip"], 1.0)
         self.assertNotIn("no_chip", self.start().parameter_defaults)
+
+    def test_a_bare_board_with_a_typed_recess_is_started_with_it(self):
+        # the recess sits under the bare board's solid copper: it is accepted, not refused
+        data ={"range_pedestal_depth": "0.5", "no_chip": "1"}
+        with mock.patch.object(webapp, "_start_pipeline_thread") as started:
+            self.client.post("/runs/new", data=data)
+        run = started.call_args[0][0]
+        self.assertEqual(run.parameter_defaults["pedestal_depth"], 0.5)
+        self.assertEqual(run.parameter_defaults["no_chip"], 1.0)
 
     def test_a_fresh_form_opens_with_the_screws_ticked_as_the_equation_file_has_them(self):
         page = self.client.get("/").get_data(as_text=True)

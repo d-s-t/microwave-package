@@ -932,6 +932,10 @@ def build_layout(hfss, combo_dir: str, dimensions_txt_content: str,
     except ValueError as exc:
         raise RuntimeError(f"Vents: {exc}") from exc
 
+    # A bare board's whole bottom copper over a pedestal recess: the box is
+    # given back a skin under it there (see vents.build_recess_skin).
+    vent_builder.build_recess_skin(hfss, frame, stack, v, log=log)
+
     ground_offset = None
     if chip is not None:
         edges = [abs(across) for region in chip.regions if region.layer == "top"
