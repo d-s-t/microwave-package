@@ -9,7 +9,7 @@ circle no bigger; the square's radius must be above 0 and below half its side;
 the die's corners must stay over the rim at the largest play, per shape; the
 rim under a 6.25 mm die is 1.4809 mm2 for the square and 8.3829 mm2 for the
 circle; a legacy chip_leg does not refuse anything; and a bare board or a
-recess-free combination is left alone.
+recess-free combination is left alone; a bare board's recess is checked like a die board's.
 
 Run: python -m unittest tests.test_pedestal
 """
@@ -162,9 +162,12 @@ class TestLegacyLegIgnored(unittest.TestCase):
 
 
 class TestWhatIsNotChecked(unittest.TestCase):
-    def test_a_bare_board_has_no_recess_to_check(self):
-        self.assertIsNone(pedestal.check(defaults(no_chip=1.0, pedestal_size=9.0,
-                                                  pedestal_corner_radius=0.0)))
+    def test_a_bare_board_recess_is_checked_like_a_die_boards(self):
+        # the recess under a bare board's solid copper must still be a buildable shape
+        reason = pedestal.check(defaults(no_chip=1.0, pedestal_size=9.0, pedestal_corner_radius=0.0))
+        self.assertIn("pedestal_size", reason)
+        self.assertIsNone(pedestal.check(defaults(no_chip=1.0, pedestal_size=6.2,
+                                                  pedestal_corner_radius=1.0)))
 
     def test_no_pedestal_depth_means_no_recess(self):
         self.assertIsNone(pedestal.check(defaults(pedestal_depth=0.0, pedestal_size=9.0)))

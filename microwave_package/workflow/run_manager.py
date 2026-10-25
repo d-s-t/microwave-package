@@ -260,7 +260,7 @@ def _skip_reason(values: Dict[str, float], use_altium: bool) -> Optional[str]:
     a combination unbuildable.
     """
     if use_altium:
-        return constraints.check_bare_pedestal(values) or constraints.check_via_grid(values)
+        return constraints.check_via_grid(values)
     return None
 
 

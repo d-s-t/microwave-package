@@ -171,7 +171,7 @@ def box_layout(values: Dict[str, float], height_mm: float) -> List[View]:
         Dim("v", (10.0, -(body_s / 2 - g["wall"])), (10.0, body_s / 2 - g["wall"]), "right", 1,
             body_s - 2 * g["wall"]),
     ]
-    if g["chip"] and g["pedestal"] > 0:
+    if g["pedestal"] > 0:
         top.dims += [
             Dim("h", (-3.0, 0), (3.0, 0), "below", 1, None),
             Dim("v", (0, -3.0), (0, 3.0), "left", 2, None),
@@ -211,7 +211,7 @@ def box_layout(values: Dict[str, float], height_mm: float) -> List[View]:
         Dim("v", (-body_l / 2 + wall / 2, h2), (-15.0, floor_holes - h2), "left", 0,
             height_mm - floor_holes, search=0.1, steps=3),
     ]
-    if g["chip"] and g["pedestal"] > 0:
+    if g["pedestal"] > 0:
         sec_b.dims += [
             Dim("v", (0, -h2), (0, floor_pocket - h2), "right", 0, floor_pocket),
             Dim("v", (0, floor_pocket - h2), (-8, floor_holes - h2), "right", 1, g["pedestal"]),

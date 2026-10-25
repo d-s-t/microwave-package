@@ -46,11 +46,17 @@ class TestBoxLayout(unittest.TestCase):
         self.assertFalse([d for d in views["top"].dims if d.kind == "dia"])
         self.assertNotIn(43.0, expected(views["top"]))
 
-    def test_bare_board_has_no_pedestal_dimensions(self):
+    def test_bare_board_without_a_recess_has_no_pedestal_dimensions(self):
         with_chip = self.views()
-        bare = self.views(no_chip=1.0)
+        bare = self.views(no_chip=1.0, pedestal_depth=0.0)
         self.assertGreater(len(with_chip["top"].dims), len(bare["top"].dims))
         self.assertGreater(len(with_chip["sec_b"].dims), len(bare["sec_b"].dims))
+
+    def test_bare_board_with_a_recess_is_dimensioned_like_one_with_a_chip(self):
+        # the recess is in the box whether or not there is a die over it
+        with_chip = self.views()
+        bare = self.views(no_chip=1.0)
+        self.assertEqual(len(with_chip["sec_b"].dims), len(bare["sec_b"].dims))
 
     def test_floor_thicknesses_come_from_the_screw_engagement(self):
         floors = expected(self.views()["sec_a"])

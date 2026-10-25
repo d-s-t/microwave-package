@@ -35,8 +35,6 @@ from __future__ import annotations
 import math
 from typing import Dict, Optional
 
-from . import parameter_meta
-
 # The real die's side (mm). No recess may be bigger than this, and the square
 # must be smaller.
 CHIP_SIZE = 6.25
@@ -103,11 +101,13 @@ def rim_support_area(values: Dict[str, float], die: float = CHIP_SIZE) -> float:
 def check(values: Dict[str, float]) -> Optional[str]:
     """Why the recess cannot be built with these values, or None.
 
-    Only a recess under a die is checked: a bare board (`no_chip`) has no
-    recess, and `pedestal_depth` 0 cuts none. Returns a sentence naming the
-    parameter to change, in the style of the other checks in `constraints`.
+    `pedestal_depth` 0 cuts no recess, so there is nothing to check. A bare
+    board (`no_chip`) is checked the same way: its recess sits under the
+    board's solid bottom copper rather than under a die, but the shape and
+    size rules are the same. Returns a sentence naming the parameter to
+    change, in the style of the other checks in `constraints`.
     """
-    if parameter_meta.is_bare_board(values) or values.get("pedestal_depth", 0.0) <= 0:
+    if values.get("pedestal_depth", 0.0) <= 0:
         return None
 
     which = shape(values)

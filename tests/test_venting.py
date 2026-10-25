@@ -213,6 +213,44 @@ class TestTheBuilder(unittest.TestCase):
         self.assertEqual([u[1] for u in hfss.modeler.unions],
                          [f"vent_skin_screw_{i}_0" for i in (1, 2, 3, 4)])
 
+    def test_a_bare_board_recess_gets_one_skin_under_its_whole_copper(self):
+        # the recess is under solid copper: the box is given back a skin across it
+        hfss = FakeHfss()
+        name = vent_builder.build_recess_skin(hfss, cg.Frame(), self.stack,
+                                              values(no_chip=1, pedestal_depth=0.5))
+        self.assertEqual(name, "recess_skin")
+        self.assertEqual([u[1] for u in hfss.modeler.unions], ["recess_skin"])
+        self.assertEqual(hfss.modeler.unions[0][0], "box")
+        (origin, sizes), = hfss.modeler.boxes
+        self.assertAlmostEqual(origin[1], 3.0 - 2 * 0.035)
+        self.assertAlmostEqual(sizes[1], 2 * 0.035)
+        half = 6.2 / 2.0 + vent_builder.SKIN_OVERLAP
+        self.assertAlmostEqual(origin[0], -half)
+        self.assertAlmostEqual(sizes[0], 2 * half)
+        self.assertAlmostEqual(origin[2], -half)
+        self.assertAlmostEqual(sizes[2], 2 * half)
+
+    def test_a_circle_recess_is_skinned_across_its_diameter(self):
+        hfss = FakeHfss()
+        vent_builder.build_recess_skin(hfss, cg.Frame(), self.stack,
+                                       values(no_chip=1, pedestal_depth=0.5, pedestal_shape=1))
+        (origin, sizes), = hfss.modeler.boxes
+        self.assertAlmostEqual(sizes[0], 2 * (6.25 / 2.0 + vent_builder.SKIN_OVERLAP))
+
+    def test_no_recess_skin_for_a_die_board_a_flat_bare_board_or_a_sheet(self):
+        # a die board's copper has its opening over the recess and sits on the rim
+        for kind, stack, extra in (
+                ("die board", self.stack, dict(no_chip=0, pedestal_depth=0.5)),
+                ("bare, no recess", self.stack, dict(no_chip=1, pedestal_depth=0)),
+                ("bare, sheet copper", cg.Stack(pcb_bottom=3.0, pcb_top=3.381, chip_bottom=3.0,
+                                                chip_top=3.381, copper_thickness=0.0,
+                                                chip_metal_thickness=0.0),
+                 dict(no_chip=1, pedestal_depth=0.5))):
+            with self.subTest(kind):
+                hfss = FakeHfss()
+                self.assertIsNone(vent_builder.build_recess_skin(hfss, cg.Frame(), stack, values(**extra)))
+                self.assertEqual(hfss.modeler.unions, [])
+
     def test_nothing_when_off(self):
         hfss = FakeHfss()
         self.assertIsNone(vent_builder.build_vents(hfss, cg.Frame(), self.stack, values(vents_on=0)))

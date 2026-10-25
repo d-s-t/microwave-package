@@ -236,9 +236,10 @@
   {% if has_no_chip_param %}
   <h4>Bare board</h4>
   <p class="muted">Tick to simulate only the PCB and its connectors (<code>no_chip = 1</code>): a
-    straight 50 &Omega; CPW from one SMP to the other, with no die, opening, pedestal, bond pads or
-    wire bonds. It separates what the board and connectors do from what the chip does. Applies to the
-    whole run. The bond-finger and chip reference planes do not exist without a chip.</p>
+    straight 50 &Omega; CPW from one SMP to the other, with no die, opening, bond pads or wire bonds.
+    It separates what the board and connectors do from what the chip does. Applies to the whole run.
+    The bond-finger and chip reference planes do not exist without a chip. A pedestal recess is
+    allowed: type a pedestal depth for it, under the board's solid bottom copper; left empty it is 0.</p>
   <label><input type="checkbox" name="no_chip" value="1"
     {% if no_chip_ticked %}checked{% endif %}> Bare board (no chip)</label>
   {% endif %}

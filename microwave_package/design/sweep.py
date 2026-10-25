@@ -73,14 +73,12 @@ def pin_bare_board_pedestal(
     """`parameter_defaults`, with `pedestal_depth` pinned to 0 when every
     combination of the run is a bare board and nothing says otherwise.
 
-    The pedestal is a recess in the box floor under the die, where an
-    ordinary board's bottom ground plane has its opening. A bare board has
-    no die and its plane is whole, so a recess would run into it (AEDT: "box
-    and pcb_copper_bottom intersect"). Zero is the value the box rebuilds
-    cleanly with. A value typed or swept for it still wins, and a run that
-    mixes bare and ordinary boards (`no_chip` swept) is left alone: the
-    layout check refuses the bare ones that kept a pedestal, saying why.
-    `base_values` is the equations file's own numbers.
+    A bare board asked for no pedestal gets zero: the box floor stays flat,
+    which is the value the box rebuilds cleanly with. A value typed or swept
+    for `pedestal_depth` still wins, so a bare board can carry a recess under
+    its solid bottom copper. A run that mixes bare and ordinary boards
+    (`no_chip` swept) is left alone. `base_values` is the equations file's
+    own numbers.
     """
     defaults = dict(parameter_defaults or {})
     if "pedestal_depth" not in base_values or "pedestal_depth" in defaults:
