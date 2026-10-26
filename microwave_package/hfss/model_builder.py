@@ -26,6 +26,7 @@ from typing import Callable, Dict, List, Optional
 from ansys_analyze_common import queue_common
 
 from ..design import equations as eq
+from ..workflow import queue_hold
 from . import registry
 
 logger = logging.getLogger("microwave_package")
@@ -1849,17 +1850,26 @@ def queue_model(
             "source_step_files": {k: os.path.abspath(p) for k, p in step_paths.items()},
         },
     )
-    task_path = queue_common.write_task_atomically(queue, task)
-    queue_common.write_local_marker(
-        combo_dir,
-        task_id,
-        queue.root,
-        extra={
-            "local_project_file": project_path,
-            "queued_project_file": relative_project_file,
-            "output_dir": relative_output_dir,
-        },
-    )
-    run.update_combo(combo_id, task_id=task_id, handoff_status="done", queue_status="pending")
-    log(f"Queued analysis task {task_id} for {combo_id}: {task_path}")
+    # Under the run's queue lock, so a pause or a resume cannot land in the
+    # middle of this. While the run is paused the task is written straight
+    # into the run's held folder (see workflow/queue_hold.py): it is never
+    # visible to the worker, and it keeps the same name it would have had.
+    with run.queue_lock:
+        paused = run.queue_paused
+        task_path = queue_common.write_task_atomically(
+            queue_hold.intake_queue(queue, run.run_id) if paused else queue, task)
+        queue_common.write_local_marker(
+            combo_dir,
+            task_id,
+            queue.root,
+            extra={
+                "local_project_file": project_path,
+                "queued_project_file": relative_project_file,
+                "output_dir": relative_output_dir,
+            },
+        )
+        run.update_combo(combo_id, task_id=task_id, handoff_status="done",
+                         queue_status="held" if paused else "pending")
+    log(f"Queued analysis task {task_id} for {combo_id}"
+        + (" -- held, because the run is paused" if paused else "") + f": {task_path}")
 

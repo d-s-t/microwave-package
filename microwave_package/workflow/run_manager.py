@@ -59,8 +59,11 @@ PHASES = (
                 "failed": "failed"}},
     {"key": "analysis", "label": "Analysis", "what": "the solve, run by the worker",
      "field": "queue_status", "waiting_label": "Queued",
-     "states": {"pending": "waiting", "in_progress": "running", "done": "done",
-                "failed": "failed"}},
+     # "held" is a task the user has paused out of the queue (see
+     # workflow/queue_hold.py): waiting for the worker in every way that
+     # counts, and shown as held on its own where that matters.
+     "states": {"pending": "waiting", "held": "waiting", "in_progress": "running",
+                "done": "done", "failed": "failed"}},
     {"key": "download", "label": "Copy back", "what": "the analysed files, copied off the queue",
      "field": "fetch_status",
      "states": {"running": "running", "done": "done", "failed": "failed"}},
@@ -295,6 +298,13 @@ def parameter_values_for(name: str, sweep_params, parameter_defaults) -> List[fl
     return [base[name]] if name in base else []
 
 
+def held_count(state: dict) -> int:
+    """How many of a run's combinations have their task held out of the
+    worker queue (see workflow/queue_hold.py)."""
+    return sum(1 for combo in state.get("combos", {}).values()
+               if combo.get("queue_status") == "held")
+
+
 def parent_of(config: dict) -> Optional[str]:
     """The run a run's config says it belongs to, or None.
 
@@ -324,6 +334,11 @@ class Run:
         # (see pipeline.run_pipeline), and both record progress here, so
         # every read-modify-write of the state file is serialised.
         self._lock = threading.RLock()
+        # Held by whatever moves this run's tasks in or out of the worker
+        # queue: queuing a task, the monitor reading a task's status, and a
+        # pause or resume (see workflow/queue_hold.py). Taken before
+        # `_lock`, never after it.
+        self._queue_lock = threading.RLock()
 
     # -- creation / loading -------------------------------------------------
     @classmethod
@@ -429,6 +444,8 @@ class Run:
         if not os.path.isdir(runs_root):
             return []
         summaries = []
+        # Held tasks of a part belong to the run it is part of: counted there.
+        parts_held: Dict[str, int] = {}
         for run_id in sorted(os.listdir(runs_root), reverse=True):
             run_dir = os.path.join(runs_root, run_id)
             state_path = os.path.join(run_dir, "state.json")
@@ -443,7 +460,10 @@ class Run:
             except (OSError, json.JSONDecodeError):
                 config = {}
             if parent_of(config):
-                continue  # a part of another run: shown on that run's page, not on its own
+                # a part of another run: shown on that run's page, not on its own
+                owner = parent_of(config)
+                parts_held[owner] = parts_held.get(owner, 0) + held_count(state)
+                continue
             swept = [
                 {"label": parameter_meta.label_for(p["name"]), "n": len(p.get("values", []))}
                 for p in config.get("sweep_params", [])
@@ -464,8 +484,12 @@ class Run:
                 "created_at": config.get("created_at"),
                 "stage": shown_stage,
                 "swept": swept,
+                "held": held_count(state),
+                "queue_paused": bool(state.get("queue_paused")),
                 **progress_of(progress_state, config.get("analysis_settings")),
             })
+        for summary in summaries:
+            summary["held"] += parts_held.get(summary["run_id"], 0)
         return summaries
 
     # -- persistence ----------------------------------------------------------
@@ -556,6 +580,28 @@ class Run:
         with self._lock:
             self.state["combos"][combo_id].update(fields)
             self.save_state()
+
+    def update_queue_state(self, *, paused: Optional[bool] = None,
+                           combos: Optional[Dict[str, dict]] = None) -> None:
+        """A pause or a resume's writes, saved once: the run's pause flag,
+        and the queue fields of the combinations it changed (see
+        workflow/queue_hold.py)."""
+        with self._lock:
+            if paused is not None:
+                self.state["queue_paused"] = bool(paused)
+            for combo_id, fields in (combos or {}).items():
+                self.state["combos"][combo_id].update(fields)
+            self.save_state()
+
+    @property
+    def queue_lock(self):
+        """The lock that serialises this run's moves in and out of the worker queue."""
+        return self._queue_lock
+
+    @property
+    def queue_paused(self) -> bool:
+        """Whether tasks queued for this run are held: set by a pause, cleared by a resume."""
+        return bool(self.state.get("queue_paused"))
 
     # -- which process is driving it ----------------------------------------
     # The web app knows which runs its own threads are driving, and nothing

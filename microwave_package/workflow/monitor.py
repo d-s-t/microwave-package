@@ -13,7 +13,7 @@ from typing import Callable, Optional
 
 from ansys_analyze_common import queue_common
 
-from . import resilient_io
+from . import queue_hold, resilient_io
 
 logger = logging.getLogger("microwave_package")
 
@@ -76,12 +76,17 @@ def monitor_run(
                 )
 
             for combo_id in pending_ids:
-                task_id = combos[combo_id]["task_id"]
-                status = queue_common.get_task_status(queue, task_id)
-                if status != combos[combo_id].get("queue_status"):
-                    run.update_combo(combo_id, queue_status=status)
-                    if status in TERMINAL_STATUSES:
-                        log(f"{combo_id} (task {task_id}) -> {status}")
+                # Under the run's queue lock, so a pause, a resume or a task
+                # being queued cannot change the task between this look and
+                # the write. A held task reads as 'held' (queue_hold.task_status),
+                # so polling never overwrites it with 'unknown'.
+                with run.queue_lock:
+                    task_id = combos[combo_id]["task_id"]
+                    status = queue_hold.task_status(queue, run.run_id, task_id)
+                    if status != combos[combo_id].get("queue_status"):
+                        run.update_combo(combo_id, queue_status=status)
+                        if status in TERMINAL_STATUSES:
+                            log(f"{combo_id} (task {task_id}) -> {status}")
         except resilient_io.Stopped:
             log("Monitoring stopped.")
             return

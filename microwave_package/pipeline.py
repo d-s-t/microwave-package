@@ -133,6 +133,21 @@ def _being_driven(run_id: str) -> bool:
         return run_id in _DRIVING
 
 
+# The Run object each run this process is driving is being driven through.
+_LIVE_RUNS: Dict[str, Run] = {}
+
+
+def live_run(run_id: str) -> Optional[Run]:
+    """The Run this process is driving right now for `run_id`, or None.
+
+    A pause or a resume for a run is applied to this object, because its
+    state is the one the driver writes: a second copy would be overwritten by
+    the next write from here (see workflow/queue_hold.py).
+    """
+    with _DRIVING_LOCK:
+        return _LIVE_RUNS.get(run_id)
+
+
 def _stopped(stop_event) -> bool:
     return stop_event is not None and stop_event.is_set()
 
@@ -152,6 +167,8 @@ def run_pipeline(run: Run, queue: "queue_common.QueuePaths", log=logger.info, st
         log(f"Run {run.run_id} is already being driven by another thread in this process "
             "-- not starting a second driver on it.")
         return
+    with _DRIVING_LOCK:
+        _LIVE_RUNS[run.run_id] = run
     run.claim_driver()
     try:
         if not _finish_prerequisite(run, queue, log=log, stop_event=stop_event):
@@ -168,6 +185,9 @@ def run_pipeline(run: Run, queue: "queue_common.QueuePaths", log=logger.info, st
         # a leftover, and saying so on the page would be a lie. (A
         # process that was killed outright cannot do this, which is why
         # the stages clear it on the way in as well.)
+        with _DRIVING_LOCK:
+            if _LIVE_RUNS.get(run.run_id) is run:
+                del _LIVE_RUNS[run.run_id]
         _end_driving(run.run_id)
         stages.clear_stale_progress(run)
         if _stopped(stop_event) and run.state.get("stage") != "complete":
@@ -782,7 +802,14 @@ def main() -> None:
     from . import pipeline_child
     pipeline_child.clear_stop_request(run)
     threading.Thread(target=pipeline_child.watch_for_stop, args=(run, stop_event), daemon=True).start()
+    # Likewise a pause or resume the web app asks for (see workflow/queue_hold.py).
+    threading.Thread(target=pipeline_child.watch_for_queue_requests,
+                     args=(run, queue, stop_event), daemon=True).start()
     run_pipeline(run, queue, stop_event=stop_event)
+    try:
+        pipeline_child.apply_queue_request(run, queue)
+    except Exception:
+        logger.exception("Could not apply a pause or resume for run %s", run.run_id)
 
 
 if __name__ == "__main__":

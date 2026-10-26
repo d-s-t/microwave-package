@@ -118,7 +118,7 @@
   <td>
     <span class="bar-cell">
       {{ progress_bar(r) }}
-      <span class="progress-num">{% if r.total %}{{ r.done }}/{{ r.total }}{% else %}&mdash;{% endif %}{% if r.failed %} · {{ r.failed }} failed{% endif %}{% if r.skipped %} · {{ r.skipped }} skipped{% endif %}</span>
+      <span class="progress-num">{% if r.total %}{{ r.done }}/{{ r.total }}{% else %}&mdash;{% endif %}{% if r.failed %} · {{ r.failed }} failed{% endif %}{% if r.skipped %} · {{ r.skipped }} skipped{% endif %}{% if r.held %} · {{ r.held }} task{{ "" if r.held == 1 else "s" }} held{% endif %}</span>
     </span>
   </td>
   <td><span class="pill {{ r.stage_display.kind }}">{{ r.stage_display.label }}</span></td>
@@ -179,6 +179,17 @@
 
 {% if request.args.get('error') %}
 <p class="form-error" role="alert">{{ request.args.get('error') }}</p>
+{% endif %}
+
+{% if held_runs %}
+<p class="note-box" role="status">
+  <strong>Tasks are held out of the worker queue.</strong>
+  {{ held_runs | sum(attribute="held") }} task{{ "" if (held_runs | sum(attribute="held")) == 1 else "s" }}
+  in {{ held_runs | length }} run{{ "" if held_runs | length == 1 else "s" }} {{ "is" if held_runs | length == 1 else "are" }} paused,
+  so the worker takes other runs' tasks first:
+  {% for r in held_runs %}<a href="{{ url_for('run_status', run_id=r.run_id) }}">{{ r.name }}</a>{{ ", " if not loop.last else "." }}{% endfor %}
+  Open a run and press <em>Resume queue</em> to give its tasks back.
+</p>
 {% endif %}
 
 <form method="post" action="{{ url_for('new_run') }}">
@@ -659,6 +670,7 @@
         var t = r.total ? (r.done + '/' + r.total) : '—';
         if (r.failed) { t += ' · ' + r.failed + ' failed'; }
         if (r.skipped) { t += ' · ' + r.skipped + ' skipped'; }
+        if (r.held) { t += ' · ' + r.held + (r.held === 1 ? ' task' : ' tasks') + ' held'; }
         num.textContent = t;
       }
       var bar = row.querySelector('.progress');
