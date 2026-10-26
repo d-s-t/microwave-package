@@ -167,10 +167,13 @@
   </select>
   <button type="submit">Load its settings</button>
   {% if loaded_from %}
-  <span class="muted">
+  <span class="muted" id="source-note">
     {% if loaded_combo %}Loaded the settings and the values of <strong>{{ loaded_combo }}</strong> from {{ loaded_from }}.
     {% else %}Loaded the settings from {{ loaded_from }}.{% endif %}
+    <a href="{{ url_for('index') }}">Back to the defaults</a>
   </span>
+  {% else %}
+  <span class="muted" id="source-note">Showing the defaults.</span>
   {% endif %}
 </form>
 

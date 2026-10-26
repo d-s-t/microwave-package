@@ -309,15 +309,16 @@ def _ticked(name: str, values: dict, parameters: dict) -> bool:
 def _form_starting_point(from_run: Optional[str], combo_id: Optional[str]):
     """The analysis settings and per-parameter values to open the form with.
 
-    Defaults to carrying over the most recent run, so the settings you
-    used last time are already there; `from_run` picks a specific one
-    instead, and `combo_id` starts from one combination of that run (its
-    own values on top of whatever that run had pinned), which is the way
-    to take a single point from a sweep and build a new sweep around it.
+    Opens on the defaults. Settings come from a run only when `from_run`
+    names one (the "Load its settings" button); `combo_id` then starts
+    from one combination of that run (its own values on top of whatever
+    that run had pinned), which is the way to take a single point from a
+    sweep and build a new sweep around it. Carrying over the latest run
+    silently is what let old settings leak into new runs (issue #98).
 
     Returns (settings, values, loaded_from_run_id).
     """
-    run_id = from_run or _latest_run_id()
+    run_id = from_run
     if not run_id:
         return dict(pipeline.DEFAULT_ANALYSIS_SETTINGS), {}, None
     try:

@@ -124,6 +124,11 @@ what range, choose what to solve -- Eigenmode or Driven Modal, which
 decides which analysis settings the form then asks for -- and start the
 run.
 
+The form opens on the defaults, not on the last run's settings. To start
+from an earlier run, pick it in "Start from an earlier run" and click
+"Load its settings"; the page then says which run the values came from,
+with a link back to the defaults. An unticked box means off for that run.
+
 The status page updates live, with a bar per phase rather than one bar
 for the whole run -- because several of them are happening at once:
 
