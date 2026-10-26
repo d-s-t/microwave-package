@@ -1,0 +1,108 @@
+{
+  "runs": [
+    {
+      "name": "tmm_baseline",
+      "label": "launch TMM baseline",
+      "substrate": "Rogers TMM 10i (tm)",
+      "params": {
+        "cpw_trace_width": "0.2"
+      }
+    },
+    {
+      "name": "ro3003_baseline",
+      "label": "launch RO3003 baseline",
+      "substrate": "Rogers RO3003 (tm)",
+      "params": {
+        "cpw_trace_width": "0.4"
+      }
+    },
+    {
+      "name": "ro4003_baseline",
+      "label": "launch RO4003 baseline",
+      "substrate": "Rogers RO4003 (tm)",
+      "params": {
+        "cpw_trace_width": "0.35"
+      }
+    },
+    {
+      "name": "tmm_taper_0p5",
+      "label": "launch TMM taper 0.5",
+      "substrate": "Rogers TMM 10i (tm)",
+      "params": {
+        "cpw_trace_width": "0.2",
+        "launch_taper_length": "0.5"
+      }
+    },
+    {
+      "name": "tmm_taper_1p0",
+      "label": "launch TMM taper 1.0",
+      "substrate": "Rogers TMM 10i (tm)",
+      "params": {
+        "cpw_trace_width": "0.2",
+        "launch_taper_length": "1.0"
+      }
+    },
+    {
+      "name": "tmm_pad_0p30",
+      "label": "launch TMM pad width 0.30",
+      "substrate": "Rogers TMM 10i (tm)",
+      "params": {
+        "cpw_trace_width": "0.2",
+        "launch_pad_width": "0.3"
+      }
+    },
+    {
+      "name": "tmm_void_2p0",
+      "label": "launch TMM void radius 2.0",
+      "substrate": "Rogers TMM 10i (tm)",
+      "params": {
+        "cpw_trace_width": "0.2",
+        "launch_void_radius": "2.0"
+      }
+    },
+    {
+      "name": "tmm_void_2p5",
+      "label": "launch TMM void radius 2.5",
+      "substrate": "Rogers TMM 10i (tm)",
+      "params": {
+        "cpw_trace_width": "0.2",
+        "launch_void_radius": "2.5"
+      }
+    },
+    {
+      "name": "tmm_cutout_1p0",
+      "label": "launch TMM bottom cutout r 1.0",
+      "substrate": "Rogers TMM 10i (tm)",
+      "params": {
+        "cpw_trace_width": "0.2",
+        "launch_bottom_cutout_radius": "1.0"
+      }
+    },
+    {
+      "name": "tmm_cutout_1p6",
+      "label": "launch TMM bottom cutout r 1.6",
+      "substrate": "Rogers TMM 10i (tm)",
+      "params": {
+        "cpw_trace_width": "0.2",
+        "launch_bottom_cutout_radius": "1.6"
+      }
+    },
+    {
+      "name": "ro3003_trace_0p48",
+      "label": "launch RO3003 trace 0.48",
+      "substrate": "Rogers RO3003 (tm)",
+      "params": {
+        "cpw_trace_width": "0.48"
+      }
+    },
+    {
+      "name": "ro3003_taper_0p5",
+      "label": "launch RO3003 taper 0.5",
+      "substrate": "Rogers RO3003 (tm)",
+      "params": {
+        "cpw_trace_width": "0.4",
+        "launch_taper_length": "0.5"
+      }
+    }
+  ]
+}

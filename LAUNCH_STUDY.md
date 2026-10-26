@@ -60,20 +60,53 @@ for an effective permittivity of (er + 1) / 2).
 
 ## Validating against the full runs
 
-Run the baseline on each substrate and compare with the full bare runs, read on
-the study's own grid (2-20 GHz, coarse rows, the same Kaiser window and
-(er + 1) / 2, so the peak height is comparable):
+Compare in **time**, not distance: the round trip from the port plane, in ns.
+The two signal pads are about 27 mm apart, so the spacing of the full run's two
+reflections gives the line's effective permittivity (below); a distance
+computed from an assumed (er + 1) / 2 is wrong for a ground-backed CPW, which
+is why `launch_summary.json` reports `t_ns` first and its `distance_mm` only
+"for the assumed eps_eff". Read on the study's own grid (2-20 GHz, coarse rows,
+Kaiser window, beta 6), the full bare runs give:
 
-| Substrate | Full run | Near peak (distance, \|G\|) | Far peak | Mean S11 2-10 / 10-17 / 17-20 GHz (dB) | Worst S11 |
-|---|---|---|---|---|---|
-| RO3003, trace 0.4 | 143807 | 1.97 mm, 0.329 | 33.5 mm, 0.282 | -13.6 / -8.1 / -6.9 | -2.0 dB at 20 GHz |
-| RO4003, trace 0.35 | 145007 | 1.99 mm, 0.356 | 33.2 mm, 0.296 | -12.4 / -7.5 / -6.8 | -2.0 dB at 19 GHz |
-| TMM 10i, trace 0.2 | 141347 | 2.52 mm, 0.467 | 32.6 mm, 0.284 | -7.4 / -5.6 / -1.5 | -0.2 dB at 17 GHz |
+| Substrate | Full run | Near launch (t, \|G\|) | Far launch (t, \|G\|) | eps_eff from 27 mm | Mean S11 2-10 / 10-17 / 17-20 GHz (dB) | Worst S11 |
+|---|---|---|---|---|---|---|
+| RO3003, trace 0.4 | 143807 | 0.019 ns, 0.329 | 0.316 ns, 0.282 | 2.72 | -13.6 / -8.1 / -6.9 | -2.0 dB at 20 GHz |
+| RO4003, trace 0.35 | 145007 | 0.020 ns, 0.356 | 0.334 ns, 0.296 | 3.04 | -12.4 / -7.5 / -6.8 | -2.0 dB at 19 GHz |
+| TMM 10i, trace 0.2 | 141347 | 0.039 ns, 0.467 | 0.505 ns, 0.284 | 6.69 | -7.4 / -5.6 / -1.5 | -0.2 dB at 17 GHz |
 
-The launch-only study must show one peak at the same distance with the same
-\|G\| (pass: within 15 % in height, 0.5 mm in position), and its \|S11\| must
-sit at the mean of the full run's ripple maximum and minimum. Only then are the
-sweep results worth reading.
+The launch-only study must show one peak at the near launch's time, +-0.02 ns
+(about 0.5 mm on the line), with the near launch's \|G\| within 15 %; the far
+peak must be absent. Its \|S11\| must sit at the mean of the full run's ripple
+maximum and minimum. Only then are the sweep results worth reading. The TMM 10i
+sweep is finer (0.05 GHz) than the other two (0.25 GHz); the read is the same.
+
+## How to create the runs
+
+The 12 combinations are each their own run (they differ in several parameters at
+once and in substrate): TMM 10i baseline, taper 0.5, taper 1.0, pad width 0.30,
+void radius 2.0, void radius 2.5, bottom cutout r 1.0, r 1.6; RO3003 baseline
+(trace 0.4), trace 0.48, taper 0.5; RO4003 baseline (trace 0.35).
+
+```
+python -m microwave_package.launch_study_runs --dry-run            # print the 12 forms
+python -m microwave_package.launch_study_runs --gate               # create the three baselines
+python -m microwave_package.launch_study_runs --only tmm_taper_0p5 # one run
+```
+
+`microwave_package/launch_study_runs.py` posts the web app's own form with every
+field explicit (nothing carried over from the latest run); the same 12 runs as
+a spec are in `sweeps/examples/launch_study_runs.json`
+(`{"runs": [{"name", "label", "substrate", "params": {name: "value"}}]}`,
+the structure of `queue_runs.py`; the form carries each `params` entry as
+`range_<name>`). Fields common to all: `solution_type=LaunchStudy`,
+`no_chip=1`, the launch settings at their defaults (2-20 GHz, 73 points, delta S
+0.02, 99/3/2 passes), `student_version`, `perfect_e_box` and
+`perfect_e_conductors` ticked, `run_both` not sent; Altium is ticked and
+ignored (the run forces it off). Per run only `mat_pcb`, `range_cpw_trace_width`
+and the one lever (`range_launch_taper_length`, `range_launch_pad_width`,
+`range_launch_void_radius`, `range_launch_bottom_cutout_radius`) differ. Create
+the gate first, check each built model's `launch.json` (trace, gap, pad, taper,
+void, board size) beside its project, and only then the other nine.
 
 ## Limits
 
