@@ -195,6 +195,65 @@ class TestBaselineFirstUse(Base):
         self.assertEqual(eq.read_file(sg.baseline_path(self.path)), COMMITTED)
         self.assertTrue(any("No baseline recorded" in m for m in messages))
 
+    def test_with_no_record_a_file_that_differs_from_head_is_warned_about(self):
+        messages = []
+        with mock.patch.object(sg, "committed_content", return_value=COMMITTED):
+            sg.check_baseline(self.path, log=messages.append)   # live == HEAD: no warning
+            self.assertFalse(any("WARNING" in m for m in messages))
+        os.remove(sg.baseline_path(self.path))
+        eq.write_file(self.path, BARE_POLLUTED)
+        messages = []
+        with mock.patch.object(sg, "committed_content", return_value=COMMITTED):
+            text = sg.check_baseline(self.path, log=messages.append)
+        self.assertTrue(any("WARNING" in m for m in messages))
+        self.assertEqual(text, BARE_POLLUTED)                    # still recorded
+        self.assertEqual(eq.read_file(sg.baseline_path(self.path)), BARE_POLLUTED)
+
+
+class TestTheBaselineAgainstTheCommittedFile(Base):
+    def record(self, content):
+        eq.write_file(sg.baseline_path(self.path), content)
+
+    def test_live_equal_to_the_sidecar_is_used_without_asking_git(self):
+        self.record(COMMITTED)
+        with mock.patch.object(sg, "committed_content") as git:
+            self.assertEqual(sg.check_baseline(self.path, log=lambda _m: None), COMMITTED)
+        git.assert_not_called()
+
+    def test_live_equal_to_head_refreshes_the_sidecar_and_continues(self):
+        """A committed edit to default.txt, pulled in after the last restore."""
+        edited = COMMITTED.replace('"pedestal_depth"= 0.2', '"pedestal_depth"= 0.3')
+        self.record(COMMITTED)
+        eq.write_file(self.path, edited)
+        messages = []
+        with mock.patch.object(sg, "committed_content", return_value=edited):
+            self.assertEqual(sg.check_baseline(self.path, log=messages.append), edited)
+        self.assertEqual(eq.read_file(sg.baseline_path(self.path)), edited)
+        self.assertTrue(any("refreshing" in m for m in messages))
+
+    def test_live_different_from_both_is_refused_and_the_sidecar_is_kept(self):
+        self.record(COMMITTED)
+        eq.write_file(self.path, BARE_POLLUTED)
+        with mock.patch.object(sg, "committed_content", return_value=COMMITTED):
+            with self.assertRaises(sg.PollutedBaseline):
+                sg.check_baseline(self.path, log=lambda _m: None)
+        self.assertEqual(eq.read_file(sg.baseline_path(self.path)), COMMITTED)
+
+    def test_with_no_git_a_file_differing_from_the_sidecar_is_refused(self):
+        self.record(COMMITTED)
+        eq.write_file(self.path, BARE_POLLUTED)
+        with mock.patch.object(sg, "committed_content", return_value=None):
+            with self.assertRaises(sg.PollutedBaseline):
+                sg.check_baseline(self.path, log=lambda _m: None)
+
+    def test_committed_content_is_none_outside_a_repository(self):
+        """The real lookup: a temporary folder is not tracked by any git repo."""
+        self.assertIsNone(sg.committed_content(self.path))
+
+    def test_committed_content_is_none_when_git_cannot_run(self):
+        with mock.patch.object(sg.subprocess, "run", side_effect=FileNotFoundError("git")):
+            self.assertIsNone(sg.committed_content(self.path))
+
 
 class TestSanityCheckOfTheDimensions(unittest.TestCase):
     DIMS = '"no_chip"= 1\n"pedestal_depth"= 0\n"pedestal_shape"= 0\n'

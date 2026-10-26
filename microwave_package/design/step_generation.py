@@ -24,6 +24,7 @@ import json
 import logging
 import os
 import socket
+import subprocess
 import time
 from typing import Callable, Dict, List, Optional, Tuple
 
@@ -284,31 +285,61 @@ def _value_differences(recorded: str, live: str) -> List[str]:
     return out
 
 
+def committed_content(equations_path: str) -> Optional[str]:
+    """The file as committed at HEAD, or None when git is unavailable, the
+    file is not tracked, or the folder is not in a repository."""
+    folder, name = os.path.split(os.path.abspath(equations_path))
+    try:
+        done = subprocess.run(["git", "-C", folder, "show", f"HEAD:./{name}"],
+                              capture_output=True, timeout=20, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if done.returncode != 0:
+        return None
+    return done.stdout.decode("utf-8-sig", errors="replace")
+
+
 def check_baseline(equations_path: str, log: Callable[[str], None] = logger.info) -> str:
     """The baseline a build starts from, after checking the live file is
-    still that baseline. Refuses (PollutedBaseline) rather than building from
-    values some earlier, unfinished run left in the file. Call with the lock held.
+    still that baseline. Call with the lock held.
+
+    A live file that differs from the recorded baseline is accepted when it
+    matches the committed file (a pulled-in edit to default.txt): the
+    baseline is refreshed to it. Only a file that differs from both the
+    baseline and the committed one is refused (PollutedBaseline) -- values
+    some earlier, unfinished run left in it. With no git, that is refused.
 
     With no baseline recorded yet, the file as it now stands becomes the
-    baseline; that is the one thing this cannot check.
+    baseline, with a warning if it differs from the committed file.
     """
     live = eq.read_file(equations_path)
     recorded = recorded_baseline(equations_path)
     if recorded is None:
-        log(f"No baseline recorded for {equations_path} yet; taking the file as it is now.")
+        committed = committed_content(equations_path)
+        if committed is not None and _value_differences(committed, live):
+            log(f"WARNING: {equations_path} differs from its committed version and no baseline "
+                "is recorded yet; taking the file as it is now.")
+        else:
+            log(f"No baseline recorded for {equations_path} yet; taking the file as it is now.")
+        eq.write_file(baseline_path(equations_path), live)
+        return live
+    if not _value_differences(recorded, live):
+        return recorded
+    committed = committed_content(equations_path)
+    if committed is not None and not _value_differences(committed, live):
+        log(f"{equations_path} differs from its recorded baseline but matches the committed "
+            "file; refreshing the baseline.")
         eq.write_file(baseline_path(equations_path), live)
         return live
     differences = _value_differences(recorded, live)
-    if differences:
-        raise PollutedBaseline(
-            f"The shared equations file {equations_path} does not match the baseline recorded "
-            "at its last restore, so a build would inherit values that are not the committed "
-            "ones: " + "; ".join(differences[:8]) + ". Either an earlier run stopped without "
-            "restoring it (restore the file from git, then the baseline record is correct), or "
-            "someone edited it on purpose (delete " + baseline_path(equations_path) + " to accept "
-            "the file as the new baseline). Nothing was built."
-        )
-    return recorded
+    raise PollutedBaseline(
+        f"The shared equations file {equations_path} differs from both the baseline recorded "
+        "at its last restore and the committed file, so a build would inherit values that are "
+        "not the committed ones: " + "; ".join(differences[:8]) + ". Either an earlier run "
+        "stopped without restoring it (restore the file from git), or it was edited on purpose "
+        "(commit it, or delete " + baseline_path(equations_path) + " to accept the file as the "
+        "new baseline). Nothing was built."
+    )
 
 
 def restore_equations(equations_path: str, content: str) -> None:
