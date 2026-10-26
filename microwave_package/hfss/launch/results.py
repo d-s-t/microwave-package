@@ -75,6 +75,7 @@ def summarize(freq: np.ndarray, s11: np.ndarray, eps_r: Optional[float]) -> Dict
     t_ns, response = tdr.impulse_response(s11, freq)
     peaks = tdr.top_peaks(t_ns, response, eps_eff, count=3, max_ns=1.0)
     out["tdr_eps_eff_assumed"] = eps_eff
+    out["tdr_note_distance"] = "distances use the assumed eps_eff; compare the peaks in t_ns"
     out["tdr_peaks"] = [{"t_ns": t, "distance_mm": d, "gamma": g} for t, d, g in peaks]
     out["launch_gamma_3mm"] = tdr.launch_magnitude(t_ns, response, eps_eff, 3.0)
     out["tdr_resolution_mm"] = tdr.resolution_mm(eps_eff, float(freq[-1] - freq[0]))
