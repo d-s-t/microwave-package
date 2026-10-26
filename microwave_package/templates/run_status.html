@@ -223,10 +223,41 @@
 <div class="error-box" role="alert">{{ request.args.get("error") }}</div>
 {% endif %}
 
+{% if request.args.get("notice") %}
+<div class="note-box" role="status">{{ request.args.get("notice") }}</div>
+{% endif %}
+
 {% if run.state.stage == "error" and run.state.error %}
 <div class="error-box">
   <strong>The pipeline stopped with an error:</strong>
   <pre>{{ run.state.error }}</pre>
+</div>
+{% endif %}
+
+{# Pausing this run's queued tasks, and what it has held (workflow/queue_hold.py).
+   A task the worker has started cannot be paused, so the note says so. #}
+{% if queue.queue_paused or queue.held_total or queue.can_pause %}
+<div class="queue-controls">
+  {% if queue.queue_paused %}
+  <form method="post" action="{{ url_for('release_queue', run_id=run.run_id) }}">
+    <button type="submit">Resume queue</button>
+    <span class="muted">Gives this run's held tasks back to the worker, in the places they had in the queue.</span>
+  </form>
+  {% elif queue.can_pause %}
+  <form method="post" action="{{ url_for('hold_queue', run_id=run.run_id) }}">
+    <button type="submit">Pause queue</button>
+    <span class="muted">Holds this run's queued tasks that have not started, so the worker takes other runs' tasks first.
+      A task the worker has already started cannot be paused: it finishes first.</span>
+  </form>
+  {% endif %}
+  {% if queue.held_total %}
+  <p class="note-box"><strong>{{ queue.held_total }} task{{ "" if queue.held_total == 1 else "s" }} held</strong>
+    out of the worker queue{% if queue.held_ids %}: {{ queue.held_ids | join(", ") }}{% if queue.held_hidden %}
+    and {{ queue.held_hidden }} more{% endif %}{% endif %}. They wait here until the queue is resumed.</p>
+  {% endif %}
+  {% if queue.request_pending %}
+  <p class="muted">A queue change is on its way to the process driving this run. Reload this page to see it.</p>
+  {% endif %}
 </div>
 {% endif %}
 
@@ -330,6 +361,7 @@
   <td class="pipeline" data-phases="{{ rows.phases[combo_id] }}">
     {{ phase_track() }}
     <span class="lbl">…</span>
+    {% if combo.queue_status == "held" %}<span class="pill idle" title="Its task is held out of the worker queue, until the queue is resumed">held</span>{% endif %}
   </td>
   <td class="row-actions">
     <a class="button mini" href="{{ url_for('index', from_run=run.run_id, combo=combo_id) }}"

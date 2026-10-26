@@ -282,6 +282,17 @@ mid-call -- so each finishes the combination it is in the middle of,
 records it, and the run ends where it stood. Resume carries on from
 there: nothing already drawn, built, modelled or analysed is done twice.
 
+**Pause queue** holds a run's tasks that the worker has not started yet out
+of the worker queue, so a short run (the launch-study baselines) is not
+stuck behind a long one. They wait in `<queue>/_held/<run_id>/` under their
+own names, and the status page and the run list say how many are held. Tasks
+queued for the run while it is paused are held too. **Resume queue** gives
+them back, in their places. A task the worker has already started cannot be
+paused; it finishes first. Stopping a run keeps its tasks held, and deleting
+it removes them. Like Stop, a pause on a run that a process is driving is
+applied by that process within a few seconds. The index page shows a banner
+while anything is held.
+
 Each combination on a run's status page has an **Open in AEDT** button
 (opens that combination's project in a visible AEDT window on this
 machine) and, once the STEP viewer's assets are present, a **3D view**

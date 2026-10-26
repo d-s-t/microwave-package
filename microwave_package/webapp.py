@@ -49,7 +49,7 @@ from .hfss.driven import ports
 # into that solver directly rather than the registry pretending every
 # solver has a view like it.
 from .hfss.eigenmode import fields as eigenmode_fields
-from .workflow import compare, companion, manufacturing, plotting, resilient_io, run_manager, smith
+from .workflow import compare, companion, manufacturing, plotting, queue_hold, resilient_io, run_manager, smith
 from .workflow.run_manager import Run
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s: %(message)s", stream=sys.stdout)
@@ -473,6 +473,8 @@ def index():
         parameters=parameters,
         groups=parameter_meta.grouped(parameters),
         runs=runs,
+        # Any run with tasks held out of the worker queue, for the banner.
+        held_runs=[r for r in runs if r.get("held")],
         # Ticked on arrival: the comparison page's "change the selection"
         # comes back here with the runs it was showing.
         compare_ids=set(filter(None, request.args.get("compare", "").split(","))),
@@ -634,6 +636,82 @@ def resume_run(run_id):
     return redirect(url_for("run_status", run_id=run_id))
 
 
+# One pause or resume at a time: two presses cannot interleave their moves.
+_queue_action_lock = threading.Lock()
+
+
+@app.route("/runs/<run_id>/queue/hold", methods=["POST"])
+def hold_queue(run_id):
+    """Pause a run: hold the tasks of its that have not started out of the
+    worker queue, so the worker takes other runs' tasks first. See
+    workflow/queue_hold.py."""
+    return _queue_action(run_id, "hold")
+
+
+@app.route("/runs/<run_id>/queue/release", methods=["POST"])
+def release_queue(run_id):
+    """Resume a run's queue: give its held tasks back to the worker, in the
+    places they were in."""
+    return _queue_action(run_id, "release")
+
+
+def _queue_action(run_id: str, action: str):
+    try:
+        run = Run.load(run_id)
+        if run.parent_id:
+            # A part (eigenmode run, refinement) is paused with its run.
+            run = Run.load(run.parent_id)
+    except (OSError, ValueError):
+        return redirect(url_for("index", error=f"Could not read run {run_id} to change its queue."))
+    with _queue_action_lock:
+        if _is_running(run.run_id) or _driven_elsewhere(run.run_id):
+            # The process driving the run applies it, as it applies a stop.
+            queue_hold.write_request(run.run_dir, action)
+            return redirect(url_for("run_status", run_id=run.run_id, notice=(
+                "The run is going: the process driving it applies the pause within a few seconds. "
+                "Reload this page to see it." if action == "hold" else
+                "The run is going: the process driving it applies the resume within a few seconds. "
+                "Reload this page to see it.")))
+        return _apply_queue_action_here(run, action)
+
+
+def _apply_queue_action_here(run, action: str):
+    """Pause or resume a run that nothing is driving: this process is the only writer."""
+    queue_hold.take_request(run.run_dir)  # a request left by a driver that has gone is out of date
+    try:
+        queue = resilient_io.queue_from_env("ANSYS_ANALYZE_QUEUE_PATH")
+    except EnvironmentError as exc:
+        return redirect(url_for("run_status", run_id=run.run_id, error=str(exc)))
+    reports = []
+    for each in [run, *companion.parts_of(run)]:
+        if action == "hold":
+            reports.append(queue_hold.hold_run(each, queue))
+        else:
+            reports.append(queue_hold.release_run(each, queue))
+    errors = [report["error"] for report in reports if report["error"]]
+    if errors:
+        return redirect(url_for("run_status", run_id=run.run_id, error=errors[0]))
+    message = queue_hold.describe(reports, action)
+    logger.info("Run %s: %s", run.run_id, message)
+    return redirect(url_for("run_status", run_id=run.run_id, notice=message))
+
+
+def _queue_view(run) -> dict:
+    """What the run page says about its queued tasks, for the run and its parts."""
+    runs = [run, *companion.parts_of(run)]
+    held_ids = sorted(cid for cid, combo in run.state["combos"].items()
+                      if combo.get("queue_status") == "held")
+    return {
+        "queue_paused": run.queue_paused,
+        "held_total": sum(run_manager.held_count(each.state) for each in runs),
+        "held_ids": held_ids[:MAX_HELD_LISTED],
+        "held_hidden": max(len(held_ids) - MAX_HELD_LISTED, 0),
+        "can_pause": any(combo.get("queue_status") == "pending"
+                         for each in runs for combo in each.state["combos"].values()),
+        "request_pending": queue_hold.request_pending(run.run_dir),
+    }
+
+
 @app.route("/runs/<run_id>/label", methods=["POST"])
 def set_run_label(run_id):
     """Give a run a human name (or clear it with an empty box). Stored on
@@ -652,6 +730,9 @@ def set_run_label(run_id):
 # row for each one costs far more than it tells you -- they all say the
 # same few things. The count and a sample carry the same information.
 MAX_SKIPPED_ROWS = 100
+
+# How many held task combinations the run page names (the count is always right).
+MAX_HELD_LISTED = 20
 
 
 def _phase_meta() -> list:
@@ -770,6 +851,7 @@ def run_status(run_id):
         # something to watch, so it starts folded away -- with hundreds of
         # rows it otherwise buries the results underneath it.
         combos_open=not run.is_complete,
+        queue=_queue_view(run),
     )
 
 
@@ -1003,6 +1085,10 @@ def delete_run(run_id):
                 _clear_queued_task(queue, task_id)
             except OSError as exc:
                 logger.warning("Could not clear queue files for task %s: %s", task_id, exc)
+        try:
+            queue_hold.remove_held(queue, each.run_id)
+        except OSError as exc:
+            logger.warning("Could not clear the held tasks of run %s: %s", each.run_id, exc)
         shutil.rmtree(each.run_dir, ignore_errors=True)
     logger.info("Deleted run %s", run_id)
     return redirect(url_for("index"))
