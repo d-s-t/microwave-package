@@ -486,7 +486,7 @@
     if (!chosen) { return; }
     var bothBox = document.getElementById('run-both');
     // A line-impedance check is its own question, not half of a pair.
-    var line = chosen.value === 'LineImpedance';
+    var line = {{ standalone_types|tojson }}.indexOf(chosen.value) >= 0;
     if (bothBox) { bothBox.disabled = line; if (line) { bothBox.checked = false; } }
     var both = bothBox && bothBox.checked;
     panels.forEach(function (panel) {

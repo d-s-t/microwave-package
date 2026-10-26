@@ -14,7 +14,7 @@ Altium draws combination 5's boards while SolidWorks rebuilds
 combination 4's solid and AEDT imports combination 3's STEP. A
 combination reaches AEDT once both of its halves have landed.
 
-A run asks HFSS one of three questions, chosen per run:
+A run asks HFSS one of four questions, chosen per run:
 
 - **Eigenmode** -- what does this cavity resonate at? Source-free, no
   ports; the answer is a frequency and a Q per mode.
@@ -28,6 +28,11 @@ A run asks HFSS one of three questions, chosen per run:
   Zo against frequency with a pass/fail against 50 +- 2.5 ohm. An
   independent check of the analytic gap calculation, cheap to run. See
   [Line impedance](#line-impedance).
+
+- **Launch study** -- how good is one SMP launch? One connector on a short board,
+  cut with a matched 50 ohm CPW wave port, so S11 is the launch reflection without
+  the standing wave; the levers are the trace, pad, taper, anti-pad void and lid
+  relief. No SolidWorks and no Altium. See [LAUNCH_STUDY.md](LAUNCH_STUDY.md).
 
 By default an Eigenmode or Driven run does **both**, on the same geometry (see
 [Eigenmode and Driven together](#eigenmode-and-driven-together)).

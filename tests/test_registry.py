@@ -25,7 +25,7 @@ class TestWhatIsRegistered(unittest.TestCase):
         it, which importing microwave_package.hfss is what does."""
         self.assertEqual(
             [t["value"] for t in registry.solution_types()],
-            [EIGENMODE, DRIVEN_MODAL, "LineImpedance"],
+            [EIGENMODE, DRIVEN_MODAL, "LineImpedance", "LaunchStudy"],
         )
 
     def test_eigenmode_is_the_default(self):

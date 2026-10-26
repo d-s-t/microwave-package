@@ -502,9 +502,12 @@ def create_run(sweep_params, analysis_settings: dict, parameter_defaults=None) -
     # for the command line and the web form, which both come through here.
     parameter_defaults = pin_bare_board_pedestal(
         sweep_params, parameter_defaults, run_manager.equation_file_values())
+    # A solver that draws its own copper never starts Altium, whatever the form says.
+    if not registry.for_settings(analysis_settings).needs_altium:
+        analysis_settings = {**analysis_settings, "use_altium": False}
     # A line-impedance check is its own question, not a half of a pair.
     both = (analysis_settings.get("run_both")
-            and registry.solution_type_of(analysis_settings) != "LineImpedance")
+            and registry.solution_type_of(analysis_settings) not in registry.standalone_types())
     types = [EIGENMODE, DRIVEN_MODAL] if both else [registry.solution_type_of(analysis_settings)]
     port_counts = run_manager.parameter_values_for("port_count", sweep_params, parameter_defaults)
     for solution_type in types:
