@@ -113,11 +113,12 @@ class WebAppTest(RunFolderTest):
         self.assertTrue(data["is_running"])
         self.assertEqual(data["driven_elsewhere"], self.other.pid)
 
-    def test_the_page_offers_neither_resume_nor_stop(self):
+    def test_the_page_offers_stop_but_not_resume(self):
+        # Stop is written as a file the other process watches, so it works from here.
         page = self.client.get(f"/runs/{self.run.run_id}").get_data(as_text=True)
         self.assertIn("running elsewhere", page)
         self.assertRegex(page, r'id="resume-form"\s+hidden')
-        self.assertRegex(page, r'id="stop-form"\s+hidden')
+        self.assertNotRegex(page, r'id="stop-form"\s+hidden')
         self.assertNotRegex(page, r'id="elsewhere-note"\s+hidden')
 
     def test_resume_is_refused_and_starts_nothing(self):

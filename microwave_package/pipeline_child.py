@@ -27,7 +27,7 @@ def stop_file_path(run: Run) -> str:
     return os.path.join(run.run_dir, STOP_FILE)
 
 
-def _watch_for_stop(run: Run, stop_event: threading.Event) -> None:
+def watch_for_stop(run: Run, stop_event: threading.Event) -> None:
     while not stop_event.wait(_STOP_POLL_SECONDS):
         if os.path.exists(stop_file_path(run)):
             stop_event.set()
@@ -44,7 +44,7 @@ def main(run_id: str) -> int:
         run = Run.load(run_id)
         queue = resilient_io.queue_from_env("ANSYS_ANALYZE_QUEUE_PATH")
         stop_event = threading.Event()
-        threading.Thread(target=_watch_for_stop, args=(run, stop_event), daemon=True).start()
+        threading.Thread(target=watch_for_stop, args=(run, stop_event), daemon=True).start()
         pipeline.run_pipeline(run, queue, log=logger.info, stop_event=stop_event)
         return 0
     except Exception:

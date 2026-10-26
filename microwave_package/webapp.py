@@ -253,7 +253,11 @@ def _is_stopping(run_id: str) -> bool:
     like it did nothing.
     """
     stop_event = _stop_events.get(run_id)
-    return bool(stop_event is not None and stop_event.is_set() and _is_running(run_id))
+    if stop_event is not None and stop_event.is_set() and _is_running(run_id):
+        return True
+    # A run driven by a process that outlived this app: its stop is the file.
+    return bool(_driven_elsewhere(run_id)) and os.path.exists(
+        os.path.join(Run(run_id).run_dir, pipeline_child.STOP_FILE))
 
 
 _XML_DECLARATION = re.compile(r"^\s*<\?xml.*?\?>\s*", re.S)
@@ -608,6 +612,11 @@ def stop_run(run_id):
     if stop_event is not None and _is_running(run_id):
         stop_event.set()
         logger.info("Stop requested for run %s.", run_id)
+    elif (driver := _driven_elsewhere(run_id)) is not None:
+        # The pipeline process outlives a restart of this app, and it watches
+        # the run's folder for this file (see pipeline_child).
+        open(os.path.join(Run(run_id).run_dir, pipeline_child.STOP_FILE), "w").close()
+        logger.info("Stop requested for run %s, driven by process %s.", run_id, driver)
     return redirect(url_for("run_status", run_id=run_id))
 
 

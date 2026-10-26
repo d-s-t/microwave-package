@@ -774,6 +774,10 @@ def main() -> None:
 
     stop_event = threading.Event()
     stop_on_interrupt(stop_event)
+    # The web app stops a run it cannot reach in-process by writing the stop
+    # file into the run's folder (see pipeline_child).
+    from . import pipeline_child
+    threading.Thread(target=pipeline_child.watch_for_stop, args=(run, stop_event), daemon=True).start()
     run_pipeline(run, queue, stop_event=stop_event)
 
 

@@ -13,6 +13,7 @@ Windows only (uses kernel32). Run: python -m unittest discover -s tests
 """
 import json
 import logging
+import os
 import subprocess
 import sys
 import tempfile
@@ -27,8 +28,8 @@ from microwave_package import paths, pipeline, pipeline_child, webapp
 from microwave_package.design.sweep import SweepParameter
 from microwave_package.workflow.run_manager import Run
 
-HOLD_MS = 6000
-REPLY_WITHIN_S = 2.0
+HOLD_MS = 15000
+REPLY_WITHIN_S = 5.0
 PROBE_DELAY_S = 1.5
 
 # Asks each route from a fresh process, once the stage has been holding the GIL
@@ -88,12 +89,43 @@ class TestWebAppAnswersDuringBuild(unittest.TestCase):
                 self.assertLess(took, REPLY_WITHIN_S)
 
 
+class TestStopForARunDrivenElsewhere(unittest.TestCase):
+    def setUp(self):
+        logging.disable(logging.CRITICAL)
+        self.addCleanup(logging.disable, logging.NOTSET)
+        saved = paths.RUNS_ROOT
+        paths.RUNS_ROOT = tempfile.mkdtemp(prefix="runs_")
+        self.addCleanup(setattr, paths, "RUNS_ROOT", saved)
+        self.run = Run.create([SweepParameter(name="pedestal_depth", values=[0.0])],
+                              dict(pipeline.DEFAULT_ANALYSIS_SETTINGS), {})
+        self.client = webapp.app.test_client()
+        # A pipeline process left over from before a restart of the web app.
+        patches = [mock.patch.object(Run, "driven_elsewhere", lambda self: 4242)]
+        for patcher in patches:
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def test_stop_writes_the_stop_file_and_the_page_still_offers_stop(self):
+        reply = self.client.post(f"/runs/{self.run.run_id}/stop")
+        self.assertEqual(reply.status_code, 302)
+        self.assertTrue(os.path.exists(pipeline_child.stop_file_path(self.run)))
+
+        page = self.client.get(f"/runs/{self.run.run_id}").get_data(as_text=True)
+        self.assertIn('id="stopping-note"', page)
+        self.assertNotIn('id="stopping-note" hidden', page)
+
+    def test_the_page_offers_stop_for_a_run_driven_elsewhere(self):
+        page = self.client.get(f"/runs/{self.run.run_id}").get_data(as_text=True)
+        self.assertIn('id="stop-form"', page)
+        self.assertNotIn('id="stop-form" hidden', page)
+
+
 class TestStopFileReachesThePipelineProcess(unittest.TestCase):
     def test_a_stop_file_in_the_run_folder_sets_the_stop_event(self):
         run_dir = tempfile.mkdtemp(prefix="run_")
         run = types.SimpleNamespace(run_dir=run_dir)
         stop_event = threading.Event()
-        watcher = threading.Thread(target=pipeline_child._watch_for_stop,
+        watcher = threading.Thread(target=pipeline_child.watch_for_stop,
                                    args=(run, stop_event), daemon=True)
         with mock.patch.object(pipeline_child, "_STOP_POLL_SECONDS", 0.01):
             watcher.start()

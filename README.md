@@ -119,6 +119,10 @@ setx MICROWAVE_PYTHON "D:\envs\lab\Scripts\python.exe"
 as well.)
 
 Open <http://127.0.0.1:5000/> (or set `PORT` to serve somewhere else).
+
+A run is driven by its own process, so restarting the web app does **not**
+stop a run that is building. The page then says it is running elsewhere and
+still offers Stop, which asks that process to stop at its next safe point.
 Pick which parameter(s) from `base_parts/default.txt` to sweep and over
 what range, choose what to solve -- Eigenmode or Driven Modal, which
 decides which analysis settings the form then asks for -- and start the
