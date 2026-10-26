@@ -20,6 +20,12 @@ task.
   by `copper_geometry.build`), the lid on the copper with its relief channel and
   the connector's window (`port_length` + 2 `smp_window_extra`, sharp-cornered
   here), the vendor SMP model placed by `model_builder.place_connectors`.
+- The lid carries the real lid's **deeper last millimetre**: the relief channel is cut 0.4 mm
+  (not the line's 0.3) over the 1.0 mm before each connector window, because the connector's
+  centre-pin tab runs under that stretch to the pad. The numbers are read off the lid's STEP
+  (`base_parts/lid_inside.SLDPRT`: ceiling at 0.3 mm to x = 12.65, 0.4 mm from there to the
+  window's inner wall at 13.65, 1.2 mm wide). The first baseline, drawn without it, reflected
+  everything: the tab touched the lid.
 - Port 1 is the wave port across the connector's air bore (the `connector`
   reference plane of the full runs). Port 2 is a 50 ohm CPW wave port on the cut,
   `launch_port_half_width_mm` (1.5) either side of the line like the line check's

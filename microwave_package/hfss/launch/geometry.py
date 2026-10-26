@@ -279,7 +279,7 @@ def vias(launch: Launch) -> List[cg.Via]:
 
 
 def top_copper(launch: Launch) -> List:
-    """Regions, tracks and pads of the top layer."""
+    """Regions, tracks (none: the trace is a region) and pads of the top layer."""
     H, o, gi = launch.half_length, launch.origin_u, launch.gnd_inner
     land = smp.GROUND_LAND_HALF
     regions = [cg.Region(cg.TOP, _plane(launch, 1.0)), cg.Region(cg.TOP, _plane(launch, -1.0)),
@@ -297,8 +297,11 @@ def top_copper(launch: Launch) -> List:
         regions.append(cg.Region(cg.TOP, ((edge, -a), (edge + launch.taper_length, -b),
                                           (edge + launch.taper_length, b), (edge, a))))
         track_from = edge + launch.taper_length
-    tracks = [cg.Track(cg.TOP, track_from, 0.0, H, 0.0, launch.trace)]
-    return [regions, tracks, pads]
+    # The trace is a plain rectangle, not a Track: a Track adds a round cap at each end, and the one
+    # at the cut would poke 0.1 mm through the CPW port's plane.
+    half = launch.trace / 2.0
+    regions.append(cg.Region(cg.TOP, ((track_from, -half), (H, -half), (H, half), (track_from, half))))
+    return [regions, [], pads]
 
 
 def board(launch: Launch) -> cg.BoardCopper:

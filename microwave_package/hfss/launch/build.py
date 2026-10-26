@@ -36,6 +36,13 @@ RECORD_FILE = "launch.json"
 FLOOR_MM = 0.5
 # How far the deeper lid relief over the launch reaches past the pad, step and taper (mm).
 POCKET_MARGIN = 0.5
+# The real lid cuts the relief channel deeper in the last millimetre before each connector
+# window (base_parts/lid_inside.SLDPRT; its STEP shows the ceiling at 0.3 mm along the line and
+# 0.4 mm over the 1.0 mm between x = 12.65 and the window's inner wall at 13.65, the channel
+# 1.2 wide throughout). It is not parameter-driven. It matters: the connector's centre-pin tab
+# runs under that stretch to the signal pad, and under the plain 0.3 mm ceiling it touches the lid.
+END_RELIEF_DEPTH = 0.4
+END_RELIEF_LENGTH = 1.0
 # Half-width of the CPW port's face on the cut (mm), as the line check's section has it: wider and the
 # board beside the via fence supports a second mode inside the band.
 DEFAULT_PORT_HALF_WIDTH = 1.5
@@ -145,6 +152,11 @@ def draw_lid(hfss, launch: geometry.Launch, values: Dict[str, float], frame: cg.
     window = values.get("port_length", 5.1) + 2.0 * values.get("smp_window_extra", 0.25)
     cx = frame.x_offset + launch.origin_u
     x0, x1 = cx - window / 2.0, cx + window / 2.0
+    if route_width > 0 and END_RELIEF_DEPTH > route_depth:
+        # The window's inboard wall is at x1; the deeper stretch runs inboard from it. It starts
+        # 0.05 mm inside the window, which is cut out whole there, so the two share no face.
+        tool("lid_end_relief_cut", x1 - 0.05, x1 + END_RELIEF_LENGTH, route_width / 2.0,
+             END_RELIEF_DEPTH, below=0.05)
     box = hfss.modeler.create_box(
         origin=[x0, lid_bottom - 0.05, -window / 2.0], sizes=[x1 - x0, lid_width + 0.1, window],
         name="lid_window_cut")

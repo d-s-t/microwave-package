@@ -76,11 +76,19 @@ class TheLevers(unittest.TestCase):
         plain = geo.top_copper(baseline())
         tapered = geo.top_copper(baseline(launch_taper_length=1.0))
         self.assertEqual(len(tapered[0]), len(plain[0]) + 1)
-        self.assertAlmostEqual(tapered[1][0].x1 - plain[1][0].x1, 0.7 + 1.0, places=6)
+        start = lambda regions: min(x for x, _y in regions[-1].points)      # the trace is the last region
+        self.assertAlmostEqual(start(tapered[0]) - start(plain[0]), 0.7 + 1.0, places=6)
+
+    def test_the_trace_has_no_round_cap_to_poke_through_the_cut(self):
+        regions, tracks, _pads = geo.top_copper(baseline())
+        self.assertEqual(tracks, [])
+        trace = regions[-1].points
+        self.assertEqual(max(x for x, _y in trace), baseline().half_length)
+        self.assertEqual(sorted({round(y, 6) for _x, y in trace}), [-0.1, 0.1])
 
     def test_a_taper_to_a_wider_trace_is_a_widening(self):
         launch = baseline(launch_taper_length=0.5, cpw_trace_width=0.4)
-        taper = geo.top_copper(launch)[0][-1].points
+        taper = geo.top_copper(launch)[0][-2].points
         self.assertAlmostEqual(max(abs(y) for _x, y in taper), 0.24, places=6)
 
     def test_pad_width_moves_the_keepout(self):
