@@ -11,12 +11,16 @@ import json
 import logging
 import os
 import shutil
+import socket
+import subprocess
+import sys
 import tempfile
 import threading
 import time
 import unittest
 from unittest import mock
 
+import psutil
 from ansys_analyze_common import queue_common
 
 from microwave_package import paths, pipeline, pipeline_child, webapp
@@ -78,6 +82,16 @@ class QueueHoldCase(unittest.TestCase):
 
     def status_of(self, combo_id, run=None):
         return Run.load((run or self.run).run_id).state["combos"][combo_id].get("queue_status")
+
+    def make_part(self) -> Run:
+        """An eigenmode part of the test run, linked both ways as a driven pair is."""
+        part = Run.create([SweepParameter(name="pedestal_depth", values=[0.0, 1.0])],
+                          dict(self.settings))
+        part.config["driven_run_id"] = self.run.run_id
+        part.save_config()
+        self.run.config["eigen_run_id"] = part.run_id
+        self.run.save_config()
+        return part
 
 
 class HoldAndRelease(QueueHoldCase):
@@ -251,6 +265,30 @@ class Requests(QueueHoldCase):
         self.assertTrue(os.path.exists(self.held_file(waiting)))
         self.assertEqual(self.status_of(self.combos[0]), "held")
 
+    def test_the_queue_is_not_probed_while_nothing_is_asked(self):
+        with mock.patch.object(resilient_io, "path_available") as probe:
+            self.assertIsNone(pipeline_child.apply_queue_request(self.run, self.queue))
+        probe.assert_not_called()
+
+    def test_the_driver_asks_a_part_that_another_process_drives(self):
+        part = self.make_part()
+        in_run = self.queue_task(self.combos[0], "pending")
+        in_part = self.queue_task(list(part.state["combos"])[0], "pending", run=part)
+        other = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+        self.addCleanup(lambda: (other.kill(), other.wait()))
+        with open(part.driver_path, "w") as f:  # the part's own process claims it
+            json.dump({"pid": other.pid, "started": psutil.Process(other.pid).create_time(),
+                       "host": socket.gethostname()}, f)
+        queue_hold.write_request(self.run.run_dir, "hold")
+
+        action = pipeline_child.apply_queue_request(Run.load(self.run.run_id), self.queue)
+
+        self.assertEqual(action, "hold")
+        self.assertTrue(os.path.exists(self.held_file(in_run)))    # the run's own tasks: held here
+        self.assertTrue(queue_hold.request_pending(part.run_dir))   # the part's process is asked
+        self.assertTrue(self.in_folder("pending", in_part))         # nothing of the part is written
+        self.assertFalse(Run.load(part.run_id).queue_paused)
+
 
 class Routes(QueueHoldCase):
     def test_pause_and_resume_an_idle_run_from_its_page(self):
@@ -286,6 +324,26 @@ class Routes(QueueHoldCase):
         self.assertTrue(os.path.exists(self.held_file(in_run)))
         self.assertTrue(os.path.exists(self.held_file(in_part, run=eigen)))
         self.assertTrue(Run.load(eigen.run_id).queue_paused)
+
+    def test_a_part_with_its_own_driver_is_asked_not_written(self):
+        part = self.make_part()
+        in_run = self.queue_task(self.combos[0], "pending")
+        in_part = self.queue_task(list(part.state["combos"])[0], "pending", run=part)
+        alive = threading.Event()
+        thread = threading.Thread(target=alive.wait, daemon=True)
+        thread.start()
+        self.addCleanup(alive.set)
+        webapp._active_threads[part.run_id] = thread  # the part runs in a process of its own
+        self.addCleanup(webapp._active_threads.pop, part.run_id, None)
+
+        response = self.client.post(f"/runs/{self.run.run_id}/queue/hold")
+
+        self.assertEqual(response.status_code, 302)
+        self.assertTrue(os.path.exists(self.held_file(in_run)))      # the run's tasks: held here
+        self.assertTrue(queue_hold.request_pending(part.run_dir))      # the part is asked
+        self.assertTrue(self.in_folder("pending", in_part))           # its task is left alone
+        self.assertFalse(Run.load(part.run_id).queue_paused)          # its state is untouched
+        self.assertEqual(self.status_of(list(part.state["combos"])[0], run=part), "pending")
 
     def test_the_run_list_counts_held_tasks_including_a_parts(self):
         eigen = Run.create([SweepParameter(name="pedestal_depth", values=[0.0, 1.0])],

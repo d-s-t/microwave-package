@@ -229,7 +229,8 @@ def describe(reports: List[Dict[str, object]], action: str) -> str:
     moved, started, gone = ids("moved"), ids("started"), ids("gone")
     if action == "hold":
         text = (f"Paused: {len(moved)} task(s) held out of the worker queue."
-                if moved else "Paused: no task of this run was waiting in the queue.")
+                if moved else "Paused: none of this run's tasks is waiting in the queue yet. "
+                              "Tasks queued from now on are held.")
         already = ids("already")
         if already:
             text += f" {len(already)} were held already."

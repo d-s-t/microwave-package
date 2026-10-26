@@ -48,31 +48,45 @@ def watch_for_stop(run: Run, stop_event: threading.Event) -> None:
 _REQUEST_LOCK = threading.Lock()
 
 
+def _apply_here(target: Run, queue, action: str) -> None:
+    if action == "hold":
+        report = queue_hold.hold_run(target, queue)
+    else:
+        report = queue_hold.release_run(target, queue)
+    logger.info("Run %s: %s", target.run_id, queue_hold.describe([report], action))
+
+
 def apply_queue_request(run: Run, queue) -> Optional[str]:
     """Apply the pause or resume the web app asked for, to this run and its parts.
 
-    The parts are the eigenmode run and the refinements (companion.parts_of).
-    Each one is changed through the process driving it when that is this
-    process (pipeline.live_run), and loaded fresh otherwise: nothing else is
-    writing a run nobody is driving. Returns the action applied, or None when
-    there was nothing to do, or the queue cannot be reached yet (the request
-    then waits for the next look).
+    Each target is changed by the one process that may write its state:
+    - this run, and any part driven in this process (pipeline.live_run),
+      are changed here, through the object that is driven here;
+    - a part another process drives (a refinement has a process of its own)
+      is not touched: its folder gets the request, and that process applies it;
+    - any other part is loaded fresh and changed, since nothing is writing it.
+
+    Returns the action applied, or None when there was nothing to do. The
+    queue is not touched unless a request is waiting, and when the queue cannot
+    be reached the request waits for the next look.
     """
     with _REQUEST_LOCK:
+        if not queue_hold.request_pending(run.run_dir):
+            return None  # local disk only: the share is not probed without a request
         if not resilient_io.path_available(queue.root):
             return None
         action = queue_hold.take_request(run.run_dir)
         if action is None:
             return None
-        targets = [pipeline.live_run(run.run_id) or run]
+        _apply_here(pipeline.live_run(run.run_id) or run, queue, action)
         for part in companion.parts_of(run):
-            targets.append(pipeline.live_run(part.run_id) or part)
-        for target in targets:
-            if action == "hold":
-                report = queue_hold.hold_run(target, queue)
+            live = pipeline.live_run(part.run_id)
+            if live is not None:
+                _apply_here(live, queue, action)
+            elif part.driven_elsewhere() is not None:
+                queue_hold.write_request(part.run_dir, action)
             else:
-                report = queue_hold.release_run(target, queue)
-            logger.info("Run %s: %s", target.run_id, queue_hold.describe([report], action))
+                _apply_here(part, queue, action)
         return action
 
 

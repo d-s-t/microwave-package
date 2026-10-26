@@ -676,14 +676,24 @@ def _queue_action(run_id: str, action: str):
 
 
 def _apply_queue_action_here(run, action: str):
-    """Pause or resume a run that nothing is driving: this process is the only writer."""
-    queue_hold.take_request(run.run_dir)  # a request left by a driver that has gone is out of date
+    """Pause or resume a run that this process is not driving.
+
+    The run and each of its parts are handled one at a time: a part that
+    another process drives (a refinement has a process of its own) is not
+    written from here -- its folder gets the request, and that process applies
+    it. Anything else is changed here, since nothing else is writing it.
+    """
     try:
         queue = resilient_io.queue_from_env("ANSYS_ANALYZE_QUEUE_PATH")
     except EnvironmentError as exc:
         return redirect(url_for("run_status", run_id=run.run_id, error=str(exc)))
-    reports = []
+    reports, asked = [], []
     for each in [run, *companion.parts_of(run)]:
+        if each is not run and (_is_running(each.run_id) or _driven_elsewhere(each.run_id)):
+            queue_hold.write_request(each.run_dir, action)
+            asked.append(each.run_id)
+            continue
+        queue_hold.take_request(each.run_dir)  # a request left by a driver that has gone is out of date
         if action == "hold":
             reports.append(queue_hold.hold_run(each, queue))
         else:
@@ -692,6 +702,9 @@ def _apply_queue_action_here(run, action: str):
     if errors:
         return redirect(url_for("run_status", run_id=run.run_id, error=errors[0]))
     message = queue_hold.describe(reports, action)
+    if asked:
+        message += (f" {len(asked)} part(s) of this run are driven by their own process, which "
+                    "applies this within a few seconds.")
     logger.info("Run %s: %s", run.run_id, message)
     return redirect(url_for("run_status", run_id=run.run_id, notice=message))
 
@@ -706,8 +719,9 @@ def _queue_view(run) -> dict:
         "held_total": sum(run_manager.held_count(each.state) for each in runs),
         "held_ids": held_ids[:MAX_HELD_LISTED],
         "held_hidden": max(len(held_ids) - MAX_HELD_LISTED, 0),
-        "can_pause": any(combo.get("queue_status") == "pending"
-                         for each in runs for combo in each.state["combos"].values()),
+        # Also before any task is queued: a run still being built can be paused
+        # in advance, and the tasks queued from then on are held.
+        "can_pause": not run.is_complete,
         "request_pending": queue_hold.request_pending(run.run_dir),
     }
 
