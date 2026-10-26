@@ -25,6 +25,7 @@ import logging
 import os
 import re
 import shutil
+import subprocess
 import sys
 import threading
 import traceback
@@ -37,7 +38,7 @@ from markupsafe import Markup
 
 from ansys_analyze_common import queue_common
 
-from . import paths, pipeline
+from . import paths, pipeline, pipeline_child
 from .design import parameter_meta
 from .design import equations as eq
 from .design.sweep import SweepParameter, expand_values, split_swept_and_fixed
@@ -48,7 +49,6 @@ from .hfss.driven import ports
 # into that solver directly rather than the registry pretending every
 # solver has a view like it.
 from .hfss.eigenmode import fields as eigenmode_fields
-from .pipeline import run_pipeline
 from .workflow import compare, companion, manufacturing, plotting, resilient_io, run_manager
 from .workflow.run_manager import Run
 
@@ -168,11 +168,17 @@ _active_threads: Dict[str, threading.Thread] = {}
 _stop_events: Dict[str, threading.Event] = {}
 
 
+# The command that drives a run, given its id as the last argument. It runs in
+# a process of its own (see pipeline_child.py): the build's native calls hold
+# the interpreter lock, which would otherwise stop this web app answering.
+PIPELINE_COMMAND = [sys.executable, "-m", "microwave_package.pipeline_child"]
+_PACKAGE_PARENT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
 def _start_pipeline_thread(run: Run) -> None:
     # Deliberately does not touch the share: a run has to be startable
     # with the queue offline, because the geometry is built here and
     # only the handoff needs the network.
-    queue = resilient_io.queue_from_env("ANSYS_ANALYZE_QUEUE_PATH")
     stop_event = threading.Event()
     _stop_events[run.run_id] = stop_event
 
@@ -183,33 +189,31 @@ def _start_pipeline_thread(run: Run) -> None:
     run.save()
 
     def _target():
-        # This thread (not Flask's main thread) is what drives
-        # step_generation.py's SolidWorks COM automation. COM requires
-        # each thread that uses it to call CoInitialize() itself first --
-        # Flask's main thread happens to get this for free as a side
-        # effect of other startup code, but a plain threading.Thread
-        # never does. Without it, win32com.client.Dispatch(...) can
-        # still succeed by *attaching* to an already-running SolidWorks
-        # instance (via the Running Object Table) -- which is why this
-        # can appear to work the first time -- but fails outright the
-        # moment SolidWorks isn't already open and COM actually has to
-        # launch a new instance for this thread.
-        import pythoncom
-
-        pythoncom.CoInitialize()
+        # This thread only waits on the pipeline process. Waiting releases
+        # the interpreter lock, so this thread costs the web app nothing.
         try:
-            run_pipeline(run, queue, log=logger.info, stop_event=stop_event)
-        except Exception:
-            # Logged here for the server console, AND saved onto the
-            # run's state so the web UI itself can show what happened --
-            # previously this was only ever visible in the console,
-            # which is easy to miss if you're just watching the browser.
-            logger.exception("Pipeline for run %s crashed", run.run_id)
-            run.state["stage"] = "error"
-            run.state["error"] = traceback.format_exc()
-            run.save()
-        finally:
-            pythoncom.CoUninitialize()
+            os.remove(os.path.join(run.run_dir, pipeline_child.STOP_FILE))
+        except OSError:
+            pass
+        process = subprocess.Popen(
+            PIPELINE_COMMAND + [run.run_id], cwd=_PACKAGE_PARENT)
+        while True:
+            try:
+                returncode = process.wait(timeout=0.5)
+                break
+            except subprocess.TimeoutExpired:
+                if stop_event.is_set():
+                    open(os.path.join(run.run_dir, pipeline_child.STOP_FILE), "w").close()
+        if returncode != 0:
+            # The process records its own crashes; this catches one that
+            # got no further than that (killed, or a crash of its own).
+            current = Run.load(run.run_id)
+            if current.state.get("stage") != "error":
+                current.state["stage"] = "error"
+                current.state["error"] = (
+                    f"The pipeline process exited with code {returncode}. "
+                    "Its console output is in the server's console.")
+                current.save()
 
     thread = threading.Thread(target=_target, daemon=True, name=f"pipeline-{run.run_id}")
     _active_threads[run.run_id] = thread
