@@ -245,7 +245,7 @@
 </form>
 {% endif %}
 <form method="post" action="{{ url_for('stop_run', run_id=run.run_id) }}"
-      id="stop-form" {% if not is_running or is_stopping or driven_elsewhere %}hidden{% endif %}>
+      id="stop-form" {% if not is_running or is_stopping %}hidden{% endif %}>
   <button type="submit" class="stop">Stop this run</button>
   <span class="muted">Each program finishes the combination it is on and then stops.
     Nothing already built is lost -- Resume carries on from there.</span>
@@ -810,7 +810,7 @@ async function poll() {
   // somewhere else while this page is open.
   const stopForm = document.getElementById("stop-form");
   // A run driven by another process can only be stopped there.
-  if (stopForm) { stopForm.hidden = !data.is_running || data.is_stopping || !!data.driven_elsewhere; }
+  if (stopForm) { stopForm.hidden = !data.is_running || data.is_stopping; }
   const elsewhereNote = document.getElementById("elsewhere-note");
   if (elsewhereNote) {
     elsewhereNote.hidden = !data.driven_elsewhere;
