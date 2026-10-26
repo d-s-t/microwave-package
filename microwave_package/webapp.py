@@ -49,7 +49,7 @@ from .hfss.driven import ports
 # into that solver directly rather than the registry pretending every
 # solver has a view like it.
 from .hfss.eigenmode import fields as eigenmode_fields
-from .workflow import compare, companion, manufacturing, plotting, resilient_io, run_manager
+from .workflow import compare, companion, manufacturing, plotting, resilient_io, run_manager, smith
 from .workflow.run_manager import Run
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s: %(message)s", stream=sys.stdout)
@@ -756,6 +756,7 @@ def run_status(run_id):
         meta=parameter_meta,
         has_common_dimensions=os.path.exists(os.path.join(run.run_dir, "common_dimensions.txt")),
         axis_options=options,
+        smith_options=_smith_options(df),
         default_x=axes["x"],
         default_y=axes["y"],
         default_color=axes["color"] or "",
@@ -1060,6 +1061,21 @@ def _results_frame(run):
     return df
 
 
+def _smith_options(df) -> list:
+    """The reflection ports a Smith chart can show for this table, for the
+    plot picker. Empty -- so no Smith option at all -- when there are none,
+    as for an eigenmode-only run."""
+    if df is None:
+        return []
+    return [{"value": port, "label": smith.PORT_LABELS[port]} for port in smith.available_ports(df)]
+
+
+def _port_impedance_ohm(run) -> float:
+    """The reference a run's S-parameters were computed against, for the
+    ohm readout of a Smith chart. Matches the solver's own default."""
+    return float(run.analysis_settings.get("port_impedance_ohm", 50.0))
+
+
 def _plot_filters(args) -> Dict[str, list]:
     """The results filter, read out of the plot URL.
 
@@ -1106,6 +1122,15 @@ def run_plot(run_id):
             "Every point is filtered out -- tick a value back on to see the plot.</p>",
             mimetype="text/html",
         )
+
+    if request.args.get("view") == "smith":
+        return Response(smith.smith_html(
+            df,
+            port=request.args.get("port", smith.DEFAULT_PORT),
+            reference_ohm=_port_impedance_ohm(run),
+            dark=request.args.get("theme") == "dark",
+            plotlyjs_src=url_for("plotly_js"),
+        ), mimetype="text/html")
 
     html = plotting.figure_html(
         df,
@@ -1539,6 +1564,7 @@ def compare_runs():
         unknown_values=(compare.NOT_RECORDED, compare.NOT_APPLICABLE),
         has_results=not df.empty,
         axis_options=plotting.axis_options(df, swept) if not df.empty else [],
+        smith_options=_smith_options(df) if not df.empty else [],
         default_x=axes["x"],
         default_y=axes["y"],
         default_color=axes["color"] or "",
@@ -1583,8 +1609,26 @@ def compare_plot():
             mimetype="text/html",
         )
 
-    off_axes = compare.runs_off_axes(df, x, y)
     dark = request.args.get("theme") == "dark"
+    if request.args.get("view") == "smith":
+        # Γ is referenced to each run's own port impedance already, so only
+        # the ohm readout depends on it: the first run's is used, and says so.
+        references = {_port_impedance_ohm(entry.run) for entry in entries}
+        smith_note = None
+        if len(references) > 1:
+            smith_note = (f"These runs have different port impedances; the ohm readout uses "
+                          f"{_port_impedance_ohm(entries[0].run):g} ohm, the first run's.")
+        return Response(smith.smith_html(
+            df,
+            port=request.args.get("port", smith.DEFAULT_PORT),
+            reference_ohm=_port_impedance_ohm(entries[0].run),
+            dark=dark,
+            plotlyjs_src=url_for("plotly_js"),
+            run_colours=plotting.run_colours([entry.name for entry in entries], dark),
+            note=smith_note,
+        ), mimetype="text/html")
+
+    off_axes = compare.runs_off_axes(df, x, y)
     html = plotting.figure_html(
         df,
         swept,

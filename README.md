@@ -120,6 +120,13 @@ as well.)
 
 Open <http://127.0.0.1:5000/> (or set `PORT` to serve somewhere else).
 
+A driven run's results plot (on the run page, and on the compare page) can
+also be drawn as a Smith chart of S11 or S22: pick it in the **Plot**
+selector beside the axes. It is offered only for runs with S-parameter
+results, and it is normalised to the run's port impedance
+(`port_impedance_ohm`), which the hover text converts to ohms. The chart
+is in [`workflow/smith.py`](microwave_package/workflow/smith.py).
+
 A run is driven by its own process, so restarting the web app does **not**
 stop a run that is building. The page then says it is running elsewhere and
 still offers Stop, which asks that process to stop at its next safe point.

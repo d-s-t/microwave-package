@@ -253,6 +253,15 @@
     <option value="{{ option.value }}" {% if option.value == default_color %}selected{% endif %}>{{ option.label }}</option>
     {% endfor %}
   </select>
+  {% if smith_options %}
+  <label for="plot-kind" title="Plot the reflection coefficient on a Smith chart instead of X against Y">Plot</label>
+  <select id="plot-kind">
+    <option value="">Cartesian</option>
+    {% for option in smith_options %}
+    <option value="{{ option.value }}">Smith chart {{ option.label }}</option>
+    {% endfor %}
+  </select>
+  {% endif %}
   <button type="button" id="swap-axes" title="Swap the X and Y axes">&#8646; swap</button>
 </div>
 {% endif %}
@@ -313,11 +322,16 @@
   var x = document.getElementById("axis-x");
   var y = document.getElementById("axis-y");
   var colour = document.getElementById("axis-color");
+  var kind = document.getElementById("plot-kind");
   var base = "{{ url_for('compare_plot') }}";
 
   function renderPlot(state) {
     var params = new URLSearchParams({ runs: runsParam, theme: window.themeIsDark() ? "dark" : "light" });
     if (x && y) { params.set("x", x.value); params.set("y", y.value); }
+    // A Smith chart takes its port instead of the axes, which go grey.
+    var smithPort = kind ? kind.value : "";
+    if (x && y) { x.disabled = y.disabled = !!smithPort; }
+    if (smithPort) { params.set("view", "smith"); params.set("port", smithPort); }
     // sent even when empty: "(none)" is a choice, and a missing colour
     // means "whatever the comparison opens on"
     if (colour) { params.set("color", colour.value); }
@@ -470,7 +484,7 @@
       });
     }
   }
-  [x, y, colour].forEach(function (select) {
+  [x, y, colour, kind].forEach(function (select) {
     if (select) { select.addEventListener("change", function () { renderPlot(filterState()); }); }
   });
   var swap = document.getElementById("swap-axes");

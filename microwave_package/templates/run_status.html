@@ -409,6 +409,15 @@
     <option value="{{ option.value }}" {% if option.value == default_color %}selected{% endif %}>{{ option.label }}</option>
     {% endfor %}
   </select>
+  {% if smith_options %}
+  <label for="plot-kind" title="Plot the reflection coefficient on a Smith chart instead of X against Y">Plot</label>
+  <select id="plot-kind">
+    <option value="">Cartesian</option>
+    {% for option in smith_options %}
+    <option value="{{ option.value }}">Smith chart {{ option.label }}</option>
+    {% endfor %}
+  </select>
+  {% endif %}
   <button type="button" id="swap-axes" title="Swap the X and Y axes">&#8646; swap</button>
   {% if has_fine %}
   <label for="data-view" title="This run has fine frequency ranges as well as its broad sweep">Data</label>
@@ -857,6 +866,7 @@ setInterval(poll, 4000);
   var y = document.getElementById("axis-y");
   var colour = document.getElementById("axis-color");
   var dataView = document.getElementById("data-view");
+  var kind = document.getElementById("plot-kind");
   if (!x || !y) { return; }
 
   var base = "{{ url_for('run_plot', run_id=run.run_id) }}";
@@ -903,6 +913,10 @@ setInterval(poll, 4000);
     });
     if (colour && colour.value) { params.set("color", colour.value); }
     if (dataView) { params.set("data", dataView.value); }
+    // A Smith chart takes its port instead of the axes, which go grey.
+    var smithPort = kind ? kind.value : "";
+    x.disabled = y.disabled = !!smithPort;
+    if (smithPort) { params.set("view", "smith"); params.set("port", smithPort); }
     applyFilters(params);
     frame.src = base + "?" + params.toString();
   }
@@ -967,7 +981,7 @@ setInterval(poll, 4000);
     });
   }
 
-  [x, y, colour, dataView].forEach(function (select) {
+  [x, y, colour, dataView, kind].forEach(function (select) {
     if (select) { select.addEventListener("change", render); }
   });
 
