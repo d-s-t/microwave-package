@@ -386,6 +386,34 @@
 </table>
 {% endif %}
 
+{% if launch_summaries %}
+<h2>Launch</h2>
+<p class="muted">The reflection of one SMP launch with the line matched behind it. Levels are S11 in dB;
+  the time-domain peak is the windowed inverse FFT of S11 (the read applied to the full runs), with the
+  distance from the connector's port plane assuming an effective permittivity of (er + 1) / 2. The Smith
+  chart of S11 is in the plot picker below; <code>smith.csv</code> beside each project has the same data.</p>
+<table>
+  <thead><tr><th>Combination</th><th>Trace / gap (mm)</th><th>Pad (mm)</th><th>Taper</th><th>Void r</th>
+    <th>Mean S11 2&ndash;10 / 10&ndash;17 / 17&ndash;20 GHz (dB)</th><th>Worst S11</th>
+    <th>Near-launch |&Gamma;|</th><th>First peak</th></tr></thead>
+  <tbody>
+  {% for c in launch_summaries %}
+  <tr>
+    <td>{{ c.combo_id }}</td>
+    <td>{{ c.trace_width_mm }} / {{ "%.3f"|format(c.gap_mm) if c.gap_mm is not none else "&ndash;" }}</td>
+    <td>{{ c.pad_width_mm }} &times; {{ c.pad_length_mm }}</td>
+    <td>{{ c.taper_length_mm }}</td>
+    <td>{{ c.void_radius_mm }}</td>
+    <td>{% if c.s11_mean_db %}{% for band in ["2-10", "10-17", "17-20"] %}{{ "%.1f"|format(c.s11_mean_db[band]) if band in c.s11_mean_db else "&ndash;" }}{% if not loop.last %} / {% endif %}{% endfor %}{% endif %}</td>
+    <td>{% if c.s11_max_db is defined %}{{ "%.1f"|format(c.s11_max_db) }} dB at {{ "%.1f"|format(c.s11_max_at_ghz) }} GHz{% endif %}</td>
+    <td>{{ "%.3f"|format(c.launch_gamma_3mm) if c.launch_gamma_3mm is defined else "&ndash;" }}</td>
+    <td>{% if c.first_peak %}{{ "%.1f"|format(c.first_peak.distance_mm) }} mm, {{ "%.3f"|format(c.first_peak.gamma) }}{% else %}&ndash;{% endif %}</td>
+  </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+
 {% if plot_exists %}
 <h2>Results</h2>
 {% if axis_options %}

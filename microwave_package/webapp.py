@@ -363,7 +363,7 @@ def _solve_settings_from_form(form) -> dict:
 
     settings = {"solution_type": solution_type, **registry.all_defaults()}
     # A pair solves both types, so both types' controls count.
-    both = "run_both" in form and solution_type != "LineImpedance"
+    both = "run_both" in form and solution_type not in registry.standalone_types()
     settings["run_both"] = both
     fields = [f for t in registry.solution_types() for f in registry.get(t["value"]).all_fields]         if both else registry.get(solution_type).all_fields
     for field in fields:
@@ -490,6 +490,7 @@ def index():
         vents_ticked=_ticked("vents_on", values, parameters),
         has_vents_param=parameter_meta.VENTS_PARAM in parameters,
         solution_types=registry.solution_types(),
+        standalone_types=registry.standalone_types(),
         # Both types' controls are rendered and the form hides the one
         # that does not apply, so switching solution type is instant
         # rather than a round-trip. Only the chosen type's values are read
@@ -738,6 +739,7 @@ def run_status(run_id):
         run_name=_run_name(run),
         pair_note=_pair_note(run),
         line_checks=_line_checks(run),
+        launch_summaries=_launch_summaries(run),
         eigenmodes=companion.eigenmode_table(run),
         has_fine=df is not None and plotting.has_fine_data(df),
         views=plotting.VIEWS,
@@ -788,6 +790,27 @@ def _line_checks(run) -> list:
         verdict["combo_id"] = combo_id
         checks.append(verdict)
     return checks
+
+
+def _launch_summaries(run) -> list:
+    """What each combination of a launch-study run came to, for its page: the S11
+    levels and the time-domain read of the launch (`launch_summary.json`).
+    `[]` for any other kind of run, and for combinations not yet read back."""
+    if registry.solution_type_of(run.analysis_settings) != "LaunchStudy":
+        return []
+    found = []
+    for combo_id in run.state.get("combos", {}):
+        path = os.path.join(run.combo_path(combo_id), "launch_summary.json")
+        try:
+            with open(path, encoding="utf-8") as handle:
+                summary = json.load(handle)
+        except (OSError, ValueError):
+            continue
+        summary["combo_id"] = combo_id
+        peaks = summary.get("tdr_peaks") or []
+        summary["first_peak"] = peaks[0] if peaks else None
+        found.append(summary)
+    return found
 
 
 def _pair_note(run) -> Optional[str]:

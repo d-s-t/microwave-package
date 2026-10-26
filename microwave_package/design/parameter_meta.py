@@ -61,6 +61,12 @@ LABELS: Dict[str, str] = {
     "via_gnd_clearance": "Via fence setback from gap",
     "via_min_spacing": "Minimum via spacing",
     "launch_clearance": "Ground clearance round the SMP pad",
+    "launch_pad_width": "Launch signal pad width (0 = vendor's)",
+    "launch_pad_length": "Launch signal pad length (0 = vendor's)",
+    "launch_taper_length": "Launch taper length, pad to trace",
+    "launch_void_radius": "Launch anti-pad void radius (0 = vendor's)",
+    "launch_relief_depth": "Lid relief depth over the launch (0 = the line's)",
+    "launch_bottom_cutout_radius": "Cutout radius in the bottom ground under the pad (0 = none)",
     "bond_pad_length": "Bond pad length",
     "bond_pad_width": "Bond pad width",
     "bond_pad_pitch": "Bond pad pitch",
@@ -204,6 +210,19 @@ GROUPS: List[dict] = [
             "launch_clearance",
             "bond_pad_length", "bond_pad_width", "bond_pad_pitch",
             "bond_height", "bond_wire_diameter",
+        ],
+    },
+    {
+        "title": "Launch study (LaunchStudy runs only)",
+        "hint": "Levers of the SMP launch that the launch study draws itself: the signal pad, a "
+                "taper from the pad to the trace, the radius of the void in the top ground round "
+                "the connector, and a deeper lid relief over the launch. The package's own board "
+                "does not read them. A pad or void other than the vendor's footprint is a custom "
+                "footprint. 0 means the vendor's (or, for the relief, the line's).",
+        "collapsed": True,
+        "names": [
+            "launch_pad_width", "launch_pad_length", "launch_taper_length",
+            "launch_void_radius", "launch_relief_depth", "launch_bottom_cutout_radius",
         ],
     },
     {

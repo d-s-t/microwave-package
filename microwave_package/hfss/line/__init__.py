@@ -103,4 +103,5 @@ SOLVER = register(Solver(
     hfss_solution_type="DrivenModal",
     build_model=build.build_model,
     needs_solid=False,
+    standalone=True,
 ))

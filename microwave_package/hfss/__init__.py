@@ -19,3 +19,5 @@ from . import eigenmode  # noqa: F401  (registers itself on import -- and first)
 from . import driven  # noqa: F401  (registers itself on import)
 
 from . import line  # noqa: F401  (registers itself on import)
+
+from . import launch  # noqa: F401  (registers itself on import)

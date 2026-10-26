@@ -96,6 +96,18 @@
 
 "launch_clearance"= 0.2	' ground pulled back this far from the SMP signal pad (and past its end) at each launch; at least 0.1 mm
 
+"launch_pad_width"= 0	' LaunchStudy only: width of the SMP signal pad, across the line, in mm; 0 = the vendor footprint's 0.48. Any other value is a custom footprint. The package's board does not read it.
+
+"launch_pad_length"= 0	' LaunchStudy only: length of the SMP signal pad along the line, in mm; 0 = the vendor footprint's 1.4. A custom footprint when not 0.
+
+"launch_taper_length"= 0	' LaunchStudy only: length of a taper from the pad's width to the trace's, drawn just inboard of the pad, in mm; 0 = the pad steps straight to the trace as the package does.
+
+"launch_void_radius"= 0	' LaunchStudy only: radius of the void in the top ground round the connector (the anti-pad), in mm; 0 = the vendor's 2.3. Up to 2.58 (the land is 2.6 mm half-size). A custom footprint when not 0.
+
+"launch_relief_depth"= 0	' LaunchStudy only: depth of the lid relief over the launch (from the board end to the land's inboard edge), in mm; 0 = the same as route_clearence.
+
+"launch_bottom_cutout_radius"= 0	' LaunchStudy only: radius of a round hole in the bottom copper under the signal pad, with a matching pocket in the box floor, in mm; 0 = none (the package has a solid bottom plane). A machined pocket in the real box when not 0.
+
 "bond_pad_length"= 0.3	' bonding pad size along the feedline
 
 "bond_pad_width"= 0.15	' bonding pad size across the feedline

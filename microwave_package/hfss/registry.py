@@ -130,6 +130,12 @@ class Solver:
     # Whether the model comes from the SolidWorks STEP files. A solver that
     # draws its own geometry says False and the run never starts SolidWorks.
     needs_solid: bool = True
+    # Whether the copper comes from Altium. A solver that draws its own copper
+    # (the launch study) says False and the run never starts Altium either.
+    needs_altium: bool = True
+    # A question of its own rather than half of an Eigenmode + Driven pair:
+    # the web form's "both" box is off for it and a run never pairs it.
+    standalone: bool = False
 
     @property
     def hfss_type(self) -> str:
@@ -181,6 +187,11 @@ def get(solution_type: Optional[str]) -> Solver:
     were.
     """
     return _SOLVERS[solution_type or default_solution_type()]
+
+
+def standalone_types() -> List[str]:
+    """Solution types that are never half of a pair."""
+    return [v for v in _DEFAULT if _SOLVERS[v].standalone]
 
 
 def is_known(solution_type: Optional[str]) -> bool:
