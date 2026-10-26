@@ -20,14 +20,26 @@ Altium and AEDT stages rather than before them.
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
+import socket
 import time
-from typing import Callable, Dict, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
+
+import psutil
 
 from . import equations as eq
 
 logger = logging.getLogger("microwave_package")
+
+# How long a generator waits for another one using the same equations file,
+# and when a lock is treated as left behind by a dead or hung process.
+LOCK_WAIT_S = 6 * 3600.0
+LOCK_MAX_AGE_S = 4 * 3600.0
+# A lock with no readable record is only given up on after this long: a
+# process is between creating the lock and writing its record for a moment.
+LOCK_UNREADABLE_AGE_S = 60.0
 
 
 def connect_solidworks() -> Tuple[Optional[object], Optional[str]]:
@@ -231,6 +243,183 @@ def write_common_dimensions(run, log: Callable[[str], None] = logger.info) -> Op
     return out_path
 
 
+class EquationsBusy(RuntimeError):
+    """Another generator holds the equations file and did not let go in time."""
+
+
+class PollutedBaseline(RuntimeError):
+    """The equations file differs from the baseline recorded at its last restore."""
+
+
+def baseline_path(equations_path: str) -> str:
+    """Sidecar holding the file exactly as it was at the last restore."""
+    return equations_path + ".baseline"
+
+
+def lock_path(equations_path: str) -> str:
+    return equations_path + ".lock"
+
+
+def recorded_baseline(equations_path: str) -> Optional[str]:
+    path = baseline_path(equations_path)
+    return eq.read_file(path) if os.path.isfile(path) else None
+
+
+def baseline_content(equations_path: str) -> str:
+    """What every combination is laid over: the recorded baseline when there
+    is one, else the file as it stands. Reads only -- never the live file
+    while another generator may have it written out."""
+    recorded = recorded_baseline(equations_path)
+    return recorded if recorded is not None else eq.read_file(equations_path)
+
+
+def _value_differences(recorded: str, live: str) -> List[str]:
+    before, after = eq.parse(recorded), eq.parse(live)
+    out = []
+    for name in sorted(set(before) | set(after)):
+        a = before[name].raw_value if name in before else "(absent)"
+        b = after[name].raw_value if name in after else "(absent)"
+        if a != b:
+            out.append(f"{name}: baseline {a}, file {b}")
+    return out
+
+
+def check_baseline(equations_path: str, log: Callable[[str], None] = logger.info) -> str:
+    """The baseline a build starts from, after checking the live file is
+    still that baseline. Refuses (PollutedBaseline) rather than building from
+    values some earlier, unfinished run left in the file. Call with the lock held.
+
+    With no baseline recorded yet, the file as it now stands becomes the
+    baseline; that is the one thing this cannot check.
+    """
+    live = eq.read_file(equations_path)
+    recorded = recorded_baseline(equations_path)
+    if recorded is None:
+        log(f"No baseline recorded for {equations_path} yet; taking the file as it is now.")
+        eq.write_file(baseline_path(equations_path), live)
+        return live
+    differences = _value_differences(recorded, live)
+    if differences:
+        raise PollutedBaseline(
+            f"The shared equations file {equations_path} does not match the baseline recorded "
+            "at its last restore, so a build would inherit values that are not the committed "
+            "ones: " + "; ".join(differences[:8]) + ". Either an earlier run stopped without "
+            "restoring it (restore the file from git, then the baseline record is correct), or "
+            "someone edited it on purpose (delete " + baseline_path(equations_path) + " to accept "
+            "the file as the new baseline). Nothing was built."
+        )
+    return recorded
+
+
+def restore_equations(equations_path: str, content: str) -> None:
+    """Write the baseline back and record it as the baseline."""
+    eq.write_file(equations_path, content)
+    eq.write_file(baseline_path(equations_path), content)
+
+
+def _holder_record() -> dict:
+    proc = psutil.Process(os.getpid())
+    return {"pid": os.getpid(), "host": socket.gethostname(),
+            "started": proc.create_time(), "at": time.time()}
+
+
+def _read_holder(path: str) -> Optional[dict]:
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            record = json.load(f)
+        return record if isinstance(record, dict) else None
+    except (OSError, ValueError):
+        return None
+
+
+def _is_stale(path: str, holder: Optional[dict], now: float) -> bool:
+    try:
+        age = now - os.path.getmtime(path)
+    except OSError:
+        return True
+    if holder is None:
+        return age > LOCK_UNREADABLE_AGE_S
+    if age > LOCK_MAX_AGE_S:
+        return True
+    if holder.get("host") != socket.gethostname():
+        return False  # cannot see that process from here; the age decides
+    try:
+        pid = int(holder["pid"])
+        if not psutil.pid_exists(pid):
+            return True
+        # the same pid reused by something else is not the holder
+        return abs(psutil.Process(pid).create_time() - float(holder["started"])) > 1.0
+    except psutil.NoSuchProcess:
+        return True
+    except psutil.AccessDenied:
+        return False
+    except (KeyError, TypeError, ValueError, psutil.Error):
+        return True
+
+
+def acquire_lock(equations_path: str, log: Callable[[str], None] = logger.info,
+                 timeout_s: float = LOCK_WAIT_S, poll_s: float = 1.0) -> None:
+    """Take the lock on the shared equations file, waiting for a live holder.
+    A stale lock (dead process, reused pid, or older than LOCK_MAX_AGE_S) is
+    removed. Raises EquationsBusy if a live holder does not let go in time."""
+    path = lock_path(equations_path)
+    deadline = time.monotonic() + timeout_s
+    announced = False
+    while True:
+        try:
+            fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except FileExistsError:
+            now = time.time()
+            holder = _read_holder(path)
+            if _is_stale(path, holder, now):
+                log(f"Removing a stale lock on {equations_path} (holder: {holder}).")
+                try:
+                    os.remove(path)
+                except FileNotFoundError:
+                    pass
+                continue
+            if time.monotonic() >= deadline:
+                raise EquationsBusy(
+                    f"The shared equations file {equations_path} is in use by another build "
+                    f"(holder: {holder}); gave up waiting after {timeout_s:.0f} s."
+                )
+            if not announced:
+                log(f"Waiting for another build to finish with {equations_path} (holder: {holder}).")
+                announced = True
+            time.sleep(poll_s)
+            continue
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(_holder_record(), f)
+        return
+
+
+def release_lock(equations_path: str) -> None:
+    """Remove the lock if this process holds it. Never raises."""
+    path = lock_path(equations_path)
+    holder = _read_holder(path)
+    if holder is None or holder.get("pid") != os.getpid():
+        return
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+
+
+def dimension_mismatches(dimensions_text: str, expected: Dict[str, float],
+                         tol: float = 1e-9) -> List[str]:
+    """What a combination's dimensions.txt says against the values its run
+    pins and sweeps. Empty when they all agree."""
+    found = eq.parse(dimensions_text)
+    problems = []
+    for name, value in sorted(expected.items()):
+        eqn = found.get(name)
+        if eqn is None or eqn.numeric_value is None:
+            problems.append(f"{name}: not in dimensions.txt")
+        elif abs(eqn.numeric_value - float(value)) > tol:
+            problems.append(f"{name}: dimensions.txt has {eqn.raw_value}, the run pins {float(value):g}")
+    return problems
+
+
 class Session:
     """box.SLDPRT and lid_inside.SLDPRT, both held open across a run's
     combinations.
@@ -256,27 +445,41 @@ class Session:
 
     @classmethod
     def open(cls, equations_path: str, part_paths: Dict[str, str],
-             log: Callable[[str], None] = logger.info) -> "Session":
+             log: Callable[[str], None] = logger.info,
+             lock_timeout_s: float = LOCK_WAIT_S) -> "Session":
         """Connect to SolidWorks and open every part in `part_paths`.
 
         Raises RuntimeError if any of it fails: a run cannot produce
         geometry without this, and failing here rather than once per
-        combination is what says so plainly.
+        combination is what says so plainly. Holds the equations file's lock
+        until `close` (or until this raises); raises PollutedBaseline or
+        EquationsBusy before touching the file.
         """
-        original_content = eq.read_file(equations_path)
-        app, err = connect_solidworks()
-        if not app:
-            raise RuntimeError(
-                f"Could not connect to SolidWorks -- is it installed and licensed on this machine? ({err})"
-            )
-        parts: Dict[str, object] = {}
-        for name, part_path in part_paths.items():
-            model, err = open_and_activate_part(app, part_path)
-            if not model:
-                eq.write_file(equations_path, original_content)
-                raise RuntimeError(f"Could not open/activate {name} ({part_path}): {err}")
-            link_equations(model, equations_path, log=log)
-            parts[name] = model
+        acquire_lock(equations_path, log=log, timeout_s=lock_timeout_s)
+        try:
+            original_content = check_baseline(equations_path, log=log)
+        except BaseException:
+            release_lock(equations_path)
+            raise
+        try:
+            app, err = connect_solidworks()
+            if not app:
+                raise RuntimeError(
+                    f"Could not connect to SolidWorks -- is it installed and licensed on this machine? ({err})"
+                )
+            parts: Dict[str, object] = {}
+            for name, part_path in part_paths.items():
+                model, err = open_and_activate_part(app, part_path)
+                if not model:
+                    raise RuntimeError(f"Could not open/activate {name} ({part_path}): {err}")
+                link_equations(model, equations_path, log=log)
+                parts[name] = model
+        except BaseException:
+            try:
+                restore_equations(equations_path, original_content)
+            finally:
+                release_lock(equations_path)
+            raise
         return cls(app, parts, equations_path, original_content)
 
     def build(self, combo_id: str, content: str, combo_dir: str,
@@ -314,6 +517,10 @@ class Session:
         return step_paths, None
 
     def close(self, log: Callable[[str], None] = logger.info) -> None:
-        """Put the shared equations file back the way it was found."""
-        eq.write_file(self.equations_path, self.original_content)
-        log("Restored original equations file.")
+        """Put the shared equations file back the way it was found, and let
+        the next generator in. Runs however the session ended."""
+        try:
+            restore_equations(self.equations_path, self.original_content)
+            log("Restored original equations file.")
+        finally:
+            release_lock(self.equations_path)

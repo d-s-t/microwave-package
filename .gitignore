@@ -24,3 +24,8 @@ microwave_package/vendor/
 
 *.log
 *.lnk
+
+# The shared equations file's baseline record and lock (see
+# design/step_generation.py): local to each checkout, never committed.
+base_parts/*.txt.baseline
+base_parts/*.txt.lock

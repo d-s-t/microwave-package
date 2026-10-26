@@ -65,6 +65,26 @@ def split_swept_and_fixed(
     return swept, fixed
 
 
+def pin_switches(
+    sweep_params: List[SweepParameter],
+    parameter_defaults: Optional[Dict[str, float]],
+    base_values: Dict[str, float],
+) -> Dict[str, float]:
+    """`parameter_defaults` with every on/off switch the equations file has
+    pinned to its SWITCH_PINS value, unless the run sweeps it or names it.
+
+    An unpinned switch would take whatever the shared file holds when the
+    run is built -- a bare board's no_chip left in it by an earlier run would
+    turn a chip run into a bare board. Pinning here makes it explicit.
+    """
+    defaults = dict(parameter_defaults or {})
+    swept = {p.name for p in sweep_params}
+    for name, value in parameter_meta.SWITCH_PINS.items():
+        if name in base_values and name not in swept and name not in defaults:
+            defaults[name] = value
+    return defaults
+
+
 def pin_bare_board_pedestal(
     sweep_params: List[SweepParameter],
     parameter_defaults: Optional[Dict[str, float]],
