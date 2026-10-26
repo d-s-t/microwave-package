@@ -117,6 +117,14 @@ VENTS_PARAM = "vents_on"
 
 BOOLEAN_PARAMETERS = {NO_CHIP_PARAM, SCREWS_PARAM, VENTS_PARAM}
 
+# The value each on/off flag is pinned to on every run that does not ask for
+# it otherwise (the web form's untick, or a command line that names no
+# switch). Pinned explicitly so no run's geometry depends on whatever the
+# shared equations file happens to hold at the time -- see
+# step_generation.check_baseline. Must equal the committed base_parts/default.txt
+# (checked by tests/test_switch_pins.py).
+SWITCH_PINS = {NO_CHIP_PARAM: 0.0, SCREWS_PARAM: 1.0, VENTS_PARAM: 1.0}
+
 # Parameters this project no longer has. The distortion option (no_distortion,
 # and the distortion_radius / distortion_x / distortion_y geometry under it) and the
 # optional SMP corner reliefs (smp_relief_on, smp_relief_radius, smp_relief_inset)

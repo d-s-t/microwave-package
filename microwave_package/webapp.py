@@ -300,6 +300,9 @@ def _ticked(name: str, values: dict, parameters: dict) -> bool:
     pinned = values.get(name)
     if pinned is not None:
         return float(pinned) > 0.5
+    if name == parameter_meta.NO_CHIP_PARAM:
+        # a run that never pinned it was built with a chip (see new_run)
+        return False
     return float(parameters.get(name, 0)) > 0.5
 
 
@@ -526,11 +529,15 @@ def new_run():
             values = [parameter_meta.to_model(name, value) for value in values]
             requested.append(SweepParameter(name=name, values=values))
 
-    # The "Bare board" tick pins no_chip for the whole run. Left unticked
-    # it adds nothing, so the equation file's own 0 applies and an
-    # ordinary run records exactly what it did before the option existed.
+    # The "Bare board" tick pins no_chip for the whole run, both ways: an
+    # unticked box pins 0, so a chip run never depends on the equation file's
+    # current value (see step_generation.check_baseline). A form field is
+    # present only when ticked, so the unticked case is simply absent here.
+    if parameter_meta.NO_CHIP_PARAM in available:
+        requested.append(SweepParameter(
+            name=parameter_meta.NO_CHIP_PARAM,
+            values=[1.0 if "no_chip" in request.form else 0.0]))
     if parameter_meta.NO_CHIP_PARAM in available and "no_chip" in request.form:
-        requested.append(SweepParameter(name=parameter_meta.NO_CHIP_PARAM, values=[1.0]))
         # A bare board with no pedestal asked for keeps the box's floor flat:
         # zero is the value the box has always rebuilt cleanly with. A typed
         # pedestal depth still wins, and a bare board with a recess is built

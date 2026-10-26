@@ -40,7 +40,7 @@ import queue as queue_module
 import threading
 from typing import Callable, Dict, List, Optional
 
-from ..design import altium_generation, constraints, equations as eq, step_generation
+from ..design import altium_generation, constraints, equations as eq, parameter_meta, step_generation
 from ..hfss import model_builder, registry
 from . import resilient_io
 
@@ -370,6 +370,17 @@ class _AedtStage:
 
         settings = self._settings
         dimensions = eq.read_file(os.path.join(run.combo_dir(combo_id), "dimensions.txt"))
+        # The model must be the one this run asked for, checked against what
+        # the run pinned and swept as stored on disk. An unpinned bare-board
+        # switch counts as off, which is what an unticked form always meant.
+        expected = {parameter_meta.NO_CHIP_PARAM: 0.0, **run.parameter_defaults, **combo["params"]}
+        problems = step_generation.dimension_mismatches(dimensions, expected)
+        if problems:
+            reason = ("the geometry does not match this run's values -- " + "; ".join(problems[:6])
+                      + ". Not handed to the worker queue.")
+            self._log(f"{combo_id}: {reason}")
+            run.update_combo(combo_id, model_status="failed", model_error=reason)
+            return False
         object_names = model_builder.build_model(
             combo_id, combo.get("step_paths") or {}, dimensions, run, settings,
             settings.get("aedt_version"), settings.get("student_version", True),
@@ -427,7 +438,10 @@ def run_local_stages(
 
     clear_stale_progress(run, buildable)
 
-    original_content = eq.read_file(equations_path)
+    # The recorded baseline, not the live file: a file another run left
+    # written out must not become every combination's starting point. A
+    # polluted file is refused by the SolidWorks stage when it takes the lock.
+    original_content = step_generation.baseline_content(equations_path)
     abort = threading.Event()
 
     upstream: List[_Lane] = []

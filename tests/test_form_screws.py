@@ -42,9 +42,10 @@ class TestFormBooleans(unittest.TestCase):
         run = self.start(screws_on="1")
         self.assertEqual(run.parameter_defaults["screws_on"], 1.0)
 
-    def test_a_ticked_bare_board_is_pinned_and_an_unticked_one_is_left_to_the_file(self):
+    def test_a_ticked_bare_board_is_pinned_and_an_unticked_one_is_pinned_off(self):
+        # both explicit: a chip run never depends on the equations file's value
         self.assertEqual(self.start(no_chip="1").parameter_defaults["no_chip"], 1.0)
-        self.assertNotIn("no_chip", self.start().parameter_defaults)
+        self.assertEqual(self.start().parameter_defaults["no_chip"], 0.0)
 
     def test_a_bare_board_with_a_typed_recess_is_started_with_it(self):
         # the recess sits under the bare board's solid copper: it is accepted, not refused

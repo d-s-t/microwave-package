@@ -31,7 +31,9 @@ from typing import Callable, Dict, List, Optional
 from ansys_analyze_common import queue_common
 
 from . import paths, solver_presets
-from .design.sweep import SweepParameter, expand_values, pin_bare_board_pedestal, split_swept_and_fixed
+from .design.sweep import (
+    SweepParameter, expand_values, pin_bare_board_pedestal, pin_switches, split_swept_and_fixed,
+)
 from .hfss import model_builder, registry
 from .hfss.driven import DRIVEN_MODAL, ports
 from .hfss.eigenmode import EIGENMODE
@@ -492,6 +494,10 @@ def create_run(sweep_params, analysis_settings: dict, parameter_defaults=None) -
     time would mean a sweep's worth of geometry built for projects that
     can never be given ports. Raises ValueError with the reason.
     """
+    # Every on/off switch is pinned explicitly before anything reads it, so no
+    # run's geometry depends on the shared equations file's current state.
+    parameter_defaults = pin_switches(
+        sweep_params, parameter_defaults, run_manager.equation_file_values())
     # A bare board has no pedestal unless one was asked for -- the same rule
     # for the command line and the web form, which both come through here.
     parameter_defaults = pin_bare_board_pedestal(
