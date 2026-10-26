@@ -135,5 +135,30 @@ class TestStopFileReachesThePipelineProcess(unittest.TestCase):
         watcher.join(5)
 
 
+class TestCommandLineResumeIgnoresAnEarlierStop(unittest.TestCase):
+    def test_a_stop_left_by_the_web_app_does_not_stop_a_new_command_line_start(self):
+        logging.disable(logging.CRITICAL)
+        self.addCleanup(logging.disable, logging.NOTSET)
+        saved = paths.RUNS_ROOT
+        paths.RUNS_ROOT = tempfile.mkdtemp(prefix="runs_")
+        self.addCleanup(setattr, paths, "RUNS_ROOT", saved)
+        run = Run.create([SweepParameter(name="pedestal_depth", values=[0.0])],
+                         dict(pipeline.DEFAULT_ANALYSIS_SETTINGS), {})
+        open(pipeline_child.stop_file_path(run), "w").close()  # left by a web-app Stop
+
+        seen = {}
+
+        def fake_run_pipeline(run_arg, queue, stop_event=None, **kwargs):
+            # Give the watcher a few polls to act on the file, then look.
+            seen["stopped"] = stop_event.wait(0.5)
+
+        args = types.SimpleNamespace(resume=run.run_id)
+        with mock.patch.object(pipeline, "parse_args", lambda argv=None: args),                 mock.patch.object(pipeline, "stop_on_interrupt", lambda event: None),                 mock.patch.object(pipeline.resilient_io, "queue_from_env", lambda name: None),                 mock.patch.object(pipeline, "run_pipeline", fake_run_pipeline),                 mock.patch.object(pipeline_child, "_STOP_POLL_SECONDS", 0.01):
+            pipeline.main()
+
+        self.assertFalse(seen["stopped"])
+        self.assertFalse(os.path.exists(pipeline_child.stop_file_path(run)))
+
+
 if __name__ == "__main__":
     unittest.main()

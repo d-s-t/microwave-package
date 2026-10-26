@@ -27,6 +27,14 @@ def stop_file_path(run: Run) -> str:
     return os.path.join(run.run_dir, STOP_FILE)
 
 
+def clear_stop_request(run: Run) -> None:
+    """Forget a stop asked for an earlier attempt, so a fresh start is not stopped at once."""
+    try:
+        os.remove(stop_file_path(run))
+    except OSError:
+        pass
+
+
 def watch_for_stop(run: Run, stop_event: threading.Event) -> None:
     while not stop_event.wait(_STOP_POLL_SECONDS):
         if os.path.exists(stop_file_path(run)):

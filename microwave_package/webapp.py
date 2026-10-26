@@ -191,10 +191,7 @@ def _start_pipeline_thread(run: Run) -> None:
     def _target():
         # This thread only waits on the pipeline process. Waiting releases
         # the interpreter lock, so this thread costs the web app nothing.
-        try:
-            os.remove(os.path.join(run.run_dir, pipeline_child.STOP_FILE))
-        except OSError:
-            pass
+        pipeline_child.clear_stop_request(run)
         process = subprocess.Popen(
             PIPELINE_COMMAND + [run.run_id], cwd=_PACKAGE_PARENT)
         while True:
