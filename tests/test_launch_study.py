@@ -112,11 +112,31 @@ class TestWhatIsDrawn(unittest.TestCase):
         launch, hfss, *_ = draw()
         cut = [s for s in hfss.subtractions if s[0] == ["lid_inside"] or s[0] == "lid_inside"]
         self.assertEqual(len(cut), 1)
-        self.assertEqual(list(cut[0][1]), ["lid_channel_cut", "lid_window_cut"])
+        self.assertEqual(list(cut[0][1]), ["lid_channel_cut", "lid_end_relief_cut", "lid_window_cut"])
         window = hfss.made["lid_window_cut"]
         self.assertAlmostEqual(window["sizes"][0], 5.1 + 0.5)
         self.assertAlmostEqual(window["origin"][0] + window["sizes"][0] / 2,
                                launch.half_length + launch.origin_u)
+
+    def test_the_lid_is_cut_deeper_over_the_pads_inboard_end_as_the_real_lid_is(self):
+        """The centre-pin tab runs under the last millimetre before the window to the pad. The real
+        lid's ceiling there is 0.4 mm, not the channel's 0.3, and a plain 0.3 mm ceiling shorts the
+        tab to the lid (the first baseline reflected everything)."""
+        for taper in (0.0,):
+            launch, hfss, _n, _p, heights, _ = draw({"launch_taper_length": taper})
+            deep = hfss.made["lid_end_relief_cut"]
+            pad_end = launch.half_length + launch.pin_u + launch.pad_length / 2.0
+            window = hfss.made["lid_window_cut"]
+            window_inboard_wall = window["origin"][0] + window["sizes"][0]
+            self.assertGreaterEqual(deep["origin"][0] + deep["sizes"][0], pad_end)    # covers the pad's inboard end
+            self.assertLessEqual(deep["origin"][0], window_inboard_wall)             # and starts at the window
+            self.assertAlmostEqual(deep["origin"][1] + deep["sizes"][1], heights["copper_top"] + 0.4)
+            self.assertAlmostEqual(deep["sizes"][2], 1.2)                           # the channel's width
+            self.assertAlmostEqual(deep["sizes"][0], 1.0 + 0.05)
+
+    def test_a_deeper_channel_than_the_end_relief_needs_no_extra_cut(self):
+        _l, hfss, *_ = draw({"route_clearence": 0.5})
+        self.assertNotIn("lid_end_relief_cut", hfss.made)
 
     def test_a_relief_over_the_launch_adds_a_pocket(self):
         _l, hfss, *_ = draw({"launch_relief_depth": 0.5})
