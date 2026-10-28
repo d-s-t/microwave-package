@@ -438,10 +438,19 @@ def run_local_stages(
 
     clear_stale_progress(run, buildable)
 
-    # The recorded baseline, not the live file: a file another run left
-    # written out must not become every combination's starting point. A
-    # polluted file is refused by the SolidWorks stage when it takes the lock.
-    original_content = step_generation.baseline_content(equations_path)
+    # The baseline every combination is laid over, read here once so that all
+    # three programs start from the same one. A run that needs SolidWorks takes
+    # the recorded baseline: its session checks the live file when it takes the
+    # lock, and refuses one that was polluted. A run that draws its own model
+    # never takes that lock, so it reads the baseline under it instead (see
+    # step_generation.baseline_for_a_run_without_solidworks). That is how a
+    # committed change to default.txt reaches it, the Altium stage included.
+    solver = registry.for_settings(analysis_settings)
+    if solver.needs_solid:
+        original_content = step_generation.baseline_content(equations_path)
+    else:
+        original_content = step_generation.baseline_for_a_run_without_solidworks(
+            equations_path, log=log)
     abort = threading.Event()
 
     upstream: List[_Lane] = []
@@ -455,7 +464,7 @@ def run_local_stages(
         log("Altium is off for this run -- building the SolidWorks-only geometry, "
             "with no copper.")
 
-    if registry.for_settings(analysis_settings).needs_solid:
+    if solver.needs_solid:
         solidworks = _SolidWorksStage(
             run, original_content, parameter_defaults, equations_path, part_paths,
             _prefixed(log, "SolidWorks"),

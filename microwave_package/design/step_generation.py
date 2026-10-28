@@ -41,6 +41,11 @@ LOCK_MAX_AGE_S = 4 * 3600.0
 # A lock with no readable record is only given up on after this long: a
 # process is between creating the lock and writing its record for a moment.
 LOCK_UNREADABLE_AGE_S = 60.0
+# How long a run that draws its own model waits for the lock to read the
+# baseline under it (see baseline_for_a_run_without_solidworks). A SolidWorks
+# session holds the lock for its whole build, so this only covers a restore
+# that is just finishing; any longer would stall the run for nothing.
+BASELINE_READ_WAIT_S = 5.0
 
 
 def connect_solidworks() -> Tuple[Optional[object], Optional[str]]:
@@ -340,6 +345,71 @@ def check_baseline(equations_path: str, log: Callable[[str], None] = logger.info
         "(commit it, or delete " + baseline_path(equations_path) + " to accept the file as the "
         "new baseline). Nothing was built."
     )
+
+
+def baseline_for_a_run_without_solidworks(equations_path: str,
+                                          log: Callable[[str], None] = logger.info) -> str:
+    """The baseline a run that draws its own model is laid over.
+
+    Such a run never opens a SolidWorks session, so nothing else checks the
+    baseline for it, and it has to see a committed change to default.txt.
+    After a `git pull` the recorded sidecar is the older file until a
+    SolidWorks session opens (its check_baseline refreshes the record then),
+    and a run without SolidWorks never opens one. So this takes the lock for
+    the moment of the read, since a generator may have the live file written
+    out, and when the live file is the committed one while the record is not,
+    it refreshes the record the way check_baseline does.
+
+    Unlike check_baseline it never refuses. This run does not write the live
+    file, so a polluted one cannot hurt it, and it is laid over the record as
+    it always was. Nor does it record a first baseline: with no record, the
+    file as it stands is used, as baseline_content always gave it.
+
+    If the lock is held for longer than BASELINE_READ_WAIT_S, or cannot be
+    made at all, this falls back to baseline_content, with a line in the log.
+    """
+    try:
+        acquire_lock(equations_path, log=log, timeout_s=BASELINE_READ_WAIT_S)
+    except (EquationsBusy, OSError) as exc:
+        # Not released on this path: a failed acquire does not own the lock.
+        # A session in this same process may hold it, and release_lock would
+        # remove that session's lock because the pid matches.
+        log(f"Could not take the lock on {equations_path} ({exc}); laying this run over the "
+            "recorded baseline as it stands.")
+        return baseline_content(equations_path)
+    try:
+        return _baseline_under_lock(equations_path, log)
+    finally:
+        release_lock(equations_path)
+
+
+def _baseline_under_lock(equations_path: str, log: Callable[[str], None]) -> str:
+    recorded = recorded_baseline(equations_path)
+    if recorded is None:
+        return eq.read_file(equations_path)
+    try:
+        live = eq.read_file(equations_path)
+    except OSError:
+        return recorded
+    differences = _value_differences(recorded, live)
+    if not differences:
+        return recorded
+    committed = committed_content(equations_path)
+    if committed is not None and not _value_differences(committed, live):
+        log(f"{equations_path} differs from its recorded baseline but matches the committed "
+            "file; refreshing the baseline.")
+        try:
+            eq.write_file(baseline_path(equations_path), live)
+        except OSError as exc:
+            log(f"Could not refresh {baseline_path(equations_path)} ({exc}); this run is laid over "
+                "the committed file all the same.")
+        return live
+    why = ("git cannot say which file is committed" if committed is None
+           else "it is not the committed file either")
+    log(f"WARNING: {equations_path} differs from the baseline recorded at its last restore "
+        f"({'; '.join(differences[:8])}), and {why}. This run draws its own model and writes no "
+        "shared file, so it is laid over the recorded baseline.")
+    return recorded
 
 
 def restore_equations(equations_path: str, content: str) -> None:
