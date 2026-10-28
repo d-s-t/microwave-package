@@ -487,11 +487,17 @@ class TestPlumbing(unittest.TestCase):
                          {**pipeline.DEFAULT_ANALYSIS_SETTINGS, "solution_type": LINE_IMPEDANCE,
                           "use_altium": False}, {})
         combo = next(iter(run.state["combos"]))
+        # A copy of the committed file: a run without SolidWorks takes the lock on it, and
+        # the real base_parts folder is never written by the suite.
+        folder = tempfile.TemporaryDirectory(prefix="equations_")
+        self.addCleanup(folder.cleanup)
+        equations = os.path.join(folder.name, "default.txt")
+        eq.write_file(equations, eq.read_file(str(paths.DEFAULT_EQUATIONS_FILE)))
         with mock.patch.object(stages, "_SolidWorksStage") as solidworks, \
                 mock.patch.object(stages, "_AedtStage") as aedt:
             aedt.return_value.build.return_value = True
             stages.run_local_stages(
-                run, equations_path=str(paths.DEFAULT_EQUATIONS_FILE), part_paths={},
+                run, equations_path=equations, part_paths={},
                 analysis_settings=run.analysis_settings, handoff=lambda *_a: None,
                 parameter_defaults={}, log=lambda _m: None)
         solidworks.assert_not_called()
