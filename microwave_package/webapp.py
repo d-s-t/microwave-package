@@ -44,12 +44,14 @@ from .design import equations as eq
 from .design.sweep import SweepParameter, expand_values, split_swept_and_fixed
 from .hfss import model_builder, registry
 from .hfss.driven import ports
+from .hfss.driven import windows as fine_windows
 # The chip |E| heatmap is an eigenmode picture end to end -- the export,
 # the .fld files and the plot -- so the one route that shows it reaches
 # into that solver directly rather than the registry pretending every
 # solver has a view like it.
 from .hfss.eigenmode import fields as eigenmode_fields
-from .workflow import compare, companion, manufacturing, plotting, queue_hold, resilient_io, run_manager, smith
+from .workflow import (compare, companion, manufacturing, plotting, queue_hold, resilient_io, run_facets,
+                       run_manager, smith)
 from .workflow.run_manager import Run
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s: %(message)s", stream=sys.stdout)
@@ -432,31 +434,132 @@ def _materials_from_form(form) -> dict:
     }
 
 
+# What the run list's filter drop-downs offer besides the substrates and the
+# solution types, which are read off the runs themselves. Value, then label.
+_FILTER_CHOICES = {
+    "chip": [("bare", "No chip (bare board)"), ("chip", "With chip")],
+    "pedestal": [("flat", "No pedestal (flat floor)"), ("recess", "Pedestal recess")],
+    "shape": [("square", "Square"), ("circle", "Circle")],
+    "stage": [("complete", "Complete"), ("running", "Running"), ("failed", "Failed"),
+              ("stopped", "Stopped"), ("created", "Not started")],
+}
+
+
+# What a hidden part is doing, in the words the page shows (run_manager.part_state
+# gives the key). A refined solve and an eigenmode run word it differently; each
+# entry is (refined solve, eigenmodes, the pill's colour).
+_PART_WORDS = {
+    "solving": ("refined solve solving on the worker", "eigenmodes solving on the worker", "busy"),
+    "queued": ("refined solve queued", "eigenmodes queued", "busy"),
+    "paused": ("refined solve paused", "eigenmodes paused", "muted"),
+    "reading": ("reading results", "reading results", "busy"),
+    "waiting": ("refined solve waiting for the queue", "eigenmodes waiting for the queue", "busy"),
+    "stopped": ("stopped", "stopped", "muted"),
+    "failed": ("failed", "failed", "bad"),
+    "preparing": ("refined solve being prepared", "eigenmodes being prepared", "busy"),
+    "starting": ("refined solve starting", "eigenmodes starting", "busy"),
+    "complete": ("complete", "complete", "ok"),
+}
+
+
+def _fine_windows_text(text: str) -> str:
+    """A refined solve's fine windows, shortened: "8 ranges 2.05-19.25 GHz"."""
+    try:
+        found = fine_windows.parse_manual(text)
+    except ValueError:
+        return "custom ranges"
+    if not found:
+        return ""
+    count = len(found)
+    span = f"{min(w.lo for w in found):g}-{max(w.hi for w in found):g} GHz"
+    return f"{count} range{'' if count == 1 else 's'} {span}"
+
+
+def _part_view(owner_id: str, part: dict) -> dict:
+    """One hidden part (run_manager.part_record) as the run list and its JSON
+    show it: its label, what it is doing in words, its colour, its progress,
+    and the link its row follows -- the parent's refine section, or for an
+    eigenmode run the parent's settings, where its part is described."""
+    eigen = part["kind"] == "eigen"
+    windows = "" if eigen else _fine_windows_text(part.get("windows", ""))
+    refined_word, eigen_word, tone = _PART_WORDS.get(part["state"], _PART_WORDS["starting"])
+    if eigen:
+        label, word = "eigenmodes", eigen_word
+    else:
+        label = f"refined solve: {windows}" if windows else "refined solve"
+        word = refined_word
+    return {
+        "run_id": part["run_id"],
+        "kind": part["kind"],
+        "state": part["state"],
+        "complete": part["state"] == "complete",
+        "label": label,
+        "windows": windows,
+        "word": word,
+        "tone": tone,
+        "done": part["done"],
+        "total": part["total"],
+        "failed": part["failed"],
+        "href": url_for("run_status", run_id=owner_id, _anchor="settings" if eigen else "refine"),
+    }
+
+
 def _runs_for_display(runs: list) -> list:
     """`Run.list_runs()` rows with the run-list's presentation fields added:
     a friendly name, a relative time, a humanised stage, the one-line
-    "what it swept" summary, and whether it has results to compare."""
+    "what it swept" summary, whether it has results to compare, and the
+    words the filter matches on (`facets`, see workflow/run_facets.py)."""
     view = []
     for r in runs:
         started = _parse_dt(r.get("created_at")) or _run_id_dt(r["run_id"])
         date_text = _fmt_dt(started)
+        name = r["label"] or date_text or r["run_id"]
+        facets = run_facets.run_facets(
+            r.get("facet_inputs") or {}, Run(r["run_id"]).run_dir,
+            stage=r.get("stage"), failed=r.get("failed", 0))
+        facets["search"] = " ".join(
+            part for part in dict.fromkeys([name, r["label"], r["run_id"], date_text]) if part).lower()
+        parts = [_part_view(r["run_id"], part) for part in r.get("parts") or []]
         view.append({
-            **r,
-            "name": r["label"] or date_text or r["run_id"],
+            # the inputs the facets were made from, and the raw parts, stay here:
+            # /runs.json carries the parts as _part_view shapes them
+            **{k: v for k, v in r.items() if k not in ("facet_inputs", "parts")},
+            # a part still going is a row of its own under this one; a finished
+            # refined solve is only a note on it
+            "open_parts": [part for part in parts if not part["complete"]],
+            "refined_done": sum(1 for part in parts if part["kind"] == "refinement" and part["complete"]),
+            "name": name,
             "date_text": date_text,
             "started_ago": _fmt_ago(started),
             "stage_display": _stage_display(r.get("stage"), r.get("failed", 0)),
             "swept_text": ", ".join(f'{s["label"]} ×{s["n"]}' for s in r["swept"]),
             "has_results": os.path.isfile(
                 os.path.join(Run(r["run_id"]).plots_dir, plotting.RESULTS_FILENAME)),
+            "facets": facets,
         })
     return view
+
+
+def _run_filter_options(runs: list) -> dict:
+    """What each of the run list's filter drop-downs offers, as (value, label)
+    pairs. The substrates and solution types are the ones the runs have, so a
+    list of runs that never used a substrate does not offer it."""
+    substrates = sorted({r["facets"]["substrate"] for r in runs if r["facets"]["substrate"]})
+    present = {word for r in runs for word in r["facets"]["solution"].split()}
+    solutions = [s["value"] for s in registry.solution_types() if s["value"] in present]
+    solutions += sorted(present - set(solutions))
+    return {
+        "substrate": [(name, name) for name in substrates],
+        "solution": [(value, run_facets.solution_label(value)) for value in solutions],
+        **_FILTER_CHOICES,
+    }
 
 
 @app.route("/runs.json")
 def runs_json():
     """The run list's live data. The index page polls this to keep each
-    run's progress bar and stage current without reloading the form."""
+    run's progress bar, stage and filter words current without reloading
+    the form."""
     return jsonify(_runs_for_display(Run.list_runs()))
 
 
@@ -473,6 +576,7 @@ def index():
         parameters=parameters,
         groups=parameter_meta.grouped(parameters),
         runs=runs,
+        run_filter=_run_filter_options(runs),
         # Any run with tasks held out of the worker queue, for the banner.
         held_runs=[r for r in runs if r.get("held")],
         # Ticked on arrival: the comparison page's "change the selection"
@@ -797,6 +901,60 @@ def _combo_rows(run) -> dict:
     }
 
 
+def _yes_no(value) -> str:
+    return "yes" if value else "no"
+
+
+def _aedt_rows(settings: dict) -> list:
+    """What the run asked AEDT for, beyond the solver's own settings: the
+    student licence, whether the window is shown, and the solver preset (see
+    solver_presets). A run that did not record one says so."""
+    recorded = compare.NOT_RECORDED
+    return [
+        compare.SettingRow("Solve", "Student version", [
+            _yes_no(settings["student_version"]) if "student_version" in settings else recorded]),
+        compare.SettingRow("Solve", "Graphical (AEDT window)", [
+            _yes_no(settings["graphical"]) if "graphical" in settings else recorded]),
+        compare.SettingRow("Solve", "Solver preset", [
+            (settings["solver_preset"] or "none") if "solver_preset" in settings else recorded]),
+        compare.SettingRow("Solve", "Settings changed from the preset", [
+            (", ".join(settings["solver_overrides"]) or "none")
+            if "solver_overrides" in settings else recorded]),
+    ]
+
+
+def _settings_sections(run) -> dict:
+    """The "Settings of this run" section: each table as (label, value) rows.
+
+    Materials and the solver come from the comparison page's own rows, so the
+    two pages agree on what a run was made with. A pair also shows its
+    eigenmode part's solver settings, since those are what its modes came from.
+    """
+    rows = compare.single_run_rows(run)
+
+    def table(group, rows_of):
+        found = []
+        for row in rows_of:
+            if row.group != group:
+                continue
+            value = ", ".join(row.values) or "none"  # a text setting left blank
+            if row.label == "Solution type":
+                # the name the new-run form gives it, not the code name
+                value = run_facets.solution_label(row.values[0])
+            found.append({"label": row.label, "value": value})
+        return found
+
+    sections = {
+        "materials": table("Materials", rows),
+        "solver": table("Solve", rows) + table("Solve", _aedt_rows(run.analysis_settings)),
+        "eigen": [],
+    }
+    eigen = companion.prerequisite_of(run)
+    if eigen is not None:
+        sections["eigen"] = table("Solve", compare.single_run_rows(eigen))
+    return sections
+
+
 @app.route("/runs/<run_id>")
 def run_status(run_id):
     run = Run.load(run_id)
@@ -828,10 +986,19 @@ def run_status(run_id):
     duration = updated - started if (started and updated and stage in ("complete", "error")) else None
     elsewhere = _driven_elsewhere(run_id)
 
+    inputs = run_manager.facet_inputs(run.config)
+    geometry = [
+        {"label": row.label, "text": ", ".join(row.values), "source": ""}
+        for row in compare.single_run_rows(run) if row.group == "Geometry source"
+    ] + run_facets.geometry_rows(inputs, run.run_dir)
+
     return render_template(
         "run_status.html",
         run=run,
         run_name=_run_name(run),
+        title_chips=run_facets.title_chips(inputs, run.run_dir),
+        settings=_settings_sections(run),
+        geometry=geometry,
         pair_note=_pair_note(run),
         line_checks=_line_checks(run),
         launch_summaries=_launch_summaries(run),
@@ -928,9 +1095,12 @@ def _refine_panel(run) -> Optional[dict]:
         return None
     children = []
     for child in companion.refinements_of(run):
-        shown = _stage_display(child.state.get("stage"), child.progress["failed"])
+        # What the refined solve is doing, from its combinations (not its stage
+        # name, which reads "postprocessing" while the worker is still solving it).
+        view = _part_view(run.run_id, run_manager.part_record(child.run_id, child.config, child.state))
         children.append({
-            "run_id": child.run_id, "stage": shown["label"], "kind": shown["kind"],
+            "run_id": child.run_id, "word": view["word"], "tone": view["tone"],
+            "complete": view["complete"],
             "ranges": child.analysis_settings.get("fine_windows_manual", ""),
             "combos": list(child.state["combos"]),
             "running": _is_running(child.run_id),
@@ -939,6 +1109,8 @@ def _refine_panel(run) -> Optional[dict]:
     return {
         "combos": companion.refinable_combos(run),
         "children": children,
+        # The section opens by itself while a refined solve is still going.
+        "open": any(not child["complete"] for child in children),
         "has_modes": bool(companion.eigenmode_table(run)),
     }
 

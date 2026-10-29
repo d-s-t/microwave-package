@@ -129,6 +129,24 @@
     .viewer3d .body{flex-direction:column}
     .viewer3d .side{width:auto;max-height:8rem}
   }
+
+  /* What the run was built with, as chips beside the title (webapp.run_status). */
+  .run-chips{display:flex;flex-wrap:wrap;gap:.35rem;margin:0 0 .6rem}
+  .run-chip{display:inline-block;padding:.1rem .6rem;border:1px solid var(--line-soft);border-radius:999px;
+    font-size:.8em;color:var(--muted);background:var(--surface)}
+
+  /* "Settings of this run": one table per part of the setup. */
+  details.settings-section table.settings-table{width:100%;border-collapse:collapse;margin:.2rem 0 .8rem}
+  details.settings-section table.settings-table td{border-top:1px solid var(--line-soft);
+    padding:.3rem .5rem;font-size:.9em;vertical-align:top}
+  details.settings-section table.settings-table td:first-child{width:45%;color:var(--muted)}
+  details.settings-section h3.settings-title{font-size:.95em;margin:1rem 0 .1rem}
+  details.settings-section p.small{font-size:.85em;margin:.2rem 0 .4rem}
+
+  /* "Refine a frequency range" folds like the other long sections: its title is the summary. */
+  details.refine-section{margin-top:1.5rem}
+  details.refine-section > summary{cursor:pointer}
+  details.refine-section h2.refine-title{display:inline;margin:.3rem 0;font-size:1.25rem}
 </style>
 {% if step_viewer_available %}
 <script type="importmap">
@@ -151,6 +169,9 @@
 {%- endmacro %}
 
 <h1>{{ run_name }}</h1>
+{% if title_chips %}
+<p class="run-chips" aria-label="What the run was built with">{% for chip in title_chips %}<span class="run-chip">{{ chip }}</span>{% endfor %}</p>
+{% endif %}
 <p class="muted" style="margin-top:-.6rem">
   {{ run.run_id }}
   <span style="margin-left:.4rem">
@@ -300,7 +321,7 @@
 {% endif %}
 
 {% if run.config.parameter_defaults %}
-<p class="muted">Pinned for this run:
+<p class="muted" id="pinned">Pinned for this run:
   {% for name, value in run.config.parameter_defaults.items() %}
   <strong>{{ meta.label_for(name) }}</strong> = {{ meta.format_value(name, value) }}{{ " " + meta.unit_for(name) if meta.unit_for(name) }}{{ ", " if not loop.last }}
   {% endfor %}
@@ -310,6 +331,39 @@
 <p><a href="{{ url_for('run_common_dimensions', run_id=run.run_id) }}">common_dimensions.txt</a>
    <span class="muted">-- the geometry every combination in this run shares</span></p>
 {% endif %}
+
+{% macro settings_table(rows) -%}
+<table class="settings-table"><tbody>
+{% for row in rows %}<tr><td>{{ row.label }}</td><td>{{ row.value }}</td></tr>{% endfor %}
+</tbody></table>
+{%- endmacro %}
+
+{# What the run was made with, beyond the pins above: the materials, how the
+   solver was set up, and the geometry it was built from. Shown from the run's
+   record, so a setting an older run did not record says "not recorded". #}
+<details class="collapsible settings-section" id="settings">
+  <summary>Settings of this run <span class="muted">-- materials, solver and geometry</span></summary>
+  <p class="muted small">What the run was started with. <em>not recorded</em> means the run is older than the setting.</p>
+
+  <h3 class="settings-title">Materials</h3>
+  {{ settings_table(settings.materials) }}
+
+  <h3 class="settings-title">Solver and AEDT</h3>
+  {{ settings_table(settings.solver) }}
+  {% if settings.eigen %}
+  <h3 class="settings-title">Eigenmode part (solved first)</h3>
+  {{ settings_table(settings.eigen) }}
+  {% endif %}
+
+  <h3 class="settings-title">Geometry</h3>
+  <p class="muted small">{% if run.config.parameter_defaults %}The values pinned for this run are <a href="#pinned">listed above</a>.{% else %}Nothing is pinned for this run.{% endif %}
+    The rest comes from the equation file, and the source of each value is shown beside it{% if has_common_dimensions %}; the equations every combination shares are in <a href="{{ url_for('run_common_dimensions', run_id=run.run_id) }}">common_dimensions.txt</a>{% endif %}.</p>
+  <table class="settings-table"><tbody>
+    {% for row in geometry %}
+    <tr><td>{{ row.label }}</td><td>{{ row.text }}{% if row.source %} <span class="muted">({{ row.source }})</span>{% endif %}</td></tr>
+    {% endfor %}
+  </tbody></table>
+</details>
 
 {% macro combo_params(combo) -%}
 {%- for name, value in combo.params.items() -%}
@@ -539,16 +593,18 @@
 {% endif %}
 
 {% if refine and plot_exists %}
-<h2 id="refine">Refine a frequency range</h2>
+{# Opens by itself while a refined solve is still going (webapp._refine_panel). #}
+<details class="collapsible refine-section" id="refine"{% if refine.open %} open{% endif %}>
+<summary><h2 class="refine-title">Refine a frequency range</h2></summary>
 {% if refine.children %}
 <ul class="refinements">
   {% for child in refine.children %}
-  <li><span class="pill {{ child.kind }}">{{ child.stage }}</span>
+  <li><span class="pill {{ child.tone }}">{{ child.word }}</span>
     {{ child.ranges }} GHz &mdash; {{ child.combos | join(', ') }}
     {% if child.running %}
     <form method="post" action="{{ url_for('stop_run', run_id=child.run_id) }}" style="display:inline">
       <button type="submit" class="mini">Stop</button></form>
-    {% elif child.stage != 'Complete' %}
+    {% elif not child.complete %}
     <form method="post" action="{{ url_for('resume_run', run_id=child.run_id) }}" style="display:inline">
       <button type="submit" class="mini">Resume</button></form>
     {% endif %}
@@ -559,7 +615,7 @@
 {% endif %}
 {% if refine.combos %}
 <form method="post" action="{{ url_for('refine_run', run_id=run.run_id) }}" class="refine-form">
-  <p class="muted">Re-solve some combinations over narrower ranges, on the same geometry. The new data
+  <p class="muted">Refine some combinations: solve them over narrower ranges, on the same geometry. The new data
     is part of <em>this</em> run: it appears on the plot above and in its CSV, and the
     <em>Data</em> selector switches between <em>Broad only</em>, <em>Fine ranges only</em> and
     <em>Broad + fine, one trace</em>. Give any number of ranges as <code>lo:hi:step</code> in GHz
@@ -586,6 +642,7 @@
   <button type="submit" class="start-run">Refine</button>
 </form>
 {% endif %}
+</details>
 {% endif %}
 
 {% if heatmap_combos %}
@@ -1595,5 +1652,18 @@ document.addEventListener("keydown", (event) => {
 });
 </script>
 {% endif %}
+<script>
+// A link to a folded section (the run list's "+N refined solve" note, and an
+// eigenmode part's row) names the section itself, which is a closed <details>.
+// A browser scrolls to a closed details but does not open it, so open it here.
+(function () {
+  function openTarget() {
+    var target = location.hash && document.getElementById(location.hash.slice(1));
+    if (target && target.tagName === "DETAILS") { target.open = true; }
+  }
+  window.addEventListener("hashchange", openTarget);
+  openTarget();
+})();
+</script>
 </body>
 </html>

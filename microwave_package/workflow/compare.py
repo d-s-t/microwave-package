@@ -254,6 +254,23 @@ def setting_rows(runs: Sequence[Run], held: Optional[Sequence[Dict[str, float]]]
     return [row for row in rows if row.differs], [row for row in rows if not row.differs]
 
 
+def single_run_rows(run: Run) -> List[SettingRow]:
+    """One run's own settings, as its page lists them: how it was solved,
+    where its geometry came from, and what it was made of.
+
+    The rows the comparison sets against each other, for one run. A material
+    the run does not record says so, and gives the default the build uses
+    for it -- the same one the run list's PCB name uses.
+    """
+    rows = _solve_rows([run]) + _source_rows([run]) + _material_rows([run])
+    for key, default in model_builder.MATERIAL_FALLBACKS.items():
+        label = model_builder.MATERIAL_LABELS.get(key)
+        for row in rows:
+            if row.label == label and row.values == [NOT_RECORDED]:
+                row.values = [f"{NOT_RECORDED} (default {default})"]
+    return rows
+
+
 def _text(value) -> str:
     if isinstance(value, bool):
         return "yes" if value else "no"

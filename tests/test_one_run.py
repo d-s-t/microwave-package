@@ -68,7 +68,9 @@ class TestOneEntry(OneRun):
         self.assertEqual(self.run.analysis_settings["solution_type"], "DrivenModal")
         page = self.client.get("/").get_data(as_text=True)
         self.assertIn(f'href="/runs/{self.run.run_id}"', page)
-        self.assertNotIn(self.eigen.run_id, page)
+        # Not a run of its own: while it is still going it is a part row under its run.
+        self.assertNotIn(f'data-run-id="{self.eigen.run_id}"', page)
+        self.assertIn(f'data-part-id="{self.eigen.run_id}"', page)
 
     def test_a_hidden_part_sends_you_to_its_run(self):
         reply = self.client.get(f"/runs/{self.eigen.run_id}")
@@ -170,7 +172,10 @@ class TestRefiningInTheSameRun(OneRun):
         self.assertIn("12:13:0.01", page)
         self.assertIn(f"/runs/{child.run_id}/resume", page)       # controls, not a destination
         self.assertNotIn(f'href="/runs/{child.run_id}"', page)
-        self.assertNotIn(child.run_id, self.client.get("/").get_data(as_text=True))
+        # Not a run of its own on the list, but its row under the run while it is going.
+        listed = self.client.get("/").get_data(as_text=True)
+        self.assertNotIn(f'data-run-id="{child.run_id}"', listed)
+        self.assertIn(f'data-part-id="{child.run_id}"', listed)
 
     def test_around_the_modes_fills_windows_twice_as_dense_as_the_automatic_ones(self):
         self.finish(self.run)
