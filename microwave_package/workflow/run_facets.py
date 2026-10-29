@@ -44,7 +44,8 @@ NOT_APPLICABLE = "n/a"
 
 # A run's stage, as the run list files it. Anything not named here is still
 # running -- the pipeline's middle stages all are.
-_STAGE_WORDS = {"complete": "complete", "error": "failed", "stopped": "stopped", "created": "created"}
+_STAGE_WORDS = {"complete": "complete", "error": "failed", "stopped": "stopped", "created": "created",
+                "stalled": "stalled"}
 
 
 @dataclass(frozen=True)
