@@ -75,6 +75,30 @@
   #lightbox .figure svg{width:100%;max-height:70vh}
   #lightbox button.close{background:var(--neutral);padding:.3rem .7rem;font-size:.9em}
   #lightbox button.close:hover{background:var(--neutral-hover)}
+
+  /* The run list's filter bar: plain controls in a wrapping row, so a phone
+     stacks them one per line. Its own [hidden] rule, because display:flex
+     would otherwise win over the attribute the script clears. */
+  .run-filter{display:flex;flex-wrap:wrap;gap:.5rem .9rem;align-items:flex-end;margin:.5rem 0 .75rem;
+    padding:.6rem .8rem;border:1px solid var(--line-soft);border-radius:6px}
+  .run-filter[hidden]{display:none}
+  .run-filter label{display:flex;flex-direction:column;gap:.15rem;margin:0;font-size:.8em;color:var(--muted)}
+  .run-filter select,.run-filter input[type=search]{width:auto;max-width:100%;font-size:.95em;padding:.25rem .3rem;
+    background:var(--bg);color:var(--fg);border:1px solid var(--line);border-radius:3px}
+  .run-filter .run-filter-text{flex:1 1 14rem}
+  .run-filter .run-filter-text input{width:100%;box-sizing:border-box}
+  .run-filter button{padding:.25rem .6rem;font-size:.8em}
+  .run-filter .run-filter-count{flex-basis:100%;margin:0;font-size:.85em}
+  @media (max-width:600px){
+    .run-filter label{flex:1 1 100%}
+    .run-filter select{width:100%}
+  }
+  /* A row the filter has hidden is "out", and an empty result says so. */
+  table.runs tr.filter-empty td{text-align:center;color:var(--muted)}
+  /* A refined solve or eigenmode run still going: a row of its own under its run. */
+  table.runs tr.part-row td{font-size:.9em;background:var(--surface)}
+  table.runs td.part-name{padding-left:1.6rem}
+  table.runs .part-note{display:block;font-size:.82em;color:var(--accent);text-decoration:none}
 </style>
 </head>
 <body>
@@ -98,10 +122,42 @@
 </span>
 {%- endmacro %}
 
+{% macro filter_select(id, label, choices) -%}
+<label>{{ label }}
+  <select id="{{ id }}">
+    <option value="">All</option>
+    {% for value, text in choices %}<option value="{{ value }}">{{ text }}</option>{% endfor %}
+  </select>
+</label>
+{%- endmacro %}
+
+{# A hidden part still going (a refined solve, or an eigenmode run): a row of
+   its own, under the run it belongs to. It has no compare box -- its data is
+   part of its run's results -- and follows its run's visibility in the script. #}
+{% macro part_row(r, part, extra=false) -%}
+<tr class="part-row" data-owner="{{ r.run_id }}" data-part-id="{{ part.run_id }}"{% if extra %} hidden{% endif %}>
+  <td class="pick"></td>
+  <td class="part-name"><a class="part-link" href="{{ part.href }}">↳ {{ part.label }}</a></td>
+  <td class="run-swept"></td>
+  <td>
+    <span class="bar-cell">
+      {{ progress_bar(part) }}
+      <span class="progress-num">{{ part.done }}/{{ part.total }}{% if part.failed %} · {{ part.failed }} failed{% endif %}</span>
+    </span>
+  </td>
+  <td><span class="pill {{ part.tone }}">{{ part.word }}</span></td>
+</tr>
+{%- endmacro %}
+
 {% macro run_row(r, extra=false) -%}
+{# The data-* words are what the filter bar matches (see the run list script). #}
 <tr class="run-row{% if extra %} run-extra{% endif %}" tabindex="0"
     data-run-id="{{ r.run_id }}"
-    data-href="{{ url_for('run_status', run_id=r.run_id) }}"{% if extra %} hidden{% endif %}>
+    data-href="{{ url_for('run_status', run_id=r.run_id) }}"
+    data-substrate="{{ r.facets.substrate }}" data-chip="{{ r.facets.chip }}"
+    data-pedestal="{{ r.facets.pedestal }}" data-shape="{{ r.facets.shape }}"
+    data-solution="{{ r.facets.solution }}" data-stage="{{ r.facets.stage }}"
+    data-search="{{ r.facets.search }}"{% if extra %} hidden{% endif %}>
   <td class="pick">
     <label title="{{ 'Tick to compare this run' if r.has_results else 'No results to compare yet' }}">
       <input type="checkbox" class="compare-pick" name="runs" value="{{ r.run_id }}" form="compare-form"
@@ -113,6 +169,7 @@
   <td>
     <a class="run-name" href="{{ url_for('run_status', run_id=r.run_id) }}">{{ r.name }}</a>
     <span class="run-id">{% if r.label and r.date_text %}{{ r.date_text }} · {% endif %}{{ r.started_ago }}</span>
+    {% if r.refined_done %}<a class="part-note" href="{{ url_for('run_status', run_id=r.run_id) }}#refine">+{{ r.refined_done }} refined solve{{ "" if r.refined_done == 1 else "s" }}</a>{% endif %}
   </td>
   <td class="run-swept">{{ r.swept_text or "—" }}</td>
   <td>
@@ -123,11 +180,28 @@
   </td>
   <td><span class="pill {{ r.stage_display.kind }}">{{ r.stage_display.label }}</span></td>
 </tr>
+{% for part in r.open_parts %}{{ part_row(r, part, extra) }}{% endfor %}
 {%- endmacro %}
 
 <section id="runs">
 <h2>Runs</h2>
 {% if runs %}
+{# Narrow the list by what each run was built with. The controls sit outside
+   any <form>, so Enter in the search box only searches. The script shows
+   this bar; without it there are no controls that do nothing. #}
+<div class="run-filter" id="run-filter" role="search" aria-label="Filter the runs" hidden>
+  <label class="run-filter-text">Search
+    <input type="search" id="filter-text" placeholder="name, label, id or date" autocomplete="off" maxlength="100">
+  </label>
+  {{ filter_select("filter-substrate", "PCB", run_filter.substrate) }}
+  {{ filter_select("filter-chip", "Chip", run_filter.chip) }}
+  {{ filter_select("filter-pedestal", "Pedestal", run_filter.pedestal) }}
+  {{ filter_select("filter-shape", "Pedestal shape", run_filter.shape) }}
+  {{ filter_select("filter-solution", "Solution", run_filter.solution) }}
+  {{ filter_select("filter-stage", "Stage", run_filter.stage) }}
+  <button type="button" class="mini" id="filter-clear" hidden>Clear filters</button>
+  <p class="muted run-filter-count" id="filter-count" aria-live="polite"></p>
+</div>
 {# Tick runs, then Compare: their settings, numbers and plots on one
    page. A GET form, so the comparison is a URL like any other page. #}
 <form id="compare-form" class="compare-bar" method="get" action="{{ url_for('compare_runs') }}">
@@ -142,6 +216,8 @@
 <tbody>
 {% for r in runs[:recent] %}{{ run_row(r) }}{% endfor %}
 {% for r in runs[recent:] %}{{ run_row(r, extra=true) }}{% endfor %}
+<tr class="filter-empty" id="filter-empty" hidden><td colspan="5">No run matches these filters.
+  <button type="button" class="mini" id="filter-empty-clear">Clear the filters</button></td></tr>
 </tbody>
 {% if runs|length > recent %}
 <tfoot id="runs-more-row">
@@ -528,16 +604,160 @@
   });
 })();
 
-// "Show N more" reveals the rest of the run rows in place, continuing the
-// same table, and then removes itself.
+// The run list's filter. A run is shown when it matches every filter that is
+// set. Each run's facets are words on its row -- data-chip="bare chip" for a
+// run that swept the chip -- and a filter matches a run that has its word.
+// The PCB is one name, so it is compared whole. The text box needs every
+// word typed to appear in the run's name, label, id or date.
+//
+// The filters live in the address bar, so a filtered view can be bookmarked
+// and reloads as it was. The periodic refresh changes only the rows' words
+// and stages, and then the same filters are applied again.
+//
+// Visibility is decided in one place, applyRunVisibility: a row shows when it
+// matches and, with no filter set, when it is one of the first three rows or
+// "Show N more" has been pressed. Clearing the filters collapses the list.
 (function () {
-  var button = document.getElementById('runs-more');
-  if (!button) { return; }
-  button.addEventListener('click', function () {
-    document.querySelectorAll('tr.run-extra').forEach(function (row) { row.hidden = false; });
-    var foot = document.getElementById('runs-more-row');
-    if (foot) { foot.hidden = true; }
+  var table = document.querySelector('table.runs');
+  var bar = document.getElementById('run-filter');
+  if (!table || !bar) { return; }
+
+  // Each control, the facet it filters on, the address-bar key it is kept
+  // under, and the event that means "the person changed it".
+  var CONTROLS = [
+    { id: 'filter-text', facet: 'search', key: 'q', live: 'input' },
+    { id: 'filter-substrate', facet: 'substrate', key: 'pcb', live: 'change' },
+    { id: 'filter-chip', facet: 'chip', key: 'chip', live: 'change' },
+    { id: 'filter-pedestal', facet: 'pedestal', key: 'pedestal', live: 'change' },
+    { id: 'filter-shape', facet: 'shape', key: 'shape', live: 'change' },
+    { id: 'filter-solution', facet: 'solution', key: 'solution', live: 'change' },
+    { id: 'filter-stage', facet: 'stage', key: 'stage', live: 'change' }
+  ];
+  var WORD_FACETS = ['chip', 'pedestal', 'shape', 'solution', 'stage'];
+
+  // Whether one run matches the criteria: `data` is the run's data-* words
+  // (its dataset), `criteria` what the controls say. Nothing else is read.
+  function runMatches(data, criteria) {
+    var typed = (criteria.search || '').toLowerCase().split(/\s+/);
+    for (var i = 0; i < typed.length; i++) {
+      if (typed[i] && (data.search || '').indexOf(typed[i]) === -1) { return false; }
+    }
+    if (criteria.substrate && data.substrate !== criteria.substrate) { return false; }
+    for (var j = 0; j < WORD_FACETS.length; j++) {
+      var wanted = criteria[WORD_FACETS[j]];
+      var words = ' ' + (data[WORD_FACETS[j]] || '') + ' ';
+      if (wanted && words.indexOf(' ' + wanted + ' ') === -1) { return false; }
+    }
+    return true;
+  }
+
+  var rows = [].slice.call(table.querySelectorAll('tr.run-row'));
+  var countText = document.getElementById('filter-count');
+  var clearButton = document.getElementById('filter-clear');
+  var emptyRow = document.getElementById('filter-empty');
+  var foot = document.getElementById('runs-more-row');
+  var moreButton = document.getElementById('runs-more');
+  var expanded = false;   // "Show N more" has been pressed
+  var filtering = false;  // whether the last pass had a filter set
+
+  function readCriteria() {
+    var criteria = {};
+    CONTROLS.forEach(function (control) {
+      criteria[control.facet] = document.getElementById(control.id).value.trim();
+    });
+    return criteria;
+  }
+
+  function applyRunVisibility() {
+    var criteria = readCriteria();
+    var active = Object.keys(criteria).some(function (facet) { return criteria[facet] !== ''; });
+    // Clearing the filters collapses the list again, as it was on arrival.
+    if (filtering && !active) { expanded = false; }
+    filtering = active;
+    var shown = 0;
+    rows.forEach(function (row) {
+      var match = runMatches(row.dataset, criteria);
+      var collapsed = !active && row.classList.contains('run-extra') && !expanded;
+      row.classList.toggle('filtered-out', !match);
+      row.hidden = !match || collapsed;
+      if (match) { shown += 1; }
+    });
+    // A part's row follows its run: hidden with it, by the filter or the collapse.
+    var owners = {};
+    rows.forEach(function (row) { owners[row.dataset.runId] = row; });
+    table.querySelectorAll('tr.part-row').forEach(function (part) {
+      var owner = owners[part.dataset.owner];
+      part.hidden = !owner || owner.hidden;
+    });
+    var noun = rows.length === 1 ? ' run' : ' runs';
+    countText.textContent = active
+      ? 'Showing ' + shown + ' of ' + rows.length + noun
+      : rows.length + noun;
+    clearButton.hidden = !active;
+    emptyRow.hidden = !(active && shown === 0);
+    if (foot) { foot.hidden = active || expanded; }
+    if (window.syncComparePicks) { window.syncComparePicks(); }
+  }
+
+  function writeUrl(criteria) {
+    try {
+      var params = new URLSearchParams(window.location.search);
+      CONTROLS.forEach(function (control) {
+        if (criteria[control.facet]) { params.set(control.key, criteria[control.facet]); }
+        else { params.delete(control.key); }
+      });
+      var query = params.toString();
+      history.replaceState(null, '', window.location.pathname + (query ? '?' + query : '') + window.location.hash);
+    } catch (e) { /* the filter works without the address bar */ }
+  }
+
+  // Puts a bookmarked address's filters back into their controls. A value the
+  // list does not offer is still applied, so it is added as an option rather
+  // than shown as "All" while the rows are hidden.
+  function readUrl() {
+    var params = new URLSearchParams(window.location.search);
+    CONTROLS.forEach(function (control) {
+      var value = params.get(control.key);
+      if (value === null) { return; }
+      var field = document.getElementById(control.id);
+      if (field.tagName === 'SELECT' && !Array.prototype.some.call(field.options, function (o) { return o.value === value; })) {
+        var option = document.createElement('option');
+        option.value = value;
+        option.textContent = value;
+        field.appendChild(option);
+      }
+      field.value = value;
+    });
+  }
+
+  function onFilterChange() {
+    var criteria = readCriteria();
+    writeUrl(criteria);
+    applyRunVisibility();
+  }
+
+  function clearFilters() {
+    CONTROLS.forEach(function (control) { document.getElementById(control.id).value = ''; });
+    onFilterChange();
+  }
+
+  CONTROLS.forEach(function (control) {
+    document.getElementById(control.id).addEventListener(control.live, onFilterChange);
   });
+  clearButton.addEventListener('click', clearFilters);
+  document.getElementById('filter-empty-clear').addEventListener('click', clearFilters);
+  if (moreButton) {
+    moreButton.addEventListener('click', function () {
+      expanded = true;
+      applyRunVisibility();
+    });
+  }
+  // The refresh below patches the rows, then asks for the filter to be re-applied.
+  window.refreshRunFilter = applyRunVisibility;
+
+  readUrl();
+  bar.hidden = false;
+  applyRunVisibility();
 })();
 
 // Ticking runs to compare. The button only goes live with a comparison's
@@ -553,17 +773,25 @@
   var MAX = {{ max_compare }};
 
   function picks() { return [].slice.call(document.querySelectorAll('input.compare-pick')); }
-  function ticked() { return picks().filter(function (b) { return b.checked && !b.disabled; }); }
+  // A run the filter hides is not compared, though its box may still be ticked.
+  function filteredOut(box) { return box.closest('tr').classList.contains('filtered-out'); }
+  function ticked() { return picks().filter(function (b) { return b.checked && !b.disabled && !filteredOut(b); }); }
 
   function sync() {
     var n = ticked().length;
+    var hidden = picks().filter(function (b) { return b.checked && !b.disabled && filteredOut(b); }).length;
     button.disabled = n < 2 || n > MAX;
     button.textContent = n >= 2 ? 'Compare ' + n + ' runs' : 'Compare';
-    if (n === 0) { hint.textContent = 'Tick two or more runs to compare their results.'; }
-    else if (n === 1) { hint.textContent = '1 run ticked -- tick at least one more.'; }
-    else if (n > MAX) { hint.textContent = n + ' runs ticked -- a comparison takes up to ' + MAX + '.'; }
-    else { hint.textContent = ''; }
-    clear.hidden = n === 0;
+    var note = '';
+    if (n === 0 && !hidden) { note = 'Tick two or more runs to compare their results.'; }
+    else if (n === 1) { note = '1 run ticked -- tick at least one more.'; }
+    else if (n > MAX) { note = n + ' runs ticked -- a comparison takes up to ' + MAX + '.'; }
+    if (hidden) {
+      note += (note ? ' ' : '') + hidden + (hidden === 1 ? ' ticked run is hidden' : ' ticked runs are hidden') +
+        ' by the filter, so ' + (hidden === 1 ? 'it is' : 'they are') + ' left out.';
+    }
+    hint.textContent = note;
+    clear.hidden = picks().every(function (b) { return !b.checked; });
   }
   // the run list's poll can enable a box when its run finishes
   window.syncComparePicks = sync;
@@ -574,6 +802,11 @@
   clear.addEventListener('click', function () {
     picks().forEach(function (b) { b.checked = false; });
     sync();
+  });
+  // A disabled box is not sent, so a ticked run the filter hides stays out
+  // of the comparison this submit asks for.
+  form.addEventListener('submit', function () {
+    picks().forEach(function (b) { if (filteredOut(b)) { b.disabled = true; } });
   });
 
   // Back from a comparison ("change which runs"), its runs arrive ticked
@@ -653,12 +886,101 @@
   if (!table) { return; }
   var KINDS = ['ok', 'bad', 'busy', 'muted'];
 
+  // A part still going is a row under its run, built here the first time the
+  // poll sees it and taken out when it finishes. A finished refined solve is
+  // the "+N refined solve" note on its run instead. Child rows never count as
+  // runs: the filter and the collapse decide them from their run (see above).
+  function partRowFor(owner, part) {
+    var found = table.querySelector('tr.part-row[data-part-id="' + part.run_id + '"]');
+    if (found) { return found; }
+    var row = document.createElement('tr');
+    row.className = 'part-row';
+    row.dataset.owner = owner;
+    row.dataset.partId = part.run_id;
+    var pick = document.createElement('td');
+    pick.className = 'pick';
+    var name = document.createElement('td');
+    name.className = 'part-name';
+    var link = document.createElement('a');
+    link.className = 'part-link';
+    name.appendChild(link);
+    var swept = document.createElement('td');
+    swept.className = 'run-swept';
+    var progress = document.createElement('td');
+    var cell = document.createElement('span');
+    cell.className = 'bar-cell';
+    var bar = document.createElement('span');
+    bar.className = 'progress';
+    bar.appendChild(document.createElement('i')).className = 'd';
+    bar.appendChild(document.createElement('i')).className = 'f';
+    var num = document.createElement('span');
+    num.className = 'progress-num';
+    cell.appendChild(bar);
+    cell.appendChild(num);
+    progress.appendChild(cell);
+    var stage = document.createElement('td');
+    var pill = document.createElement('span');
+    pill.className = 'pill';
+    stage.appendChild(pill);
+    [pick, name, swept, progress, stage].forEach(function (td) { row.appendChild(td); });
+    return row;
+  }
+
+  function fillPartRow(row, part) {
+    var link = row.querySelector('a.part-link');
+    link.setAttribute('href', part.href);
+    link.textContent = '↳ ' + part.label;
+    var d = row.querySelector('.progress i.d');
+    var f = row.querySelector('.progress i.f');
+    if (part.total) {
+      d.style.width = (100 * part.done / part.total).toFixed(1) + '%';
+      f.style.width = (100 * part.failed / part.total).toFixed(1) + '%';
+    }
+    var num = part.done + '/' + part.total + (part.failed ? ' · ' + part.failed + ' failed' : '');
+    row.querySelector('.progress-num').textContent = num;
+    var pill = row.querySelector('.pill');
+    pill.textContent = part.word;
+    KINDS.forEach(function (k) { pill.classList.toggle(k, k === part.tone); });
+  }
+
+  function syncParts(parentRow, r) {
+    var keep = {};
+    var anchor = parentRow;
+    (r.open_parts || []).forEach(function (part) {
+      keep[part.run_id] = true;
+      var row = partRowFor(r.run_id, part);
+      fillPartRow(row, part);
+      if (anchor.nextSibling !== row) { anchor.parentNode.insertBefore(row, anchor.nextSibling); }
+      anchor = row;
+    });
+    table.querySelectorAll('tr.part-row[data-owner="' + r.run_id + '"]').forEach(function (row) {
+      if (!keep[row.dataset.partId]) { row.parentNode.removeChild(row); }
+    });
+    var note = parentRow.querySelector('a.part-note');
+    if (r.refined_done) {
+      if (!note) {
+        note = document.createElement('a');
+        note.className = 'part-note';
+        parentRow.querySelector('td:nth-child(2)').appendChild(note);
+      }
+      note.setAttribute('href', parentRow.dataset.href + '#refine');
+      note.textContent = '+' + r.refined_done + ' refined solve' + (r.refined_done === 1 ? '' : 's');
+    } else if (note) {
+      note.parentNode.removeChild(note);
+    }
+  }
+
   function patch(runs) {
     var byId = {};
     runs.forEach(function (r) { byId[r.run_id] = r; });
     table.querySelectorAll('tr[data-run-id]').forEach(function (row) {
       var r = byId[row.dataset.runId];
       if (!r) { return; }
+      // The filter words follow the run: its stage changes while it runs.
+      if (r.facets) {
+        Object.keys(r.facets).forEach(function (facet) { row.dataset[facet] = r.facets[facet]; });
+      }
+      syncParts(row, r);
       var d = row.querySelector('.progress i.d');
       var f = row.querySelector('.progress i.f');
       if (d && r.total) {
@@ -695,6 +1017,8 @@
         if (window.syncComparePicks) { window.syncComparePicks(); }
       }
     });
+    // A run whose stage just changed may now match, or stop matching, the filter.
+    if (window.refreshRunFilter) { window.refreshRunFilter(); }
   }
 
   async function poll() {

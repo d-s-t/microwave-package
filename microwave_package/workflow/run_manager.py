@@ -212,6 +212,96 @@ def progress_of(state: dict, analysis_settings: Optional[dict] = None) -> Dict[s
     }
 
 
+# -- the hidden parts of a run ----------------------------------------------
+# A run can have hidden parts (see companion.py): its eigenmode run, and the
+# refined solves made from it. They are listed under their parent's row, not
+# as runs of their own. A part's state is read from its combinations' own
+# fields -- the queue's and the results' -- not from its stage name, which
+# reads "postprocessing" for as long as the worker is still solving the part.
+
+def part_kind(config: dict) -> str:
+    """What a hidden part is: "eigen" for a driven run's eigenmode run,
+    "refinement" for a refined solve, and "part" for anything else."""
+    if config.get("part_role") == "eigen" or config.get("driven_run_id"):
+        return "eigen"
+    if config.get("refines_run_id"):
+        return "refinement"
+    return "part"
+
+
+def part_state(state: dict, use_altium: bool = True) -> str:
+    """Where a hidden part has got to, in one word:
+
+    "complete" -- every combination is finished (see `_finished`);
+    "solving" -- a combination is running on the worker;
+    "paused" -- queued, and the queue is paused for it;
+    "queued" -- waiting for the worker to take it;
+    "reading" -- the worker is done with a combination, and its results are
+        being copied back and read;
+    "waiting" -- its files cannot reach the queue yet;
+    "stopped" -- the run was stopped before the rest of it was done;
+    "failed" -- a combination failed, or the part stopped on an error;
+    "preparing" -- its geometry and model are still being built here;
+    "starting" -- nothing has been done yet.
+    """
+    combos = [combo for combo in (state.get("combos") or {}).values() if isinstance(combo, dict)]
+    unfinished = []
+    for combo in combos:
+        phases = phase_states(combo, use_altium)
+        if not _finished(phases):
+            unfinished.append((combo, phases))
+    if combos and not unfinished:
+        return "complete"
+
+    seen = set()
+    for combo, phases in unfinished:
+        if phases["analysis"] == "running":
+            seen.add("solving")
+        elif phases["analysis"] == "waiting" and combo.get("queue_status") == "held":
+            seen.add("paused")
+        elif phases["analysis"] == "waiting" or (phases["analysis"] == "pending" and phases["upload"] == "done"):
+            seen.add("queued")
+        elif combo_state(phases) == "failed":
+            seen.add("failed")
+        elif phases["analysis"] == "done":
+            seen.add("reading")
+        elif phases["upload"] == "waiting":
+            seen.add("waiting")
+        else:
+            seen.add("preparing")
+
+    for word in ("solving", "paused", "queued", "reading", "waiting"):
+        if word in seen:
+            return word
+    stage = state.get("stage")
+    if stage == "stopped":
+        return "stopped"
+    if stage == "error" or "failed" in seen:
+        return "failed"
+    if "preparing" in seen:
+        return "preparing"
+    return "starting"
+
+
+def part_record(run_id: str, config: dict, state: dict) -> dict:
+    """One hidden part as its parent's row needs it: its kind, what it is doing
+    (`part_state`), the fine windows it solves (a refined solve only) and how far
+    its combinations have got. Made from the state and config the run list has
+    already read for the part, so it costs no further file reads."""
+    analysis = config.get("analysis_settings") or {}
+    counts = progress_of(state, analysis)
+    kind = part_kind(config)
+    return {
+        "run_id": run_id,
+        "kind": kind,
+        "state": part_state(state, analysis.get("use_altium", True)),
+        "windows": (analysis.get("fine_windows_manual") or "") if kind == "refinement" else "",
+        "done": counts["done"],
+        "total": counts["total"],
+        "failed": counts["failed"],
+    }
+
+
 def _equation_file_values() -> Dict[str, float]:
     """The equations file's own numeric values, as the base every
     combination is layered on top of. An unreadable file is not fatal
@@ -303,6 +393,26 @@ def held_count(state: dict) -> int:
     worker queue (see workflow/queue_hold.py)."""
     return sum(1 for combo in state.get("combos", {}).values()
                if combo.get("queue_status") == "held")
+
+
+def facet_inputs(config: dict) -> dict:
+    """What the run list and the run page need to say what a run was built
+    with (see workflow/run_facets.py), taken out of its config.
+
+    Kept small and here, so `list_runs` can hand it on from the config it
+    has already read -- no second read of the run's files per poll, and no
+    import of the solver registry into this module.
+    """
+    analysis = config.get("analysis_settings") or {}
+    materials = analysis.get("materials") or {}
+    return {
+        "parameter_defaults": dict(config.get("parameter_defaults") or {}),
+        "sweep_params": list(config.get("sweep_params") or []),
+        "solution_type": analysis.get("solution_type"),
+        "mat_pcb": materials.get("mat_pcb"),
+        # A driven run that also solved its eigenmodes: companion.EIGEN_LINK.
+        "paired": bool(config.get("eigen_run_id")),
+    }
 
 
 def parent_of(config: dict) -> Optional[str]:
@@ -446,6 +556,8 @@ class Run:
         summaries = []
         # Held tasks of a part belong to the run it is part of: counted there.
         parts_held: Dict[str, int] = {}
+        # Each part's record (part_record), listed under the run it is part of.
+        parts_found: Dict[str, List[dict]] = {}
         for run_id in sorted(os.listdir(runs_root), reverse=True):
             run_dir = os.path.join(runs_root, run_id)
             state_path = os.path.join(run_dir, "state.json")
@@ -463,6 +575,7 @@ class Run:
                 # a part of another run: shown on that run's page, not on its own
                 owner = parent_of(config)
                 parts_held[owner] = parts_held.get(owner, 0) + held_count(state)
+                parts_found.setdefault(owner, []).append(part_record(run_id, config, state))
                 continue
             swept = [
                 {"label": parameter_meta.label_for(p["name"]), "n": len(p.get("values", []))}
@@ -484,12 +597,16 @@ class Run:
                 "created_at": config.get("created_at"),
                 "stage": shown_stage,
                 "swept": swept,
+                "facet_inputs": facet_inputs(config),
                 "held": held_count(state),
                 "queue_paused": bool(state.get("queue_paused")),
                 **progress_of(progress_state, config.get("analysis_settings")),
             })
         for summary in summaries:
             summary["held"] += parts_held.get(summary["run_id"], 0)
+            # Listed newest first, as the folders are read; the eigenmode part
+            # then the refined solves, oldest first, reads in the order made.
+            summary["parts"] = list(reversed(parts_found.get(summary["run_id"], [])))
         return summaries
 
     # -- persistence ----------------------------------------------------------
