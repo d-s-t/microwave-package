@@ -1652,5 +1652,18 @@ document.addEventListener("keydown", (event) => {
 });
 </script>
 {% endif %}
+<script>
+// A link to a folded section (the run list's "+N refined solve" note, and an
+// eigenmode part's row) names the section itself, which is a closed <details>.
+// A browser scrolls to a closed details but does not open it, so open it here.
+(function () {
+  function openTarget() {
+    var target = location.hash && document.getElementById(location.hash.slice(1));
+    if (target && target.tagName === "DETAILS") { target.open = true; }
+  }
+  window.addEventListener("hashchange", openTarget);
+  openTarget();
+})();
+</script>
 </body>
 </html>
