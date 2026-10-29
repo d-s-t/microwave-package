@@ -145,7 +145,7 @@
       <span class="progress-num">{{ part.done }}/{{ part.total }}{% if part.failed %} · {{ part.failed }} failed{% endif %}</span>
     </span>
   </td>
-  <td><span class="pill {{ part.tone }}">{{ part.word }}</span></td>
+  <td><span class="pill {{ part.tone }}">{{ part.word }}</span>{% if part.unconverged %}<span class="solver-badge" title="A frequency sweep of this refined solve did not converge: its values between the solved frequencies are unreliable.">Sweep did not converge</span>{% endif %}</td>
 </tr>
 {%- endmacro %}
 
@@ -167,7 +167,7 @@
     </label>
   </td>
   <td>
-    <a class="run-name" href="{{ url_for('run_status', run_id=r.run_id) }}">{{ r.name }}</a>
+    <a class="run-name" href="{{ url_for('run_status', run_id=r.run_id) }}">{{ r.name }}</a>{% if r.solver_status == "failed" %}<span class="solver-badge" title="A frequency sweep of this run did not converge: its S11 and S21 values between the solved frequencies are unreliable. Open the run for details.">Sweep did not converge</span>{% endif %}
     <span class="run-id">{% if r.label and r.date_text %}{{ r.date_text }} · {% endif %}{{ r.started_ago }}</span>
     {% if r.refined_done %}<a class="part-note" href="{{ url_for('run_status', run_id=r.run_id) }}#refine">+{{ r.refined_done }} refined solve{{ "" if r.refined_done == 1 else "s" }}</a>{% endif %}
   </td>
@@ -898,6 +898,23 @@
   if (!table) { return; }
   var KINDS = ['ok', 'bad', 'busy', 'muted'];
 
+  // The "Sweep did not converge" badge of a run or a refined solve, kept right
+  // after the element it belongs to. It is not a pill: a row's first .pill is
+  // its stage, which the poll paints.
+  function syncBadge(after, failed) {
+    var next = after.nextElementSibling;
+    var badge = next && next.classList.contains('solver-badge') ? next : null;
+    if (failed && !badge) {
+      badge = document.createElement('span');
+      badge.className = 'solver-badge';
+      badge.title = 'A frequency sweep of this run did not converge: its S11 and S21 values between the solved frequencies are unreliable. Open the run for details.';
+      badge.textContent = 'Sweep did not converge';
+      after.parentNode.insertBefore(badge, after.nextSibling);
+    } else if (!failed && badge) {
+      badge.parentNode.removeChild(badge);
+    }
+  }
+
   // A part still going is a row under its run, built here the first time the
   // poll sees it and taken out when it finishes. A finished refined solve is
   // the "+N refined solve" note on its run instead. Child rows never count as
@@ -953,6 +970,7 @@
     var pill = row.querySelector('.pill');
     pill.textContent = part.word;
     KINDS.forEach(function (k) { pill.classList.toggle(k, k === part.tone); });
+    syncBadge(pill, !!part.unconverged);
   }
 
   function syncParts(parentRow, r) {
@@ -1022,6 +1040,8 @@
         pill.textContent = r.stage_display.label;
         KINDS.forEach(function (k) { pill.classList.toggle(k, k === r.stage_display.kind); });
       }
+      var nameLink = row.querySelector('a.run-name');
+      if (nameLink) { syncBadge(nameLink, r.solver_status === 'failed'); }
       // A run that has just produced its results can now be compared.
       var pick = row.querySelector('input.compare-pick');
       if (pick && pick.disabled === !!r.has_results) {

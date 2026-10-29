@@ -43,6 +43,11 @@ details.collapsible table{margin-top:.5rem}
 .pill.busy{background:var(--busy)}
 .pill.muted{background:var(--neutral)}
 .pill.idle{background:transparent;color:var(--muted);border:1px solid var(--line)}
+/* A run or refined solve whose frequency sweep did not converge. Not a .pill: a
+   row's first pill is its stage, and the run list's script paints that one. */
+.solver-badge{display:inline-block;margin-left:.4rem;padding:.1rem .55rem;border-radius:999px;font-size:.8em;
+  font-weight:600;color:#fff;background:var(--bad);vertical-align:middle;white-space:nowrap}
+.solver-warning{color:var(--busy);font-weight:600}
 
 /* --- progress bar (done + failed over the buildable combinations;
        skipped combinations are not progress and are not shown here) --- */

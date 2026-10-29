@@ -164,17 +164,20 @@ def _solution_words(inputs: dict) -> str:
     return _words(words)
 
 
-def _stage_words(stage: Optional[str], failed: int) -> str:
+def _stage_words(stage: Optional[str], failed: int, unconverged: bool = False) -> str:
     if not stage:
         return ""
     words = {_STAGE_WORDS.get(stage, "running")}
     if failed or stage == "error":
         words.add("failed")
+    if unconverged:
+        # A run whose frequency sweep did not converge (see solver_status.py).
+        words.add("unconverged")
     return _words(words)
 
 
 def run_facets(inputs: dict, run_dir: Optional[str] = None, *,
-               stage: Optional[str] = None, failed: int = 0) -> Dict[str, str]:
+               stage: Optional[str] = None, failed: int = 0, unconverged: bool = False) -> Dict[str, str]:
     """The run list's filter words for one run, as plain strings.
 
     Words are separated by spaces, except the substrate, which is one name
@@ -192,7 +195,7 @@ def run_facets(inputs: dict, run_dir: Optional[str] = None, *,
         "pedestal": pedestal,
         "shape": shape,
         "solution": _solution_words(inputs),
-        "stage": _stage_words(stage, failed),
+        "stage": _stage_words(stage, failed, unconverged),
     }
 
 

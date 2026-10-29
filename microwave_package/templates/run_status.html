@@ -355,6 +355,34 @@
   {{ settings_table(settings.eigen) }}
   {% endif %}
 
+  <h3 class="settings-title">Solver status</h3>
+  <p class="muted small">What HFSS reported for each combination solved here, from its solver profile and its results.
+    A sweep that did not converge leaves its values between the solved frequencies unreliable.</p>
+  {% if solver.rows %}
+  <p><span class="pill {{ solver.tone }}">{{ solver.text }}</span>{% if solver.amber %} <span class="solver-warning">{{ solver.amber }}</span>{% endif %}</p>
+  <table class="solver-table">
+    <thead><tr><th>Combination</th><th>Verdict</th><th>What HFSS reported</th><th>Basis elements</th>
+      <th>Last S-matrix error</th><th>Points above 0 dB</th><th>Points with more power out than in</th></tr></thead>
+    <tbody>
+    {% for row in solver.rows %}
+    <tr>
+      <td>{{ row.combo_id }}</td>
+      <td><span class="pill {{ row.tone }}">{{ row.text }}</span></td>
+      <td>{% if row.messages %}{{ row.messages }}{% else %}&ndash;{% endif %}</td>
+      <td>{% if row.basis is not none %}{{ row.basis }}{% else %}&ndash;{% endif %}</td>
+      <td>{% if row.last_error %}{{ row.last_error }}{% else %}&ndash;{% endif %}</td>
+      <td>{% if row.above is not none %}{{ row.above }}{% else %}&ndash;{% endif %}</td>
+      <td>{% if row.more_power is not none %}{{ row.more_power }}{% else %}&ndash;{% endif %}</td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  <p class="muted small">The basis elements and the last S-matrix error are those of the sweep that decided the verdict:
+    the first sweep that did not converge, otherwise the last one.</p>
+  {% else %}
+  <p class="muted small">No solver profile was found for this run.</p>
+  {% endif %}
+
   <h3 class="settings-title">Geometry</h3>
   <p class="muted small">{% if run.config.parameter_defaults %}The values pinned for this run are <a href="#pinned">listed above</a>.{% else %}Nothing is pinned for this run.{% endif %}
     The rest comes from the equation file, and the source of each value is shown beside it{% if has_common_dimensions %}; the equations every combination shares are in <a href="{{ url_for('run_common_dimensions', run_id=run.run_id) }}">common_dimensions.txt</a>{% endif %}.</p>
@@ -502,6 +530,9 @@
 
 {% if plot_exists %}
 <h2>Results</h2>
+{% if solver.unconverged %}
+<div class="error-box" role="alert">The frequency sweep did not converge: values between the solved frequencies are unreliable (S11 or S21 above 0 dB are numerical errors). Re-run it, or refine the ranges.</div>
+{% endif %}
 {% if axis_options %}
 <div class="axis-picker">
   <label for="axis-x">X</label>
@@ -599,7 +630,7 @@
 {% if refine.children %}
 <ul class="refinements">
   {% for child in refine.children %}
-  <li><span class="pill {{ child.tone }}">{{ child.word }}</span>
+  <li><span class="pill {{ child.tone }}">{{ child.word }}</span>{% if child.unconverged %} <span class="solver-badge">Sweep did not converge</span>{% endif %}
     {{ child.ranges }} GHz &mdash; {{ child.combos | join(', ') }}
     {% if child.running %}
     <form method="post" action="{{ url_for('stop_run', run_id=child.run_id) }}" style="display:inline">

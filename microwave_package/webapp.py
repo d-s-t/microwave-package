@@ -51,7 +51,7 @@ from .hfss.driven import windows as fine_windows
 # solver has a view like it.
 from .hfss.eigenmode import fields as eigenmode_fields
 from .workflow import (compare, companion, manufacturing, plotting, queue_hold, resilient_io, run_facets,
-                       run_manager, smith)
+                       run_manager, smith, solver_status)
 from .workflow.run_manager import Run
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s: %(message)s", stream=sys.stdout)
@@ -479,6 +479,7 @@ _FILTER_CHOICES = {
     "pedestal": [("flat", "No pedestal (flat floor)"), ("recess", "Pedestal recess")],
     "shape": [("square", "Square"), ("circle", "Circle")],
     "stage": [("complete", "Complete"), ("running", "Running"), ("failed", "Failed"),
+              ("unconverged", "Sweep not converged"),
               ("stopped", "Stopped"), ("stalled", "Stalled"), ("created", "Not started")],
 }
 
@@ -531,11 +532,21 @@ def _fine_windows_text(text: str) -> str:
     return f"{count} range{'' if count == 1 else 's'} {span}"
 
 
+def _part_solver(part: dict) -> str:
+    """A refined solve's verdict (workflow/solver_status.py). An eigenmode part's
+    solve feeds no S-parameters, so it has none here."""
+    if part["kind"] != "refinement":
+        return "unknown"
+    done = part["state"] in run_manager.DONE_PART_STATES
+    return solver_status.run_status(Run(part["run_id"]).run_dir, may_write=done)["verdict"]
+
+
 def _part_view(owner_id: str, part: dict) -> dict:
     """One hidden part (run_manager.part_record) as the run list and its JSON
     show it: its label, what it is doing in words, its colour, its progress,
     and the link its row follows -- the parent's refine section, or for an
-    eigenmode run the parent's settings, where its part is described."""
+    eigenmode run the parent's settings, where its part is described. A refined
+    solve whose sweep did not converge says so on its row."""
     eigen = part["kind"] == "eigen"
     windows = "" if eigen else _fine_windows_text(part.get("windows", ""))
     refined_word, eigen_word, tone = _PART_WORDS.get(part["state"], _PART_WORDS["starting"])
@@ -544,6 +555,7 @@ def _part_view(owner_id: str, part: dict) -> dict:
     else:
         label = f"refined solve: {windows}" if windows else "refined solve"
         word = refined_word
+    solver = _part_solver(part)
     return {
         "run_id": part["run_id"],
         "kind": part["kind"],
@@ -556,6 +568,8 @@ def _part_view(owner_id: str, part: dict) -> dict:
         "done": part["done"],
         "total": part["total"],
         "failed": part["failed"],
+        "solver_status": solver,
+        "unconverged": solver == "failed",
         "href": url_for("run_status", run_id=owner_id, _anchor="settings" if eigen else "refine"),
     }
 
@@ -574,9 +588,13 @@ def _runs_for_display(runs: list) -> list:
         stage = r.get("stage")
         going = _going(r["run_id"], stage)
         stalled = stage in run_manager.ACTIVE_STAGES and not going
+        run_dir = Run(r["run_id"]).run_dir
+        # The run's own combinations: a refined solve has a row of its own (see _part_view).
+        solver = solver_status.run_status(run_dir, may_write=not going)["verdict"]
         facets = run_facets.run_facets(
-            r.get("facet_inputs") or {}, Run(r["run_id"]).run_dir,
-            stage="stalled" if stalled else stage, failed=r.get("failed", 0))
+            r.get("facet_inputs") or {}, run_dir,
+            stage="stalled" if stalled else stage, failed=r.get("failed", 0),
+            unconverged=solver == "failed")
         facets["search"] = " ".join(
             part for part in dict.fromkeys([name, r["label"], r["run_id"], date_text]) if part).lower()
         raw_parts = r.get("parts") or []
@@ -598,6 +616,8 @@ def _runs_for_display(runs: list) -> list:
             "active": going or any(
                 part["state"] not in run_manager.DONE_PART_STATES for part in open_parts),
             "stalled": stalled,
+            # Whether its sweeps converged, in words: ok, warning, failed or unknown.
+            "solver_status": solver,
             "name": name,
             "date_text": date_text,
             "started_ago": _fmt_ago(started),
@@ -1028,6 +1048,48 @@ def _settings_sections(run) -> dict:
     return sections
 
 
+# A combination's verdict, and the run's, in words and a colour kind.
+_COMBO_SOLVER_WORDS = {
+    "ok": ("OK", "ok"),
+    "warning": ("Warning", "busy"),
+    "failed": ("Sweep did not converge", "bad"),
+    "unknown": ("No solver profile", "muted"),
+}
+_RUN_SOLVER_WORDS = {
+    "ok": ("Every sweep converged", "ok"),
+    "warning": ("Warning", "busy"),
+    "failed": ("Sweep did not converge", "bad"),
+    "unknown": ("No solver profile found", "muted"),
+}
+
+
+def _solver_view(status: dict) -> dict:
+    """What the run page's "Solver status" block and results banner show, from a
+    run's solver status (workflow/solver_status.py): the verdict in words, the
+    amber note for a warning, and one row per combination."""
+    verdict = status["verdict"]
+    text, tone = _RUN_SOLVER_WORDS[verdict]
+    labels = [label for combo in status["combos"].values() for label in combo["messages"]]
+    amber = ""
+    if verdict == "warning":
+        amber = ("Adaptive passes not converged" if solver_status.ADAPTIVE_NOT_CONVERGED in labels
+                 else next((label for label in labels if label in solver_status.WARNING_LABELS), ""))
+    rows = []
+    for combo_id, combo in status["combos"].items():
+        row_text, row_tone = _COMBO_SOLVER_WORDS[combo["verdict"]]
+        error = combo["last_s_matrix_error"]
+        rows.append({
+            "combo_id": combo_id, "text": row_text, "tone": row_tone,
+            "messages": "; ".join(combo["messages"]),
+            "basis": combo["basis_elements"],
+            "last_error": None if error is None else f"{error:.3f}%",
+            "above": combo["points_above_0db"],
+            "more_power": combo["points_more_power_out"],
+        })
+    return {"verdict": verdict, "text": text, "tone": tone, "amber": amber,
+            "unconverged": verdict == "failed", "rows": rows}
+
+
 @app.route("/runs/<run_id>")
 def run_status(run_id):
     run = Run.load(run_id)
@@ -1072,6 +1134,7 @@ def run_status(run_id):
         run_name=_run_name(run),
         title_chips=run_facets.title_chips(inputs, run.run_dir),
         settings=_settings_sections(run),
+        solver=_solver_view(solver_status.run_status(run.run_dir, may_write=not going)),
         geometry=geometry,
         pair_note=_pair_note(run),
         line_checks=_line_checks(run),
@@ -1174,7 +1237,7 @@ def _refine_panel(run) -> Optional[dict]:
         view = _part_view(run.run_id, run_manager.part_record(child.run_id, child.config, child.state))
         children.append({
             "run_id": child.run_id, "word": view["word"], "tone": view["tone"],
-            "complete": view["complete"],
+            "complete": view["complete"], "unconverged": view["unconverged"],
             "ranges": child.analysis_settings.get("fine_windows_manual", ""),
             "combos": list(child.state["combos"]),
             "running": _is_running(child.run_id),
