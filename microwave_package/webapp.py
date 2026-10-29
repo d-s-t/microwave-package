@@ -462,6 +462,24 @@ _PART_WORDS = {
 }
 
 
+# How many of the newest runs the run list always shows. The others are folded
+# away behind "Show N more", unless one of them is running or has a part going.
+RECENT_ROWS = 3
+
+# A part that failed or stopped gets a row for this long after its state was
+# last written. Older ones are listed on their run's page only.
+PART_RECENT_SECONDS = 3 * 24 * 60 * 60
+
+
+def _part_shown(part: dict, now: float) -> bool:
+    """Whether a part gets a row of its own on the run list: one that is still
+    going, or one that failed or stopped in the last few days. A part that is
+    complete is only a note on its run."""
+    if part["state"] in ("failed", "stopped"):
+        return now - part["updated"] <= PART_RECENT_SECONDS
+    return part["state"] != "complete"
+
+
 def _fine_windows_text(text: str) -> str:
     """A refined solve's fine windows, shortened: "8 ranges 2.05-19.25 GHz"."""
     try:
@@ -510,6 +528,7 @@ def _runs_for_display(runs: list) -> list:
     "what it swept" summary, whether it has results to compare, and the
     words the filter matches on (`facets`, see workflow/run_facets.py)."""
     view = []
+    now = _dt.datetime.now().timestamp()
     for r in runs:
         started = _parse_dt(r.get("created_at")) or _run_id_dt(r["run_id"])
         date_text = _fmt_dt(started)
@@ -519,15 +538,23 @@ def _runs_for_display(runs: list) -> list:
             stage=r.get("stage"), failed=r.get("failed", 0))
         facets["search"] = " ".join(
             part for part in dict.fromkeys([name, r["label"], r["run_id"], date_text]) if part).lower()
-        parts = [_part_view(r["run_id"], part) for part in r.get("parts") or []]
+        raw_parts = r.get("parts") or []
+        part_views = [_part_view(r["run_id"], part) for part in raw_parts]
+        # A part still going, or one that failed or stopped lately, is a row of
+        # its own under this run; a finished refined solve is only a note on it.
+        open_parts = [part_view for part_view, part in zip(part_views, raw_parts)
+                      if _part_shown(part, now) and not part_view["complete"]]
         view.append({
             # the inputs the facets were made from, and the raw parts, stay here:
             # /runs.json carries the parts as _part_view shapes them
             **{k: v for k, v in r.items() if k not in ("facet_inputs", "parts")},
-            # a part still going is a row of its own under this one; a finished
-            # refined solve is only a note on it
-            "open_parts": [part for part in parts if not part["complete"]],
-            "refined_done": sum(1 for part in parts if part["kind"] == "refinement" and part["complete"]),
+            "open_parts": open_parts,
+            "refined_done": sum(1 for part_view in part_views
+                                if part_view["kind"] == "refinement" and part_view["complete"]),
+            # Running: its own stage is doing work, or a part of it is going.
+            # Such a run is shown by default, whatever its place in the list.
+            "active": r.get("stage") in run_manager.ACTIVE_STAGES or any(
+                part["state"] not in run_manager.DONE_PART_STATES for part in open_parts),
             "name": name,
             "date_text": date_text,
             "started_ago": _fmt_ago(started),
@@ -577,6 +604,9 @@ def index():
         groups=parameter_meta.grouped(parameters),
         runs=runs,
         run_filter=_run_filter_options(runs),
+        recent_rows=RECENT_ROWS,
+        # What "Show N more" folds away: every run past the newest few, unless it is running.
+        runs_more=sum(1 for i, run in enumerate(runs) if i >= RECENT_ROWS and not run["active"]),
         # Any run with tasks held out of the worker queue, for the banner.
         held_runs=[r for r in runs if r.get("held")],
         # Ticked on arrival: the comparison page's "change the selection"

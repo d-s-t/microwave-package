@@ -229,34 +229,57 @@ def part_kind(config: dict) -> str:
     return "part"
 
 
-def part_state(state: dict, use_altium: bool = True) -> str:
-    """Where a hidden part has got to, in one word:
+# The stages in which a run's pipeline is doing work. Any other stage says
+# nothing is being done: "complete", "stopped", "error" or "created".
+ACTIVE_STAGES = frozenset({"eigenmodes", "generating_and_queuing", "geometry_ready",
+                           "monitoring", "postprocessing", "plotting"})
 
-    "complete" -- every combination is finished (see `_finished`);
-    "solving" -- a combination is running on the worker;
+# The part states that are not still going, and not a failure to act on.
+DONE_PART_STATES = frozenset({"complete", "failed", "stopped"})
+
+
+def part_state(state: dict, use_altium: bool = True) -> str:
+    """Where a hidden part has got to, in one word. This is the one place that
+    decides it; the words the page shows for each are the webapp's.
+
+    The part's own stage decides first. A stage that is "complete" has no work
+    left. A "stopped" or "error" stage is not solving anything, whatever its
+    combinations' queue fields still say: a stopped run can leave a task
+    reading "in_progress". "solving" needs a live stage as well as a task on
+    the worker. Then the combinations say what is left:
+
+    "complete" -- finished: its stage is complete, or every combination is;
+    "stopped" -- its stage is stopped;
+    "failed" -- its stage is error, or a combination failed and can be retried;
+    "solving" -- a combination is running on the worker, in a live stage;
     "paused" -- queued, and the queue is paused for it;
     "queued" -- waiting for the worker to take it;
     "reading" -- the worker is done with a combination, and its results are
         being copied back and read;
     "waiting" -- its files cannot reach the queue yet;
-    "stopped" -- the run was stopped before the rest of it was done;
-    "failed" -- a combination failed, or the part stopped on an error;
     "preparing" -- its geometry and model are still being built here;
-    "starting" -- nothing has been done yet.
+    "starting" -- nothing has been done yet, or a task is left "in progress"
+        in a stage that is not live.
     """
+    stage = state.get("stage")
     combos = [combo for combo in (state.get("combos") or {}).values() if isinstance(combo, dict)]
     unfinished = []
     for combo in combos:
         phases = phase_states(combo, use_altium)
         if not _finished(phases):
             unfinished.append((combo, phases))
-    if combos and not unfinished:
+    if stage == "complete" or (combos and not unfinished):
         return "complete"
+    if stage == "stopped":
+        return "stopped"
+    if stage == "error":
+        return "failed"
+    live = stage in ACTIVE_STAGES
 
     seen = set()
     for combo, phases in unfinished:
         if phases["analysis"] == "running":
-            seen.add("solving")
+            seen.add("solving" if live else "starting")
         elif phases["analysis"] == "waiting" and combo.get("queue_status") == "held":
             seen.add("paused")
         elif phases["analysis"] == "waiting" or (phases["analysis"] == "pending" and phases["upload"] == "done"):
@@ -273,21 +296,20 @@ def part_state(state: dict, use_altium: bool = True) -> str:
     for word in ("solving", "paused", "queued", "reading", "waiting"):
         if word in seen:
             return word
-    stage = state.get("stage")
-    if stage == "stopped":
-        return "stopped"
-    if stage == "error" or "failed" in seen:
+    if "failed" in seen:
         return "failed"
     if "preparing" in seen:
         return "preparing"
     return "starting"
 
 
-def part_record(run_id: str, config: dict, state: dict) -> dict:
+def part_record(run_id: str, config: dict, state: dict, updated: float = 0.0) -> dict:
     """One hidden part as its parent's row needs it: its kind, what it is doing
-    (`part_state`), the fine windows it solves (a refined solve only) and how far
-    its combinations have got. Made from the state and config the run list has
-    already read for the part, so it costs no further file reads."""
+    (`part_state`), the fine windows it solves (a refined solve only), how far its
+    combinations have got, and when its state was last written (`updated`, a
+    modification time, so a recent failure can be told from an old one). Made from
+    the state and config the run list has already read for the part; the time is
+    a stat of the same file."""
     analysis = config.get("analysis_settings") or {}
     counts = progress_of(state, analysis)
     kind = part_kind(config)
@@ -299,7 +321,16 @@ def part_record(run_id: str, config: dict, state: dict) -> dict:
         "done": counts["done"],
         "total": counts["total"],
         "failed": counts["failed"],
+        "updated": updated,
     }
+
+
+def _modified(path: str) -> float:
+    """When a file was last written, in seconds since the epoch; 0 if it cannot be read."""
+    try:
+        return os.path.getmtime(path)
+    except OSError:
+        return 0.0
 
 
 def _equation_file_values() -> Dict[str, float]:
@@ -575,7 +606,8 @@ class Run:
                 # a part of another run: shown on that run's page, not on its own
                 owner = parent_of(config)
                 parts_held[owner] = parts_held.get(owner, 0) + held_count(state)
-                parts_found.setdefault(owner, []).append(part_record(run_id, config, state))
+                parts_found.setdefault(owner, []).append(
+                    part_record(run_id, config, state, _modified(state_path)))
                 continue
             swept = [
                 {"label": parameter_meta.label_for(p["name"]), "n": len(p.get("values", []))}

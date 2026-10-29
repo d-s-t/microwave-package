@@ -16,8 +16,14 @@ import logging
 import os
 import re
 import shutil
+import socket
+import subprocess
+import sys
 import tempfile
+import time
 import unittest
+
+import psutil
 
 from microwave_package import paths, webapp
 from microwave_package.workflow.run_manager import part_kind, part_state
@@ -28,6 +34,24 @@ FINE = {n: f"{PARENT}_fine{n}" for n in range(1, 7)}
 WINDOWS = {1: "2.05:2.1:0.001; 19.2:19.25:0.001", 2: "12.1:12.4:0.002"}
 
 ROW_TAG = re.compile(r'<tr class="part-row"[^>]*data-part-id="(?P<id>[^"]+)"[^>]*>', re.S)
+RUN_ROW_TAG = re.compile(r'<tr class="run-row[^"]*"[^>]*data-run-id="(?P<id>[^"]+)"[^>]*>', re.S)
+
+
+def run_row_tag(html, run_id):
+    """The opening tag of one run's row on the home page."""
+    for match in RUN_ROW_TAG.finditer(html):
+        if match.group("id") == run_id:
+            return match.group(0)
+    raise AssertionError(f"no row for {run_id} on the home page")
+
+
+def child_rows(html):
+    """(part id, the row's opening tag, the row's whole markup) for each part row."""
+    rows = []
+    for match in ROW_TAG.finditer(html):
+        end = html.index("</tr>", match.start()) + len("</tr>")
+        rows.append((match.group("id"), match.group(0), html[match.start():end]))
+    return rows
 
 
 def done_combo(**overrides):
@@ -157,12 +181,7 @@ class PartsOnTheRunList(unittest.TestCase):
                       state_of("complete", [done_combo()]))
 
     def child_rows(self, html):
-        """(part id, the row's whole tag, the row's whole markup) for each part row."""
-        rows = []
-        for match in ROW_TAG.finditer(html):
-            end = html.index("</tr>", match.start()) + len("</tr>")
-            rows.append((match.group("id"), match.group(0), html[match.start():end]))
-        return rows
+        return child_rows(html)
 
     def test_each_open_part_is_a_row_under_its_run_with_its_own_words(self):
         html = self.client.get("/").get_data(as_text=True)
@@ -199,10 +218,23 @@ class PartsOnTheRunList(unittest.TestCase):
         self.assertIn(f'<a class="part-note" href="/runs/{PARENT}#refine">+1 refined solve</a>', html)
 
     def test_the_rows_of_a_run_folded_away_are_folded_away_with_it(self):
+        """An older run that is not going folds behind "Show N more", and the
+        refined solve that failed on it just now folds with it."""
+        old = "run_20261001_120000"
+        write_run(self.root, old, {"analysis_settings": analysis(), "refined_by": [old + "_fine1"]},
+                  state_of("complete", [done_combo()]))
+        write_run(self.root, old + "_fine1", {
+            "part_of": old, "part_role": "fine1", "refines_run_id": old,
+            "analysis_settings": analysis(fine_windows_manual="12.1:12.4:0.002"),
+        }, state_of("error", [{"model_status": "built", "handoff_status": "done",
+                               "queue_status": "done", "fetch_status": "failed"}]))
         html = self.client.get("/").get_data(as_text=True)
         tags = {part_id: tag for part_id, tag, _markup in self.child_rows(html)}
-        self.assertIn("hidden", tags[FINE[1]])
-        self.assertIn("hidden", tags[EIGEN])
+        self.assertIn("hidden", tags[old + "_fine1"])
+        self.assertIn("hidden", run_row_tag(html, old))
+        # the run going, with its own parts, is shown by default: its rows are not folded
+        self.assertNotIn("hidden", tags[FINE[1]])
+        self.assertNotIn("hidden", run_row_tag(html, PARENT))
 
     def test_the_run_list_json_carries_each_part_under_its_run(self):
         entries = {entry["run_id"]: entry for entry in self.client.get("/runs.json").get_json()}
@@ -295,6 +327,185 @@ class TheRunPageRefineSection(unittest.TestCase):
         self.assertIn('<span class="pill busy">reading results</span>', section)
         self.assertNotIn("Post-processing", section)
         self.assertIn("Resume", section)  # not running here, so the resume control stays
+
+
+class StageDecidesOverAStaleQueue(unittest.TestCase):
+    """A part's own stage wins over a queue field that still says a task is in
+    progress: a stopped part is never solving, and only a live stage can be."""
+
+    IN_PROGRESS = {"model_status": "built", "handoff_status": "done", "queue_status": "in_progress"}
+
+    def test_a_stopped_part_with_a_task_in_progress_is_stopped_not_solving(self):
+        self.assertEqual(part_state(state_of("stopped", [self.IN_PROGRESS])), "stopped")
+
+    def test_an_errored_part_with_a_task_in_progress_is_failed(self):
+        self.assertEqual(part_state(state_of("error", [self.IN_PROGRESS])), "failed")
+
+    def test_a_completed_stage_has_no_work_left_whatever_its_combinations_say(self):
+        self.assertEqual(part_state(state_of("complete", [self.IN_PROGRESS])), "complete")
+
+    def test_a_task_in_progress_in_a_stage_that_is_not_live_is_only_starting(self):
+        self.assertEqual(part_state(state_of("created", [self.IN_PROGRESS])), "starting")
+
+    def test_a_live_stage_with_a_task_in_progress_is_solving(self):
+        self.assertEqual(part_state(state_of("postprocessing", [self.IN_PROGRESS])), "solving")
+
+
+class RunsOnDisk(unittest.TestCase):
+    def setUp(self):
+        logging.disable(logging.WARNING)
+        self.addCleanup(logging.disable, logging.NOTSET)
+        self.root = tempfile.mkdtemp(prefix="runs_")
+        self.addCleanup(shutil.rmtree, self.root, True)
+        saved = paths.RUNS_ROOT
+        paths.RUNS_ROOT = self.root
+        self.addCleanup(setattr, paths, "RUNS_ROOT", saved)
+        self.client = webapp.app.test_client()
+
+    def refined_solve(self, parent, n, state, days=0.0):
+        """A refined solve of `parent`, its state written `days` days ago."""
+        child = f"{parent}_fine{n}"
+        folder = write_run(self.root, child, {
+            "part_of": parent, "part_role": f"fine{n}", "refines_run_id": parent,
+            "analysis_settings": analysis(fine_windows_manual="12.1:12.4:0.002"),
+        }, state)
+        when = time.time() - days * 24 * 3600
+        os.utime(os.path.join(folder, "state.json"), (when, when))
+        return child
+
+
+class PartRowsByAge(RunsOnDisk):
+    """A part that failed or stopped gets a row for three days; one still going
+    always does. The run page lists every refined solve either way."""
+
+    def parent_with(self, *children):
+        write_run(self.root, PARENT, {"analysis_settings": analysis(), "refined_by": list(children)},
+                  state_of("complete", [done_combo()]))
+        plots = os.path.join(self.root, PARENT, "plots")
+        os.makedirs(plots, exist_ok=True)
+        open(os.path.join(plots, "modes_scatter_plot.html"), "w").close()
+
+    def row_ids(self, html):
+        return {part_id for part_id, _tag, _markup in child_rows(html)}
+
+    def test_a_stopped_refined_solve_from_long_ago_gets_no_row_but_the_run_page_lists_it(self):
+        child = self.refined_solve(PARENT, 1, state_of("stopped", [{"altium_status": "running"}]), days=10)
+        self.parent_with(child)
+        html = self.client.get("/").get_data(as_text=True)
+        self.assertNotIn(child, self.row_ids(html))
+        section = self.client.get(f"/runs/{PARENT}").get_data(as_text=True)
+        self.assertIn(child.rsplit("_", 1)[-1], section)
+        self.assertIn('<span class="pill muted">stopped</span>', section)
+
+    def test_a_stopped_refined_solve_from_today_has_a_row_worded_stopped(self):
+        child = self.refined_solve(PARENT, 1, state_of("stopped", [{"altium_status": "running"}]))
+        self.parent_with(child)
+        html = self.client.get("/").get_data(as_text=True)
+        self.assertIn(child, self.row_ids(html))
+        self.assertIn(">stopped</span>", html)
+
+    def test_a_failed_refined_solve_from_long_ago_gets_no_row(self):
+        child = self.refined_solve(PARENT, 1, state_of("error", [{"model_status": "built",
+                                                                  "handoff_status": "done",
+                                                                  "queue_status": "done",
+                                                                  "fetch_status": "failed"}]), days=10)
+        self.parent_with(child)
+        self.assertNotIn(child, self.row_ids(self.client.get("/").get_data(as_text=True)))
+
+    def test_a_refined_solve_still_queued_has_a_row_whatever_its_age(self):
+        child = self.refined_solve(PARENT, 1, state_of("geometry_ready", [{"model_status": "built",
+                                                                           "handoff_status": "done",
+                                                                           "queue_status": "pending"}]),
+                                  days=30)
+        self.parent_with(child)
+        html = self.client.get("/").get_data(as_text=True)
+        self.assertIn(child, self.row_ids(html))
+        self.assertIn(">refined solve queued</span>", html)
+
+    def test_a_stopped_run_with_a_task_left_in_progress_shows_stopped_not_solving(self):
+        child = self.refined_solve(PARENT, 1, state_of("stopped", [{"model_status": "built",
+                                                                    "handoff_status": "done",
+                                                                    "queue_status": "in_progress"}]))
+        self.parent_with(child)
+        html = self.client.get("/").get_data(as_text=True)
+        self.assertIn(">stopped</span>", html)
+        self.assertNotIn("solving on the worker", html)
+
+
+class RunsShownByDefault(RunsOnDisk):
+    """With nothing filtered, the newest three runs show, and so does any run that is
+    going; the others fold behind "Show N more", which counts only those."""
+
+    def write_plain(self, run_id, stage="complete"):
+        write_run(self.root, run_id, {"analysis_settings": analysis()}, state_of(stage, [done_combo()]))
+
+    def test_a_run_that_is_going_shows_by_default_and_the_rest_fold(self):
+        for run_id in ("run_20261029_120002", "run_20261029_120001", "run_20261029_120000"):
+            self.write_plain(run_id)
+        self.write_plain("run_20261005_120000")                      # idle: folds
+        self.write_plain("run_20261004_120000")                      # idle, but has a refined solve queued
+        self.refined_solve("run_20261004_120000", 1, state_of("geometry_ready", [{
+            "model_status": "built", "handoff_status": "done", "queue_status": "pending"}]))
+        self.write_plain("run_20261003_120000")                      # idle: folds
+        html = self.client.get("/").get_data(as_text=True)
+        self.assertIn("hidden", run_row_tag(html, "run_20261005_120000"))
+        self.assertNotIn("hidden", run_row_tag(html, "run_20261004_120000"))
+        self.assertIn("hidden", run_row_tag(html, "run_20261003_120000"))
+        self.assertIn('id="runs-more">Show 2 more</button>', html)
+
+    def test_a_run_whose_own_stage_is_going_is_active(self):
+        for run_id in ("run_20261029_120002", "run_20261029_120001", "run_20261029_120000"):
+            self.write_plain(run_id)
+        self.write_plain("run_20261005_120000", stage="postprocessing")
+        self.write_plain("run_20261003_120000")
+        html = self.client.get("/").get_data(as_text=True)
+        self.assertNotIn("hidden", run_row_tag(html, "run_20261005_120000"))
+        self.assertIn('id="runs-more">Show 1 more</button>', html)
+        active = {entry["run_id"]: entry["active"] for entry in self.client.get("/runs.json").get_json()}
+        self.assertTrue(active["run_20261005_120000"])
+        self.assertFalse(active["run_20261003_120000"])
+
+
+class TheDriverOfAPartIsNotItsRunsDriver(RunsOnDisk):
+    """A run's page says it is driven elsewhere only when its own folder names a
+    live process other than this one. A refined solve's process claims its own
+    folder, and must not make the run it belongs to look driven elsewhere."""
+
+    def live_claim(self):
+        process = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"])
+
+        def stop():
+            process.kill()
+            process.wait()
+        self.addCleanup(stop)
+        return {"pid": process.pid, "started": psutil.Process(process.pid).create_time(),
+                "host": socket.gethostname()}
+
+    def elsewhere_note_hidden(self, html):
+        tag = re.search(r'<div class="note-box" id="elsewhere-note"([^>]*)>', html).group(1)
+        return "hidden" in tag
+
+    def test_a_refined_solves_claim_does_not_show_on_its_run(self):
+        child = self.refined_solve(PARENT, 1, state_of("postprocessing", [{
+            "model_status": "built", "handoff_status": "done", "queue_status": "in_progress"}]))
+        write_run(self.root, PARENT, {"analysis_settings": analysis(), "refined_by": [child]},
+                  state_of("complete", [done_combo()]))
+        plots = os.path.join(self.root, PARENT, "plots")
+        os.makedirs(plots, exist_ok=True)
+        open(os.path.join(plots, "modes_scatter_plot.html"), "w").close()
+        with open(os.path.join(self.root, child, "driver.json"), "w", encoding="utf-8") as handle:
+            json.dump(self.live_claim(), handle)
+        html = self.client.get(f"/runs/{PARENT}").get_data(as_text=True)
+        self.assertTrue(self.elsewhere_note_hidden(html))
+
+    def test_a_claim_in_the_runs_own_folder_does_show(self):
+        write_run(self.root, PARENT, {"analysis_settings": analysis()}, state_of("complete", [done_combo()]))
+        claim = self.live_claim()
+        with open(os.path.join(self.root, PARENT, "driver.json"), "w", encoding="utf-8") as handle:
+            json.dump(claim, handle)
+        html = self.client.get(f"/runs/{PARENT}").get_data(as_text=True)
+        self.assertFalse(self.elsewhere_note_hidden(html))
+        self.assertIn(f'<span id="elsewhere-pid">{claim["pid"]}</span>', html)
 
 
 class FineWindowsWords(unittest.TestCase):
