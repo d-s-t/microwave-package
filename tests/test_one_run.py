@@ -11,6 +11,7 @@ import csv
 import logging
 import os
 import tempfile
+import threading
 import unittest
 from unittest import mock
 
@@ -85,6 +86,19 @@ class TestWhileTheEigenmodesAreBeingSolved(OneRun):
     def test_the_page_and_the_list_show_that_step_as_the_runs_own_progress(self):
         self.eigen.update_combo(self.combo, altium_status="done", step_status="done")
         self.run.set_stage("eigenmodes")
+        # The step is being solved, so something drives the run: a live pipeline
+        # thread in this process. Without one the run would read as stalled.
+        stop = threading.Event()
+        driver = threading.Thread(target=stop.wait, daemon=True)
+        driver.start()
+        webapp._active_threads[self.run.run_id] = driver
+
+        def finish():
+            stop.set()
+            driver.join(5)
+            webapp._active_threads.pop(self.run.run_id, None)
+        self.addCleanup(finish)
+        self.assertEqual(webapp._shown_run(Run.load(self.run.run_id)).run_id, self.eigen.run_id)
         self.assertEqual(webapp._shown_run(Run.load(self.run.run_id)).run_id, self.eigen.run_id)
         data = self.client.get(f"/runs/{self.run.run_id}/status.json").get_json()
         self.assertEqual(data["stage"], "eigenmodes")

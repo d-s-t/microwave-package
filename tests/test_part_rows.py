@@ -45,6 +45,20 @@ def run_row_tag(html, run_id):
     raise AssertionError(f"no row for {run_id} on the home page")
 
 
+def live_claim(test):
+    """A driver claim held by a live process other than this one, which lasts until
+    the test ends. A claim by this very process does not count (the thread is the
+    authority for this process), so tests that need a live driver use this."""
+    process = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"])
+
+    def stop():
+        process.kill()
+        process.wait()
+    test.addCleanup(stop)
+    return {"pid": process.pid, "started": psutil.Process(process.pid).create_time(),
+            "host": socket.gethostname()}
+
+
 def child_rows(html):
     """(part id, the row's opening tag, the row's whole markup) for each part row."""
     rows = []
@@ -437,7 +451,7 @@ class RunsShownByDefault(RunsOnDisk):
     going; the others fold behind "Show N more", which counts only those."""
 
     def write_plain(self, run_id, stage="complete"):
-        write_run(self.root, run_id, {"analysis_settings": analysis()}, state_of(stage, [done_combo()]))
+        return write_run(self.root, run_id, {"analysis_settings": analysis()}, state_of(stage, [done_combo()]))
 
     def test_a_run_that_is_going_shows_by_default_and_the_rest_fold(self):
         for run_id in ("run_20261029_120002", "run_20261029_120001", "run_20261029_120000"):
@@ -454,9 +468,12 @@ class RunsShownByDefault(RunsOnDisk):
         self.assertIn('id="runs-more">Show 2 more</button>', html)
 
     def test_a_run_whose_own_stage_is_going_is_active(self):
+        """Going = a live stage that something drives: here, a live driver process."""
         for run_id in ("run_20261029_120002", "run_20261029_120001", "run_20261029_120000"):
             self.write_plain(run_id)
-        self.write_plain("run_20261005_120000", stage="postprocessing")
+        going = self.write_plain("run_20261005_120000", stage="postprocessing")
+        with open(os.path.join(going, "driver.json"), "w", encoding="utf-8") as handle:
+            json.dump(live_claim(self), handle)
         self.write_plain("run_20261003_120000")
         html = self.client.get("/").get_data(as_text=True)
         self.assertNotIn("hidden", run_row_tag(html, "run_20261005_120000"))
@@ -472,14 +489,7 @@ class TheDriverOfAPartIsNotItsRunsDriver(RunsOnDisk):
     folder, and must not make the run it belongs to look driven elsewhere."""
 
     def live_claim(self):
-        process = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"])
-
-        def stop():
-            process.kill()
-            process.wait()
-        self.addCleanup(stop)
-        return {"pid": process.pid, "started": psutil.Process(process.pid).create_time(),
-                "host": socket.gethostname()}
+        return live_claim(self)
 
     def elsewhere_note_hidden(self, html):
         tag = re.search(r'<div class="note-box" id="elsewhere-note"([^>]*)>', html).group(1)

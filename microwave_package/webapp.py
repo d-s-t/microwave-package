@@ -101,6 +101,44 @@ def _stage_display(stage: Optional[str], failed: int = 0) -> dict:
     return {"label": label, "kind": kind}
 
 
+# What a stalled run was doing, in words: its live stage, as the stage text says it.
+_STALLED_WORDS = {
+    "eigenmodes": "solving eigenmodes",
+    "generating_and_queuing": "building geometry",
+    "geometry_ready": "waiting for the queue",
+    "monitoring": "analysing",
+    "postprocessing": "post-processing",
+    "plotting": "plotting results",
+}
+
+
+_LOOK_UP = object()
+
+
+def _going(run_id: str, stage: Optional[str], elsewhere=_LOOK_UP) -> bool:
+    """Whether a run is going: its stage is a live one, and something drives it --
+    its pipeline thread in this process, or another live process holding its driver
+    claim. `elsewhere` is the pid `_driven_elsewhere` found, when the caller already
+    has it; otherwise it is looked up here.
+
+    A run in a live stage that nothing drives is stalled: it is not going, whatever
+    its stage says. The run list and the run page both decide with this one rule.
+    """
+    if stage not in run_manager.ACTIVE_STAGES:
+        return False
+    if elsewhere is _LOOK_UP:
+        elsewhere = _driven_elsewhere(run_id)
+    return _is_running(run_id) or bool(elsewhere)
+
+
+def _run_stage_display(stage: Optional[str], failed: int, going: bool) -> dict:
+    """A run's stage pill. A live stage that nothing drives reads "Stalled", with
+    the stage it was in; every other stage reads as `_stage_display` says."""
+    if stage in run_manager.ACTIVE_STAGES and not going:
+        return {"label": f"Stalled (was {_STALLED_WORDS[stage]})", "kind": "muted"}
+    return _stage_display(stage, failed)
+
+
 def _parse_dt(value):
     if isinstance(value, _dt.datetime):
         return value
@@ -441,7 +479,7 @@ _FILTER_CHOICES = {
     "pedestal": [("flat", "No pedestal (flat floor)"), ("recess", "Pedestal recess")],
     "shape": [("square", "Square"), ("circle", "Circle")],
     "stage": [("complete", "Complete"), ("running", "Running"), ("failed", "Failed"),
-              ("stopped", "Stopped"), ("created", "Not started")],
+              ("stopped", "Stopped"), ("stalled", "Stalled"), ("created", "Not started")],
 }
 
 
@@ -533,9 +571,12 @@ def _runs_for_display(runs: list) -> list:
         started = _parse_dt(r.get("created_at")) or _run_id_dt(r["run_id"])
         date_text = _fmt_dt(started)
         name = r["label"] or date_text or r["run_id"]
+        stage = r.get("stage")
+        going = _going(r["run_id"], stage)
+        stalled = stage in run_manager.ACTIVE_STAGES and not going
         facets = run_facets.run_facets(
             r.get("facet_inputs") or {}, Run(r["run_id"]).run_dir,
-            stage=r.get("stage"), failed=r.get("failed", 0))
+            stage="stalled" if stalled else stage, failed=r.get("failed", 0))
         facets["search"] = " ".join(
             part for part in dict.fromkeys([name, r["label"], r["run_id"], date_text]) if part).lower()
         raw_parts = r.get("parts") or []
@@ -551,14 +592,16 @@ def _runs_for_display(runs: list) -> list:
             "open_parts": open_parts,
             "refined_done": sum(1 for part_view in part_views
                                 if part_view["kind"] == "refinement" and part_view["complete"]),
-            # Running: its own stage is doing work, or a part of it is going.
-            # Such a run is shown by default, whatever its place in the list.
-            "active": r.get("stage") in run_manager.ACTIVE_STAGES or any(
+            # Going: its live stage is driven, or a part of it is going. Such a run
+            # is shown by default, whatever its place in the list. A run in a live
+            # stage that nothing drives is stalled, and is not going.
+            "active": going or any(
                 part["state"] not in run_manager.DONE_PART_STATES for part in open_parts),
+            "stalled": stalled,
             "name": name,
             "date_text": date_text,
             "started_ago": _fmt_ago(started),
-            "stage_display": _stage_display(r.get("stage"), r.get("failed", 0)),
+            "stage_display": _run_stage_display(stage, r.get("failed", 0), going),
             "swept_text": ", ".join(f'{s["label"]} ×{s["n"]}' for s in r["swept"]),
             "has_results": os.path.isfile(
                 os.path.join(Run(r["run_id"]).plots_dir, plotting.RESULTS_FILENAME)),
@@ -1015,6 +1058,7 @@ def run_status(run_id):
     # is a good enough "finished at" for the elapsed time.
     duration = updated - started if (started and updated and stage in ("complete", "error")) else None
     elsewhere = _driven_elsewhere(run_id)
+    going = _going(run_id, stage, elsewhere)
 
     inputs = run_manager.facet_inputs(run.config)
     geometry = [
@@ -1043,7 +1087,7 @@ def run_status(run_id):
         driven_elsewhere=elsewhere,
         plot_exists=plot_exists,
         progress=progress,
-        stage_display=_stage_display(stage, progress["failed"]),
+        stage_display=_run_stage_display(stage, progress["failed"], going),
         started_text=_fmt_dt(started),
         updated_text=_fmt_ago(updated),
         duration_text=_fmt_dur(duration),
@@ -1333,10 +1377,11 @@ def run_status_json(run_id):
     shown = _shown_run(run)
     prog = shown.progress
     elsewhere = _driven_elsewhere(run_id)
+    stage = run.state.get("stage")
     return jsonify({
         "run_id": run.run_id,
-        "stage": run.state.get("stage"),
-        "stage_display": _stage_display(run.state.get("stage"), prog["failed"]),
+        "stage": stage,
+        "stage_display": _run_stage_display(stage, prog["failed"], _going(run_id, stage, elsewhere)),
         "progress": prog,
         "error": run.state.get("error"),
         "is_running": _is_running(run_id) or bool(elsewhere),
