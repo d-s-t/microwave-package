@@ -152,7 +152,7 @@
 {% macro run_row(r, extra=false) -%}
 {# The data-* words are what the filter bar matches (see the run list script). #}
 <tr class="run-row{% if extra %} run-extra{% endif %}" tabindex="0"
-    data-run-id="{{ r.run_id }}"
+    data-run-id="{{ r.run_id }}" data-active="{{ '1' if r.active else '0' }}"
     data-href="{{ url_for('run_status', run_id=r.run_id) }}"
     data-substrate="{{ r.facets.substrate }}" data-chip="{{ r.facets.chip }}"
     data-pedestal="{{ r.facets.pedestal }}" data-shape="{{ r.facets.shape }}"
@@ -209,20 +209,20 @@
   <span class="muted" id="compare-hint">Tick two or more runs to compare their results.</span>
   <button type="button" class="link-ish" id="compare-clear" hidden>clear</button>
 </form>
-{% set recent = 3 %}
+{# The newest few rows always show, and so does any run that is going: the
+   rest fold behind "Show N more" (see the run list script). #}
 <table class="runs">
 <thead><tr><th class="pick"><span class="visually-hidden">Compare</span></th>
   <th>Run</th><th>Swept</th><th>Progress</th><th>Stage</th></tr></thead>
 <tbody>
-{% for r in runs[:recent] %}{{ run_row(r) }}{% endfor %}
-{% for r in runs[recent:] %}{{ run_row(r, extra=true) }}{% endfor %}
+{% for r in runs %}{{ run_row(r, extra=(loop.index0 >= recent_rows and not r.active)) }}{% endfor %}
 <tr class="filter-empty" id="filter-empty" hidden><td colspan="5">No run matches these filters.
   <button type="button" class="mini" id="filter-empty-clear">Clear the filters</button></td></tr>
 </tbody>
-{% if runs|length > recent %}
-<tfoot id="runs-more-row">
+{% if runs|length > recent_rows %}
+<tfoot id="runs-more-row"{% if not runs_more %} hidden{% endif %}>
   <tr><td colspan="5">
-    <button type="button" class="mini" id="runs-more">Show {{ runs|length - recent }} more</button>
+    <button type="button" class="mini" id="runs-more">Show {{ runs_more }} more</button>
   </td></tr>
 </tfoot>
 {% endif %}
@@ -668,20 +668,32 @@
     return criteria;
   }
 
+  // With nothing filtered, a row shows by default when it is one of the newest
+  // few, or when its run is going (data-active, kept current by the poll). The
+  // others fold behind "Show N more", which counts only those.
+  var RECENT_ROWS = {{ recent_rows }};
+  function shownByDefault(row, index) {
+    return index < RECENT_ROWS || row.dataset.active === '1';
+  }
+
   function applyRunVisibility() {
     var criteria = readCriteria();
     var active = Object.keys(criteria).some(function (facet) { return criteria[facet] !== ''; });
-    // Clearing the filters collapses the list again, as it was on arrival.
+    // Clearing the filters folds the list again, as it was on arrival.
     if (filtering && !active) { expanded = false; }
     filtering = active;
     var shown = 0;
-    rows.forEach(function (row) {
+    var folded = 0;
+    rows.forEach(function (row, index) {
       var match = runMatches(row.dataset, criteria);
-      var collapsed = !active && row.classList.contains('run-extra') && !expanded;
+      var byDefault = shownByDefault(row, index);
+      if (!byDefault) { folded += 1; }
+      row.classList.toggle('run-extra', !byDefault);
       row.classList.toggle('filtered-out', !match);
-      row.hidden = !match || collapsed;
+      row.hidden = !match || (!active && !byDefault && !expanded);
       if (match) { shown += 1; }
     });
+    if (moreButton) { moreButton.textContent = 'Show ' + folded + ' more'; }
     // A part's row follows its run: hidden with it, by the filter or the collapse.
     var owners = {};
     rows.forEach(function (row) { owners[row.dataset.runId] = row; });
@@ -695,7 +707,7 @@
       : rows.length + noun;
     clearButton.hidden = !active;
     emptyRow.hidden = !(active && shown === 0);
-    if (foot) { foot.hidden = active || expanded; }
+    if (foot) { foot.hidden = active || expanded || folded === 0; }
     if (window.syncComparePicks) { window.syncComparePicks(); }
   }
 
@@ -980,6 +992,8 @@
       if (r.facets) {
         Object.keys(r.facets).forEach(function (facet) { row.dataset[facet] = r.facets[facet]; });
       }
+      // Whether the run is going decides whether it is shown by default.
+      row.dataset.active = r.active ? '1' : '0';
       syncParts(row, r);
       var d = row.querySelector('.progress i.d');
       var f = row.querySelector('.progress i.f');
