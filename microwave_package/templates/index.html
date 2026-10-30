@@ -170,6 +170,7 @@
     <a class="run-name" href="{{ url_for('run_status', run_id=r.run_id) }}">{{ r.name }}</a>{% if r.solver_status == "failed" %}<span class="solver-badge" title="A frequency sweep of this run did not converge: its S11 and S21 values between the solved frequencies are unreliable. Open the run for details.">Sweep did not converge</span>{% endif %}
     <span class="run-id">{% if r.label and r.date_text %}{{ r.date_text }} · {% endif %}{{ r.started_ago }}</span>
     {% if r.refined_done %}<a class="part-note" href="{{ url_for('run_status', run_id=r.run_id) }}#refine">+{{ r.refined_done }} refined solve{{ "" if r.refined_done == 1 else "s" }}</a>{% endif %}
+    {% if r.field_done %}<a class="part-note field-note" href="{{ url_for('run_status', run_id=r.run_id) }}#field-images">+{{ r.field_done }} field image{{ "" if r.field_done == 1 else "s" }}</a>{% endif %}
   </td>
   <td class="run-swept">{{ r.swept_text or "—" }}</td>
   <td>
@@ -986,7 +987,7 @@
     table.querySelectorAll('tr.part-row[data-owner="' + r.run_id + '"]').forEach(function (row) {
       if (!keep[row.dataset.partId]) { row.parentNode.removeChild(row); }
     });
-    var note = parentRow.querySelector('a.part-note');
+    var note = parentRow.querySelector('a.part-note:not(.field-note)');
     if (r.refined_done) {
       if (!note) {
         note = document.createElement('a');
@@ -997,6 +998,18 @@
       note.textContent = '+' + r.refined_done + ' refined solve' + (r.refined_done === 1 ? '' : 's');
     } else if (note) {
       note.parentNode.removeChild(note);
+    }
+    var fieldNote = parentRow.querySelector('a.part-note.field-note');
+    if (r.field_done) {
+      if (!fieldNote) {
+        fieldNote = document.createElement('a');
+        fieldNote.className = 'part-note field-note';
+        parentRow.querySelector('td:nth-child(2)').appendChild(fieldNote);
+      }
+      fieldNote.setAttribute('href', parentRow.dataset.href + '#field-images');
+      fieldNote.textContent = '+' + r.field_done + ' field image' + (r.field_done === 1 ? '' : 's');
+    } else if (fieldNote) {
+      fieldNote.parentNode.removeChild(fieldNote);
     }
   }
 

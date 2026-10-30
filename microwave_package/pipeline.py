@@ -37,7 +37,7 @@ from .design.sweep import (
 from .hfss import model_builder, registry
 from .hfss.driven import DRIVEN_MODAL, ports
 from .hfss.eigenmode import EIGENMODE
-from .workflow import companion, plotting, postprocess, resilient_io, results, stages
+from .workflow import companion, field_images, plotting, postprocess, resilient_io, results, stages
 from .workflow.monitor import monitor_run
 from .workflow import run_manager
 from .workflow.run_manager import Run
@@ -210,9 +210,9 @@ def _finish_prerequisite(run: Run, queue, log=logger.info, stop_event=None) -> b
     one down with it -- the driven run goes ahead with the coarse sweep,
     and says so.
     """
-    parent = companion.refined_parent(run)
+    parent = companion.refined_parent(run) or companion.field_parent(run)
     if parent is not None:
-        # A refinement starts from its parent's finished geometry.
+        # A refinement, or a field-image part, starts from its parent's finished geometry.
         companion.seed_geometry(run, parent, log=log)
         return True
     eigen = companion.prerequisite_of(run)
@@ -431,6 +431,19 @@ def _run_stages(run: Run, queue: "queue_common.QueuePaths", log=logger.info, sto
         queue_root=queue.root, log=log, stop_event=stop_event,
     )
     if _stopped(stop_event):
+        return
+
+    if field_images.is_field_part(analysis_settings):
+        # A field-image part has no sweep to plot. Its pictures are drawn from
+        # the fields the worker exported, and it fails only when none came out.
+        outcome = field_images.draw_run(run, log=log)
+        if outcome["drawn"]:
+            run.set_stage("complete")
+            log(f"Run {run.run_id} complete. Its field images are in {field_images.images_dir(run.run_dir)}")
+        else:
+            run.state["error"] = outcome["first_error"] or "The worker exported no field."
+            run.set_stage("error")
+            log(f"Run {run.run_id} failed: {run.state['error']}")
         return
 
     log("Building combined results and plotting...")

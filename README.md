@@ -553,6 +553,27 @@ the run's own fine window had it. So read broad and fine data as two
 independent solves where a feature is that sharp, and treat a feature that
 moves between them as mesh-limited, not as a measurement.
 
+### Field images at one frequency
+
+On a finished driven run's page, **Field images at one frequency** solves the
+chosen combinations once, at one frequency inside the run's band, and draws
+their fields: |E|, |H| or both. Each picture is a heat map on a log10 and a
+linear colour scale, grey where there is no field, for the middle of the board,
+0.5 mm above it, the middle of the cavity above the board, a vertical section
+along the line, and a coarse volume of the whole cavity. The planes are placed
+from the model's own bounding boxes, not typed in.
+
+The solve is a hidden part of the run, as a refinement is, on the same geometry:
+one adaptive solution at that frequency and no sweep, with port 1 driven at 1 W
+and port 2 at 0 W (if the project's excitations cannot be matched by name, the
+build log says so and the project's own excitations are used). The worker
+evaluates the fields after the solve (its
+`field_exports`, worker v0.2.0) and sends the raw numbers back. This PC draws
+the pictures into `runs/<part>/field_images/`, and reading them back needs no
+AEDT here, so the student licence's mesh limit does not apply. The part shows
+in the run list under its run, as "field image at 6.9003 GHz". Its drawing
+needs matplotlib (`requirements.txt`).
+
 ### The box's conductor model
 
 *Perfect E on box/lid_inside* stays on by default: the box is probably

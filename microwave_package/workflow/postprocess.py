@@ -30,7 +30,7 @@ from ansys_analyze_common import queue_common
 
 from ..hfss import registry
 from ..hfss.model_builder import aedt_version_for, close_project_safely, one_aedt_at_a_time
-from . import resilient_io
+from . import field_images, resilient_io
 
 logger = logging.getLogger("microwave_package")
 
@@ -316,6 +316,14 @@ def postprocess_run(
                 continue
 
             run.update_combo(combo_id, fetch_status="done")
+
+        if field_images.is_field_part(analysis_settings):
+            # Nothing is read out of a field part's project: its fields are the
+            # worker's own files, and they are drawn from those (see field_images).
+            field_images.record_outcome(run, combo_id, local_dir)
+            log(f"{combo_id}: field exports read back from {local_dir}.")
+            handled += 1
+            continue
 
         project_file = find_project_file(local_dir, task["project_file"])
         if project_file is None:

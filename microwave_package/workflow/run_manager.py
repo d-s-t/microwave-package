@@ -221,9 +221,13 @@ def progress_of(state: dict, analysis_settings: Optional[dict] = None) -> Dict[s
 
 def part_kind(config: dict) -> str:
     """What a hidden part is: "eigen" for a driven run's eigenmode run,
-    "refinement" for a refined solve, and "part" for anything else."""
+    "refinement" for a refined solve, "field" for a field-image part, and
+    "part" for anything else."""
     if config.get("part_role") == "eigen" or config.get("driven_run_id"):
         return "eigen"
+    # A field-image part is named by its frequency: it has no range to refine.
+    if (config.get("analysis_settings") or {}).get("field_frequency_ghz") is not None:
+        return "field"
     if config.get("refines_run_id"):
         return "refinement"
     return "part"
@@ -318,6 +322,7 @@ def part_record(run_id: str, config: dict, state: dict, updated: float = 0.0) ->
         "kind": kind,
         "state": part_state(state, analysis.get("use_altium", True)),
         "windows": (analysis.get("fine_windows_manual") or "") if kind == "refinement" else "",
+        "frequency_ghz": analysis.get("field_frequency_ghz") if kind == "field" else None,
         "done": counts["done"],
         "total": counts["total"],
         "failed": counts["failed"],

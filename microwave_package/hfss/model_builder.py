@@ -1439,6 +1439,9 @@ def build_model(
             except Exception:
                 pass
 
+        # The worker's field exports of a field-image part, planned from this
+        # model's own boxes once it is built (see hfss/driven/field_exports.py).
+        field_exports = None
         if solver.build_model is not None:
             # A solver that draws its own model (the line-impedance check):
             # nothing of the package is imported or rebuilt.
@@ -1508,6 +1511,20 @@ def build_model(
                 companion.settings_with_modes(run, combo_id, analysis_settings, log=log), log=log,
             )
 
+            if analysis_settings.get("field_frequency_ghz") is not None:
+                # The grids are placed on this model's boxes, so they are read
+                # now, while the project is open. A model whose fields cannot be
+                # placed is not saved or queued: its solve would have no exports.
+                from .driven import field_exports as driven_fields
+                try:
+                    field_exports = driven_fields.plan_for_model(
+                        hfss, objects_dict, port_names, analysis_settings["field_frequency_ghz"],
+                        analysis_settings.get("field_quantities") or [], log=log,
+                    )
+                except ValueError as exc:
+                    log(f"{combo_id}: {exc} Not saving or queueing this combination.")
+                    return
+
         hfss.save_project(project_path)
         closed = close_project_safely(hfss, log=log)
         hfss = None
@@ -1533,7 +1550,8 @@ def build_model(
             return
 
         object_names = _remember_built_model(
-            run, combo_id, project_path, object_names, port_names, log
+            run, combo_id, project_path, object_names, port_names, log,
+            field_exports=field_exports,
         )
         return object_names
 
@@ -1758,7 +1776,7 @@ def design_name_in_project(project_path: str) -> Optional[str]:
 
 
 def _remember_built_model(run, combo_id, project_path, object_names,
-                          port_names, log) -> Dict[str, str]:
+                          port_names, log, field_exports=None) -> Dict[str, str]:
     """Record that this combination's model exists and is ready to hand over.
 
     The body names are stored with it because the task needs them and
@@ -1771,13 +1789,19 @@ def _remember_built_model(run, combo_id, project_path, object_names,
     indexed by port number -- but a run that came out wrong is much
     easier to read back when its record says which ports were built and
     which were not.
+
+    A field-image part's field exports go in the same way: they are read
+    off the open model here, and queue_model builds the task from them later,
+    when the share is there.
     """
+    extra = {"field_exports": field_exports} if field_exports else {}
     run.update_combo(
         combo_id,
         model_status="built",
         project_path=project_path,
         object_names=object_names,
         ports=port_names,
+        **extra,
     )
     log(f"{combo_id}: model built and saved to {os.path.basename(project_path)}.")
     return object_names
@@ -1818,6 +1842,10 @@ def queue_model(
     relative_project_file = queue_common.copy_project_to_queue(queue, task_id, combo_dir)
     relative_output_dir = queue_common.project_dir_for_task(task_id)
 
+    # A field-image part's exports (see hfss/driven/field_exports.py). An
+    # ordinary task has none, and is built without the argument at all.
+    combo = run.state["combos"][combo_id]
+    field_kwargs = {"field_exports": combo["field_exports"]} if combo.get("field_exports") else {}
     task = queue_common.build_task(
         # What the worker should DO, which is the same whatever kind of
         # setup this is: open the project and run the setup(s) already in
@@ -1849,6 +1877,7 @@ def queue_model(
             "params": run.state["combos"][combo_id]["params"],
             "source_step_files": {k: os.path.abspath(p) for k, p in step_paths.items()},
         },
+        **field_kwargs,
     )
     # Under the run's queue lock, so a pause or a resume cannot land in the
     # middle of this. While the run is paused the task is written straight

@@ -147,6 +147,16 @@
   details.refine-section{margin-top:1.5rem}
   details.refine-section > summary{cursor:pointer}
   details.refine-section h2.refine-title{display:inline;margin:.3rem 0;font-size:1.25rem}
+  /* Field images: a picture per export, at the width of the page; a failed export in words. */
+  details.field-section{margin-top:1.5rem}
+  details.field-section > summary{cursor:pointer}
+  details.field-section h2.refine-title{display:inline;margin:.3rem 0;font-size:1.25rem}
+  .field-part h3{font-size:1.05rem;margin:1rem 0 .3rem}
+  .field-part h4{font-size:.95rem;margin:.8rem 0 .2rem}
+  figure.field-image{margin:.5rem 0 1rem}
+  figure.field-image img{display:block;max-width:100%;height:auto}
+  figure.field-image figcaption{font-size:.9em}
+  .field-error{color:var(--bad)}
 </style>
 {% if step_viewer_available %}
 <script type="importmap">
@@ -671,6 +681,69 @@
     {% endfor %}
   </div>
   <button type="submit" class="start-run">Refine</button>
+</form>
+{% endif %}
+</details>
+{% endif %}
+
+{% if field_panel %}
+{# Opens by itself while a field image part is going, or has finished lately (webapp._field_panel). #}
+<details class="collapsible field-section" id="field-images"{% if field_panel.open %} open{% endif %}>
+<summary><h2 class="refine-title">Field images</h2></summary>
+{% for part in field_panel.parts %}
+<div class="field-part">
+  <h3><span class="pill {{ part.tone }}">{{ part.word }}</span> {{ part.label }}
+    <span class="muted">&mdash; {{ part.combos | join(', ') }}</span></h3>
+  {% if part.running %}
+  <form method="post" action="{{ url_for('stop_run', run_id=part.run_id) }}" style="display:inline">
+    <button type="submit" class="mini">Stop</button></form>
+  {% elif not part.complete %}
+  <form method="post" action="{{ url_for('resume_run', run_id=part.run_id) }}" style="display:inline">
+    <button type="submit" class="mini">Resume</button></form>
+  {% endif %}
+  {% if part.error %}<pre class="muted">{{ part.error }}</pre>{% endif %}
+  {% for combo in part.results %}
+  <h4>{{ combo.combo_id }}</h4>
+  {% if combo.problem %}<p class="field-error">No fields came back for this combination: {{ combo.problem }}</p>{% endif %}
+  {% for export in combo.exports %}
+    {% if export.url %}
+    <figure class="field-image">
+      <img src="{{ export.url }}" alt="{{ export.symbol }} at {{ part.label }}: {{ export.place }}" loading="lazy">
+      <figcaption>{{ export.symbol }} at {{ part.label }}: {{ export.place }}</figcaption>
+    </figure>
+    {% else %}
+    <p class="field-error">{{ export.symbol }}, {{ export.place }}: the worker could not export it. {{ export.error }}</p>
+    {% if export.aedt_messages %}<pre class="muted">{{ export.aedt_messages | join("\n") }}</pre>{% endif %}
+    {% endif %}
+  {% endfor %}
+  {% else %}
+  <p class="muted">The worker has not sent its fields back yet.</p>
+  {% endfor %}
+</div>
+{% else %}
+<p class="muted">No field image part has been made from this run yet.</p>
+{% endfor %}
+{% if field_panel.combos %}
+<form method="post" action="{{ url_for('field_images_run', run_id=run.run_id) }}" class="field-form">
+  <h3>Field images at one frequency</h3>
+  <p class="muted">Pick a frequency inside this run's band, and what to draw. The part solves each ticked
+    combination once at that frequency, on the same geometry, and draws the fields the worker exports:
+    the middle of the board, 0.5 mm above it, the middle of the cavity above it, a vertical section
+    along the line, and a coarse volume. It takes about as long as one solve of this run.</p>
+  <label>Frequency (GHz)
+    <input type="number" step="any" name="frequency" required size="10"></label>
+  <div class="chips" style="margin:.5rem 0">
+    <strong>Quantities</strong>
+    <label class="chip"><input type="checkbox" name="quantity" value="E" checked>|E|</label>
+    <label class="chip"><input type="checkbox" name="quantity" value="H" checked>|H|</label>
+  </div>
+  <div class="chips" style="margin:.5rem 0">
+    <strong>Combinations</strong>
+    {% for combo in field_panel.combos %}
+    <label class="chip"><input type="checkbox" name="combo" value="{{ combo }}" checked>{{ combo }}</label>
+    {% endfor %}
+  </div>
+  <button type="submit" class="start-run">Make field images</button>
 </form>
 {% endif %}
 </details>
