@@ -28,6 +28,8 @@ import os
 import shutil
 from typing import Callable, Dict, List, Optional, Tuple
 
+from ansys_analyze_common import queue_common
+
 from ..hfss import registry
 from ..hfss.driven import DRIVEN_MODAL
 from ..hfss.eigenmode import EIGENMODE
@@ -213,6 +215,13 @@ def field_image_parts(run: Run) -> List[Run]:
     return found
 
 
+def field_exports_available() -> bool:
+    """Whether the queue schema this app runs with takes `field_exports` (the
+    ansys-analyze-common of worker v0.2.0). Without it a field part would build
+    its model in AEDT and only fail when it is queued."""
+    return hasattr(queue_common, "FIELD_EXPORT_NAME_PATTERN")
+
+
 def create_field_images(parent: Run, frequency_text: str, combo_ids: List[str],
                         quantities: List[str]) -> Run:
     """A new part of `parent` that solves `combo_ids` at one frequency, to draw their fields.
@@ -230,6 +239,9 @@ def create_field_images(parent: Run, frequency_text: str, combo_ids: List[str],
 
     Raises ValueError for anything that cannot be done, with the reason.
     """
+    if not field_exports_available():
+        raise ValueError("This app's ansys-analyze-common has no field exports: run "
+                         "pip install -r requirements.txt and restart.")
     settings = parent.analysis_settings
     if registry.solution_type_of(settings) != DRIVEN_MODAL:
         raise ValueError("Field images need a Driven Modal run: only it has fields at a frequency to draw.")

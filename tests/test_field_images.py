@@ -122,6 +122,29 @@ class RunsRoot(unittest.TestCase):
         return run
 
 
+def assume_field_exports(test):
+    """For the tests that make parts: the queue schema is taken to have field exports,
+    as worker v0.2.0's does. The refusal without them is tested on its own."""
+    patch = mock.patch.object(companion, "field_exports_available", return_value=True)
+    patch.start()
+    test.addCleanup(patch.stop)
+
+
+class FieldExportsNeedTheNewCommon(RunsRoot):
+    """A part is refused before any model is built when the queue schema has no field exports."""
+
+    def test_the_part_is_refused_and_no_run_is_made(self):
+        parent = self.driven_run()
+        combo = list(parent.state["combos"])[0]
+        with mock.patch.object(companion, "field_exports_available", return_value=False):
+            with self.assertRaisesRegex(ValueError, "pip install -r requirements.txt and restart"):
+                companion.create_field_images(parent, str(FREQUENCY), [combo], ["E"])
+        self.assertEqual(companion.field_image_parts(Run.load(parent.run_id)), [])
+
+    def test_the_check_reads_the_queue_schema_this_suite_runs_with(self):
+        self.assertEqual(companion.field_exports_available(), HAVE_FIELD_EXPORTS)
+
+
 class FieldFileFormat(RunsRoot):
     """What read_fld makes of the worker's file."""
 
@@ -304,6 +327,16 @@ class ExportEntries(unittest.TestCase):
         self.assertEqual(missing, [])
         self.assertEqual(sources, {"port_1:1": ["1W", "0deg"], "port_2:1": ["0W", "0deg"]})
 
+    def test_every_other_excitation_of_the_project_is_quiet_too(self):
+        # A connector's termination, or a lumped port on the launch plane, is an excitation as well.
+        sources, missing = fields_plan.sources_for(["port_1", "port_2"],
+                                                   ["port_1", "port_2", "term_connector_a:1"])
+        self.assertEqual(missing, [])
+        self.assertEqual(sources["port_1"], ["1W", "0deg"])
+        self.assertEqual(sources["port_2"], ["0W", "0deg"])
+        self.assertEqual(sources["term_connector_a:1"], ["0W", "0deg"])
+        self.assertEqual(sum(1 for value in sources.values() if value[0] == "1W"), 1)
+
     def test_sources_are_left_out_when_the_project_does_not_have_the_excitation(self):
         sources, missing = fields_plan.sources_for(["port_1", "port_2"], ["port_1:1"])
         self.assertEqual(sources, {})
@@ -401,6 +434,7 @@ class FieldParts(RunsRoot):
 
     def setUp(self):
         super().setUp()
+        assume_field_exports(self)
         self.parent = self.driven_run()
         self.combos = list(self.parent.state["combos"])
 
@@ -461,6 +495,7 @@ class WorkerOutput(RunsRoot):
 
     def setUp(self):
         super().setUp()
+        assume_field_exports(self)
         self.parent = self.driven_run()
         self.combo = list(self.parent.state["combos"])[0]
         self.child = companion.create_field_images(self.parent, str(FREQUENCY), [self.combo], ["E", "H"])
@@ -607,6 +642,7 @@ class FieldPartPages(RunsRoot):
 
     def setUp(self):
         super().setUp()
+        assume_field_exports(self)
         self.parent = self.driven_run()
         self.combo = list(self.parent.state["combos"])[0]
         self.client = webapp.app.test_client()

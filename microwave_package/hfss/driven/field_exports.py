@@ -56,26 +56,34 @@ def _check_box(role: str, box: Sequence[float]) -> None:
 
 
 def sources_for(port_names: Sequence[str], available: Sequence[str]) -> Tuple[Dict[str, list], List[str]]:
-    """The excitations that drive the field export: port 1 at 1 W, every other
-    port at 0 W, under the names AEDT gives them ("port_1:1").
+    """The excitations that drive the field export: port 1 at 1 W, and every
+    other excitation in the project at 0 W.
 
-    Returns `(sources, missing)`. The sources are only given when every port's
-    excitation is in the open project; otherwise `sources` is empty and
-    `missing` names the ports whose excitation was not found, so the export is
-    not sent with a name the project does not have.
+    "Every other" matters: on the launch, bonds and chip planes the lumped
+    ports and the connectors' terminations are excitations too, so leaving
+    them to AEDT's defaults would add their fields to port 1's. Names are the
+    ones AEDT reports for the open project ("port_1:1", or "port_1").
+
+    Returns `(sources, missing)`. The sources are only given when port 1's
+    excitation is in the project; otherwise `sources` is empty and `missing`
+    names the ports whose excitation was not found, so the export is not sent
+    with a name the project does not have.
     """
     if not port_names:
         return {}, []
-    present = set(available)
-    sources: Dict[str, list] = {}
-    missing: List[str] = []
-    for index, port in enumerate(port_names):
-        if f"{port}:1" not in present and port not in present:
-            missing.append(port)
-        sources[f"{port}:1"] = ["1W", "0deg"] if index == 0 else ["0W", "0deg"]
-    if missing:
+    names = list(dict.fromkeys(available))
+
+    def name_of(port: str) -> Optional[str]:
+        for candidate in (f"{port}:1", port):
+            if candidate in names:
+                return candidate
+        return None
+
+    missing = [port for port in port_names if name_of(port) is None]
+    driven = name_of(port_names[0])
+    if missing or driven is None:
         return {}, missing
-    return sources, []
+    return {name: ["1W", "0deg"] if name == driven else ["0W", "0deg"] for name in names}, []
 
 
 def plan_exports(boxes_mm: Dict[str, Sequence[float]], frequency_ghz: float,
