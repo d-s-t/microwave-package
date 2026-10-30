@@ -21,6 +21,40 @@ SETUP_NAME = "Setup_1"
 SWEEP_NAME = "Sweep_1"
 
 
+def ghz_text(ghz: float) -> str:
+    """A frequency as AEDT takes it, e.g. "6.9003GHz".
+
+    A field export names its solution frequency with this too, so the
+    export and the setup agree to the last digit.
+    """
+    return f"{float(ghz)}GHz"
+
+
+def _set_adaptive_props(setup, analysis_settings: dict, mesh_ghz: float) -> None:
+    setup.props["Frequency"] = ghz_text(mesh_ghz)
+    setup.props["MaxDeltaS"] = analysis_settings["max_delta_s"]
+    setup.props["MaximumPasses"] = analysis_settings["max_passes"]
+    setup.props["MinimumPasses"] = analysis_settings["min_passes"]
+    setup.props["MinimumConvergedPasses"] = analysis_settings["min_converged"]
+    setup.update()
+
+
+def create_field_setup(hfss, analysis_settings: dict, log=logger.info):
+    """The setup of a field-image part (see workflow/companion.py): one
+    adaptive solution at one frequency and no sweep.
+
+    The worker's field export needs a solved field at that frequency, and
+    an interpolating sweep keeps none, so this is the only setup it needs.
+    The adaptive pass is meshed at the same frequency, with the run's own
+    pass settings and ports.
+    """
+    frequency = float(analysis_settings["field_frequency_ghz"])
+    setup = hfss.create_setup(name=SETUP_NAME)
+    _set_adaptive_props(setup, analysis_settings, frequency)
+    log(f"Driven setup: adaptive at {ghz_text(frequency)}, no sweep (field images).")
+    return setup
+
+
 def create_setup(hfss, dimensions_txt_content: str, analysis_settings: dict,
                  log=logger.info):
     """Create the project's single DrivenModal setup and its frequency sweep.
@@ -41,7 +75,13 @@ def create_setup(hfss, dimensions_txt_content: str, analysis_settings: dict,
     `sweep_points` of them. That is what makes a few hundred reported
     points cost about the same as a few dozen, and it is the right choice
     for an S-parameter curve, which is smooth apart from its resonances.
+
+    A field-image part (`field_frequency_ghz` in the settings) has no band
+    at all, so it gets `create_field_setup` instead.
     """
+    if analysis_settings.get("field_frequency_ghz") is not None:
+        return create_field_setup(hfss, analysis_settings, log=log)
+
     f_start = float(analysis_settings["f_start_ghz"])
     f_stop = float(analysis_settings["f_stop_ghz"])
     if f_stop <= f_start:
@@ -55,12 +95,7 @@ def create_setup(hfss, dimensions_txt_content: str, analysis_settings: dict,
     mesh_ghz = windows.mesh_frequency_ghz(analysis_settings, modes)
 
     setup = hfss.create_setup(name=SETUP_NAME)
-    setup.props["Frequency"] = f"{mesh_ghz}GHz"
-    setup.props["MaxDeltaS"] = analysis_settings["max_delta_s"]
-    setup.props["MaximumPasses"] = analysis_settings["max_passes"]
-    setup.props["MinimumPasses"] = analysis_settings["min_passes"]
-    setup.props["MinimumConvergedPasses"] = analysis_settings["min_converged"]
-    setup.update()
+    _set_adaptive_props(setup, analysis_settings, mesh_ghz)
 
     broad = analysis_settings.get("coarse_sweep", "on") != "off"
     if broad:

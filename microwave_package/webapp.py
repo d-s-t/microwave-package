@@ -50,8 +50,8 @@ from .hfss.driven import windows as fine_windows
 # into that solver directly rather than the registry pretending every
 # solver has a view like it.
 from .hfss.eigenmode import fields as eigenmode_fields
-from .workflow import (compare, companion, manufacturing, plotting, queue_hold, resilient_io, run_facets,
-                       run_manager, smith, solver_status)
+from .workflow import (compare, companion, field_images, manufacturing, plotting, queue_hold, resilient_io,
+                       run_facets, run_manager, smith, solver_status)
 from .workflow.run_manager import Run
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s: %(message)s", stream=sys.stdout)
@@ -532,9 +532,17 @@ def _fine_windows_text(text: str) -> str:
     return f"{count} range{'' if count == 1 else 's'} {span}"
 
 
+def _field_word(state: str) -> str:
+    """A field image part's words: a refined solve's, with its own name."""
+    return _PART_WORDS.get(state, _PART_WORDS["starting"])[0].replace("refined solve", "field image")
+
+
 def _part_solver(part: dict) -> str:
-    """A refined solve's verdict (workflow/solver_status.py). An eigenmode part's
-    solve feeds no S-parameters, so it has none here."""
+    """A refined solve's verdict (workflow/solver_status.py). A field image part's
+    is read from its exports (workflow/field_images.py), failed when none came out.
+    An eigenmode part's solve feeds no S-parameters, so it has none here."""
+    if part["kind"] == "field":
+        return field_images.verdict(Run(part["run_id"]).run_dir)
     if part["kind"] != "refinement":
         return "unknown"
     done = part["state"] in run_manager.DONE_PART_STATES
@@ -544,18 +552,22 @@ def _part_solver(part: dict) -> str:
 def _part_view(owner_id: str, part: dict) -> dict:
     """One hidden part (run_manager.part_record) as the run list and its JSON
     show it: its label, what it is doing in words, its colour, its progress,
-    and the link its row follows -- the parent's refine section, or for an
-    eigenmode run the parent's settings, where its part is described. A refined
-    solve whose sweep did not converge says so on its row."""
+    and the link its row follows -- the parent's refine section, its field images,
+    or for an eigenmode run the parent's settings, where its part is described. A
+    refined solve whose sweep did not converge says so on its row."""
     eigen = part["kind"] == "eigen"
-    windows = "" if eigen else _fine_windows_text(part.get("windows", ""))
+    field = part["kind"] == "field"
+    windows = "" if eigen or field else _fine_windows_text(part.get("windows", ""))
     refined_word, eigen_word, tone = _PART_WORDS.get(part["state"], _PART_WORDS["starting"])
     if eigen:
         label, word = "eigenmodes", eigen_word
+    elif field:
+        label, word = f"field image at {part['frequency_ghz']} GHz", _field_word(part["state"])
     else:
         label = f"refined solve: {windows}" if windows else "refined solve"
         word = refined_word
     solver = _part_solver(part)
+    anchor = "settings" if eigen else "field-images" if field else "refine"
     return {
         "run_id": part["run_id"],
         "kind": part["kind"],
@@ -569,8 +581,9 @@ def _part_view(owner_id: str, part: dict) -> dict:
         "total": part["total"],
         "failed": part["failed"],
         "solver_status": solver,
-        "unconverged": solver == "failed",
-        "href": url_for("run_status", run_id=owner_id, _anchor="settings" if eigen else "refine"),
+        # The "sweep did not converge" badge is about a refined solve's sweep only.
+        "unconverged": part["kind"] == "refinement" and solver == "failed",
+        "href": url_for("run_status", run_id=owner_id, _anchor=anchor),
     }
 
 
@@ -610,6 +623,8 @@ def _runs_for_display(runs: list) -> list:
             "open_parts": open_parts,
             "refined_done": sum(1 for part_view in part_views
                                 if part_view["kind"] == "refinement" and part_view["complete"]),
+            "field_done": sum(1 for part_view in part_views
+                              if part_view["kind"] == "field" and part_view["complete"]),
             # Going: its live stage is driven, or a part of it is going. Such a run
             # is shown by default, whatever its place in the list. A run in a live
             # stage that nothing drives is stalled, and is not going.
@@ -1143,6 +1158,7 @@ def run_status(run_id):
         has_fine=df is not None and plotting.has_fine_data(df),
         views=plotting.VIEWS,
         refine=_refine_panel(run),
+        field_panel=_field_panel(run),
         rows=_combo_rows(shown),
         phases=_phase_meta(),
         is_running=_is_running(run_id) or bool(elsewhere),
@@ -1252,6 +1268,52 @@ def _refine_panel(run) -> Optional[dict]:
     }
 
 
+def _field_panel(run) -> Optional[dict]:
+    """What the run page's field images section needs, or None when the run has
+    nothing to draw from: it must be a driven run. Also lists the field image
+    parts already made from it, each with its pictures, or the worker's error for
+    an export that did not come out. The section opens by itself while a part is
+    going, or has finished in the last few days."""
+    if registry.solution_type_of(run.analysis_settings) != "DrivenModal":
+        return None
+    now = _dt.datetime.now().timestamp()
+    parts, opened = [], False
+    for child in companion.field_image_parts(run):
+        try:
+            updated = os.path.getmtime(child.state_path)
+        except OSError:
+            updated = 0.0
+        record = run_manager.part_record(child.run_id, child.config, child.state, updated)
+        view = _part_view(run.run_id, record)
+        going = record["state"] not in run_manager.DONE_PART_STATES
+        finished_lately = view["state"] in ("complete", "failed") and now - updated <= PART_RECENT_SECONDS
+        opened = opened or going or finished_lately
+        results = []
+        for combo in field_images.part_exports(field_images.read_summary(child.run_dir)):
+            exports = [{**export,
+                        "symbol": field_images.QUANTITY_NAMES.get(export.get("quantity"), ("", ""))[0],
+                        "url": url_for("field_image_file", run_id=child.run_id, filename=export["image"])
+                        if export.get("image") else None}
+                       for export in combo.get("exports", [])]
+            results.append({"combo_id": combo["combo_id"], "problem": combo.get("problem"), "exports": exports})
+        parts.append({
+            "run_id": child.run_id,
+            "label": view["label"],
+            "word": view["word"],
+            "tone": view["tone"],
+            "complete": view["complete"],
+            "running": _is_running(child.run_id) or bool(_driven_elsewhere(child.run_id)),
+            "error": child.state.get("error"),
+            "combos": list(child.state["combos"]),
+            "results": results,
+        })
+    return {
+        "combos": companion.refinable_combos(run),
+        "parts": parts,
+        "open": opened,
+    }
+
+
 @app.route("/runs/<run_id>/refine", methods=["POST"])
 def refine_run(run_id):
     """Start a refinement: re-solve chosen combinations of this driven run
@@ -1264,6 +1326,28 @@ def refine_run(run_id):
         return redirect(url_for("run_status", run_id=run_id, error=str(complaint)))
     _start_pipeline_thread(child)
     return redirect(url_for("run_status", run_id=run_id) + "#refine")
+
+
+@app.route("/runs/<run_id>/field-images", methods=["POST"])
+def field_images_run(run_id):
+    """Start a field image part: solve chosen combinations of this driven run at
+    one frequency, and draw their fields from what the worker exports."""
+    run = Run.load(run_id)
+    try:
+        child = companion.create_field_images(
+            run, request.form.get("frequency", ""), request.form.getlist("combo"),
+            request.form.getlist("quantity"))
+    except ValueError as complaint:
+        return redirect(url_for("run_status", run_id=run_id, error=str(complaint)) + "#field-images")
+    _start_pipeline_thread(child)
+    return redirect(url_for("run_status", run_id=run_id) + "#field-images")
+
+
+@app.route("/runs/<run_id>/field-images/<filename>")
+def field_image_file(run_id, filename):
+    """One picture a field image part drew (a PNG in its field_images folder)."""
+    run = Run.load(run_id)
+    return send_from_directory(field_images.images_dir(run.run_dir), filename, mimetype="image/png")
 
 
 @app.route("/runs/<run_id>/mode-ranges.json")

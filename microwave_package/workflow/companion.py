@@ -28,6 +28,8 @@ import os
 import shutil
 from typing import Callable, Dict, List, Optional, Tuple
 
+from ansys_analyze_common import queue_common
+
 from ..hfss import registry
 from ..hfss.driven import DRIVEN_MODAL
 from ..hfss.eigenmode import EIGENMODE
@@ -42,6 +44,10 @@ DRIVEN_LINK = "driven_run_id"
 # another driven run over narrower frequency ranges.
 REFINES_LINK = "refines_run_id"
 REFINED_BY = "refined_by"
+# A field-image part is a driven run that solves chosen combinations at one
+# frequency, to draw their fields (see create_field_images). Its parent lists
+# it under FIELD_PARTS; the part itself names its parent as `part_of`.
+FIELD_PARTS = "field_image_parts"
 
 # What a combination's geometry is, among the files in its folder. The
 # rest -- the AEDT project, the solved results -- belong to the solve and
@@ -69,10 +75,12 @@ def create_pair(sweep_params, analysis_settings: dict, parameter_defaults=None) 
 
 
 def parts_of(run: Run) -> List[Run]:
-    """The hidden runs that belong to this one: its eigenmode run and its
-    refinements. What deleting the run deletes along with it."""
+    """The hidden runs that belong to this one: its eigenmode run, its
+    refinements and its field-image parts. What deleting the run deletes along
+    with it."""
     found = []
-    for run_id in [run.config.get(EIGEN_LINK), *(run.config.get(REFINED_BY) or [])]:
+    for run_id in [run.config.get(EIGEN_LINK), *(run.config.get(REFINED_BY) or []),
+                   *(run.config.get(FIELD_PARTS) or [])]:
         if not run_id:
             continue
         try:
@@ -177,6 +185,103 @@ def create_refinement(parent: Run, ranges_text: str, combo_ids: List[str],
     child.config[REFINES_LINK] = parent.run_id
     child.save()
     parent.config[REFINED_BY] = [*parent.config.get(REFINED_BY, []), child.run_id]
+    parent.save_config()
+    return child
+
+
+def field_parent(run: Run) -> Optional[Run]:
+    """The driven run a field-image part draws its fields from, or None."""
+    if run.analysis_settings.get("field_frequency_ghz") is None:
+        return None
+    run_id = run.config.get("part_of")
+    if not run_id:
+        return None
+    try:
+        return Run.load(run_id)
+    except (OSError, ValueError, KeyError):
+        logger.warning("Run %s draws its fields from %s, which cannot be loaded.", run.run_id, run_id)
+        return None
+
+
+def field_image_parts(run: Run) -> List[Run]:
+    """The field-image parts made from this run, oldest first, skipping any
+    that have since been deleted."""
+    found = []
+    for run_id in run.config.get(FIELD_PARTS) or []:
+        try:
+            found.append(Run.load(run_id))
+        except (OSError, ValueError, KeyError):
+            continue
+    return found
+
+
+def field_exports_available() -> bool:
+    """Whether the queue schema this app runs with takes `field_exports` (the
+    ansys-analyze-common of worker v0.2.0). Without it a field part would build
+    its model in AEDT and only fail when it is queued."""
+    return hasattr(queue_common, "FIELD_EXPORT_NAME_PATTERN")
+
+
+def create_field_images(parent: Run, frequency_text: str, combo_ids: List[str],
+                        quantities: List[str]) -> Run:
+    """A new part of `parent` that solves `combo_ids` at one frequency, to draw their fields.
+
+    `frequency_text` is the frequency in GHz and must lie inside the parent's
+    band. `quantities` is any of "E" (|E|) and "H" (|H|). The new part:
+
+      * has the same geometry (it borrows the parent's, see `seed_geometry`)
+        and the same settings and materials, so it is the same device;
+      * solves ONE adaptive frequency and no sweep (see hfss/driven/setup.py),
+        meshed at that frequency, so its fields there are as good as the run
+        can give;
+      * is linked to the parent (`part_of`, and the parent's FIELD_PARTS), so
+        it is listed under the parent's row and goes with it.
+
+    Raises ValueError for anything that cannot be done, with the reason.
+    """
+    if not field_exports_available():
+        raise ValueError("This app's ansys-analyze-common has no field exports: run "
+                         "pip install -r requirements.txt and restart.")
+    settings = parent.analysis_settings
+    if registry.solution_type_of(settings) != DRIVEN_MODAL:
+        raise ValueError("Field images need a Driven Modal run: only it has fields at a frequency to draw.")
+    wanted = list(dict.fromkeys(combo_ids))
+    if not wanted:
+        raise ValueError("Pick at least one combination.")
+    available = set(refinable_combos(parent))
+    missing = [c for c in wanted if c not in available]
+    if missing:
+        raise ValueError(f"These combinations have no results yet: {', '.join(missing)}.")
+    low, high = float(settings["f_start_ghz"]), float(settings["f_stop_ghz"])
+    try:
+        frequency = float(str(frequency_text).strip())
+    except ValueError:
+        raise ValueError("Give the frequency in GHz, as a number.") from None
+    if not (math.isfinite(frequency) and low <= frequency <= high):
+        raise ValueError(f"The frequency must lie inside the run's band, {low:g} to {high:g} GHz.")
+    chosen = list(dict.fromkeys(q.strip().upper() for q in quantities))
+    if not chosen or any(q not in ("E", "H") for q in chosen):
+        raise ValueError("Tick at least one of |E| and |H|.")
+
+    child_settings = {
+        **settings,
+        "coarse_sweep": "off",
+        "fine_windows": "off",
+        "fine_windows_manual": "",
+        "f_start_ghz": frequency,
+        "f_stop_ghz": frequency,
+        "adapt_ghz": frequency,
+        "field_frequency_ghz": frequency,
+        "field_quantities": chosen,
+    }
+    sweep_params = [SweepParameter(name=p["name"], values=p["values"])
+                    for p in parent.config.get("sweep_params", [])]
+    child = Run.create(sweep_params, child_settings, parent.parameter_defaults,
+                       part_of=parent, role=f"field{len(parent.config.get(FIELD_PARTS) or []) + 1}")
+    keep = set(wanted)
+    child.state["combos"] = {c: v for c, v in child.state["combos"].items() if c in keep}
+    child.save()
+    parent.config[FIELD_PARTS] = [*parent.config.get(FIELD_PARTS, []), child.run_id]
     parent.save_config()
     return child
 
