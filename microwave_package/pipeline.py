@@ -255,6 +255,19 @@ def _finish_prerequisite(run: Run, queue, log=logger.info, stop_event=None) -> b
     return True
 
 
+def _finish_field_part(run: Run, log=logger.info) -> None:
+    """The end of a field image part's run. It has no sweep to plot: its pictures
+    are drawn from the fields the worker exported, and it fails only when none came out."""
+    outcome = field_images.draw_run(run, log=log)
+    if outcome["drawn"]:
+        run.set_stage("complete")
+        log(f"Run {run.run_id} complete. Its field images are in {field_images.images_dir(run.run_dir)}")
+    else:
+        run.state["error"] = outcome["first_error"] or "The worker exported no field."
+        run.set_stage("error")
+        log(f"Run {run.run_id} failed: {run.state['error']}")
+
+
 def _run_stages(run: Run, queue: "queue_common.QueuePaths", log=logger.info, stop_event=None) -> None:
     analysis_settings = run.config["analysis_settings"]
     parameter_defaults = run.config.get("parameter_defaults", {})
@@ -434,16 +447,7 @@ def _run_stages(run: Run, queue: "queue_common.QueuePaths", log=logger.info, sto
         return
 
     if field_images.is_field_part(analysis_settings):
-        # A field-image part has no sweep to plot. Its pictures are drawn from
-        # the fields the worker exported, and it fails only when none came out.
-        outcome = field_images.draw_run(run, log=log)
-        if outcome["drawn"]:
-            run.set_stage("complete")
-            log(f"Run {run.run_id} complete. Its field images are in {field_images.images_dir(run.run_dir)}")
-        else:
-            run.state["error"] = outcome["first_error"] or "The worker exported no field."
-            run.set_stage("error")
-            log(f"Run {run.run_id} failed: {run.state['error']}")
+        _finish_field_part(run, log=log)
         return
 
     log("Building combined results and plotting...")

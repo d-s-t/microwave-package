@@ -545,6 +545,39 @@ class WorkerOutput(RunsRoot):
         self.assertTrue(os.path.isfile(os.path.join(destination, "fields", "substrate_mid_E.fld")))
         self.assertTrue(os.path.isfile(os.path.join(destination, "result.json")))
 
+    def test_a_field_part_is_not_read_out_of_its_project(self):
+        self.child.update_combo(self.combo, queue_status="done", task_id="driven_task")
+        worker_output(self.combo_dir(), {"substrate_mid_E": {"ok": True, "rows": plane_rows()}})
+        task = {"task_id": "driven_task", "project_file": "projects/driven_task/p.aedt",
+                "output_dir": "projects/driven_task", "objects": {}, "post_processing": []}
+        with mock.patch.object(postprocess.queue_common, "read_task", return_value=task), \
+                mock.patch.object(postprocess.queue_common, "resolve_path", return_value=self.combo_dir()), \
+                mock.patch.object(postprocess, "bring_task_local", return_value=self.combo_dir()), \
+                mock.patch.object(postprocess, "postprocess_task",
+                                  side_effect=AssertionError("no project may be opened for a field part")):
+            handled = postprocess.postprocess_run(self.child, None, self.child.analysis_settings,
+                                                  log=lambda _m: None)
+        self.assertEqual(handled, 1)
+        self.assertEqual(self.child.state["combos"][self.combo]["post_status"], "done")
+
+    @NEEDS_MATPLOTLIB
+    def test_the_part_completes_when_an_export_came_out(self):
+        self.child.state["stage"] = "postprocessing"
+        worker_output(self.combo_dir(), {"substrate_mid_E": {"ok": True, "rows": plane_rows()},
+                                         "section_xy_E": {"ok": False, "error": "edit_sources failed"}})
+        field_images.record_outcome(self.child, self.combo, self.combo_dir())
+        pipeline._finish_field_part(self.child, log=lambda _m: None)
+        self.assertEqual(Run.load(self.child.run_id).state["stage"], "complete")
+
+    @NEEDS_MATPLOTLIB
+    def test_the_part_fails_with_the_workers_error_when_no_export_came_out(self):
+        worker_output(self.combo_dir(), {"substrate_mid_E": {"ok": False, "error": "edit_sources failed"}})
+        field_images.record_outcome(self.child, self.combo, self.combo_dir())
+        pipeline._finish_field_part(self.child, log=lambda _m: None)
+        state = Run.load(self.child.run_id).state
+        self.assertEqual(state["stage"], "error")
+        self.assertEqual(state["error"], "edit_sources failed")
+
     def test_bringing_the_task_back_keeps_its_fields_and_its_result_in_the_part(self):
         root = tempfile.mkdtemp(prefix="queue_")
         self.addCleanup(shutil.rmtree, root, True)
