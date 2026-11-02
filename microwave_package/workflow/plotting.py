@@ -388,8 +388,8 @@ def figure_html(
 
     `mode_markers` -- `{combo_id, freq_ghz, q}` per eigenmode, from the
     Eigenmode run a driven run is paired with -- are drawn as triangles
-    along the foot of an S-parameter curve, one per mode of the
-    combinations shown, so a dip can be read against the resonance it
+    in a strip of their own under an S-parameter curve, one per mode of
+    the combinations shown, so a dip can be read against the resonance it
     belongs to.
     """
     options = [o["value"] for o in axis_options(df, sweep_param_names)]
@@ -462,9 +462,6 @@ def figure_html(
         plot_bgcolor="rgba(0,0,0,0)",
         margin=dict(l=60, r=30, t=30, b=60),
     )
-    if as_curve and mode_markers:
-        _add_mode_markers(figure, df, y, mode_markers, dark)
-
     if compared:
         # Run names are whatever their runs were called, often a sentence:
         # a legend beside the plot would take half its width, so it goes
@@ -494,6 +491,11 @@ def figure_html(
             # -- which is never true of a swept dimension.
             figure.update_layout(scattermode="group", scattergap=0.55)
 
+    # Last: the run-letter ticks above go on every y axis, and the strip has
+    # a y axis of its own that they must not reach.
+    if as_curve and mode_markers:
+        _add_mode_markers(figure, df, mode_markers, dark)
+
     if not plotlyjs_src:
         return figure.to_html(include_plotlyjs=True, full_html=True)
 
@@ -515,12 +517,24 @@ def figure_html(
     )
 
 
-def _add_mode_markers(figure, df: pd.DataFrame, y: str, markers: List[Dict], dark: bool) -> None:
-    """Eigenmodes as triangles at the bottom of the plotted curves.
+# The eigenmode strip under an S-parameter plot: its share of the figure's
+# height, and the gap between it and the plot above.
+MODE_STRIP_HEIGHT = 0.10
+MODE_STRIP_GAP = 0.03
+
+
+def _add_mode_markers(figure, df: pd.DataFrame, markers: List[Dict], dark: bool) -> None:
+    """Eigenmodes as triangles in a strip under the plotted curves.
 
     Only the combinations in `df` (so a filter hides their modes with
     them), and only inside the frequency range being drawn. Where
     combinations share a mode frequency to the kHz it is drawn once.
+
+    The strip is a second row of the same figure, sharing the curves'
+    frequency axis, with its own y axis fixed at 0..1 and `fixedrange`:
+    zooming, panning or autoscaling the S-parameters in y cannot move a
+    triangle out of view. The frequency labels move under the strip.
+    Nothing changes when no mode is drawn, so there is no empty strip.
     """
     shown = set(df["combo_id"]) if "combo_id" in df.columns else None
     low, high = df["freq_ghz"].min(), df["freq_ghz"].max()
@@ -539,8 +553,17 @@ def _add_mode_markers(figure, df: pd.DataFrame, y: str, markers: List[Dict], dar
                      + f" ({marker['combo_id']})")
     if not xs:
         return
+    label = figure.layout.xaxis.title.text
+    figure.update_layout(
+        xaxis=dict(showticklabels=False, ticks="", title_text=None),
+        yaxis=dict(domain=[MODE_STRIP_HEIGHT + MODE_STRIP_GAP, 1]),
+        xaxis2=dict(matches="x", anchor="y2", title_text=label),
+        yaxis2=dict(domain=[0, MODE_STRIP_HEIGHT], anchor="x2", range=[0, 1], fixedrange=True,
+                    showgrid=False, zeroline=False, ticks="", tickvals=[0.5],
+                    ticktext=["eigenmodes"], tickfont=dict(size=10)),
+    )
     figure.add_trace(go.Scatter(
-        x=xs, y=[float(df[y].min())] * len(xs), mode="markers", name="Eigenmodes",
+        x=xs, y=[0.5] * len(xs), xaxis="x2", yaxis="y2", mode="markers", name="Eigenmodes",
         text=texts, hoverinfo="text",
         marker=dict(symbol="triangle-up", size=9, color="#e9a100" if dark else "#b47600",
                     line=dict(width=1, color=_SURFACE["dark" if dark else "light"])),

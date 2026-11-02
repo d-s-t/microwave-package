@@ -9,8 +9,10 @@ eigenmode one first, borrows its geometry, and reads its modes.
 Run: python -m unittest discover -s tests
 """
 import csv
+import json
 import logging
 import os
+import re
 import tempfile
 import unittest
 from unittest import mock
@@ -284,6 +286,18 @@ class TestTheWebForm(RunsRoot):
         self.assertIn("exaggerates dip", page)
 
 
+def figure_of(page):
+    """The traces and layout a page hands to plotly.js: the figure is the
+    last `Plotly.newPlot(id, traces, layout, config)` call in the page."""
+    decoder = json.JSONDecoder()
+    start = page.rindex("Plotly.newPlot(") + len("Plotly.newPlot(")
+    at = re.compile(r'\s*"[^"]*",\s*').match(page, start).end()
+    traces, at = decoder.raw_decode(page, at)
+    at = re.compile(r",\s*").match(page, at).end()
+    layout, _ = decoder.raw_decode(page, at)
+    return traces, layout
+
+
 class TestModeMarkersOnThePlot(unittest.TestCase):
     def frame(self):
         rows = []
@@ -294,6 +308,14 @@ class TestModeMarkersOnThePlot(unittest.TestCase):
 
     def markers(self, figure_html_text):
         return figure_html_text.count("eigenmode ")
+
+    def figure(self, frame, markers, dark=False):
+        page = plotting.figure_html(frame, [], x="freq_ghz", y="s21_db", solution_type="DrivenModal",
+                                    mode_markers=markers, dark=dark, plotlyjs_src="plotly.js")
+        return figure_of(page)
+
+    def eigenmode_trace(self, traces):
+        return next(t for t in traces if t.get("name") == "Eigenmodes")
 
     def test_modes_in_band_for_the_combinations_shown_become_markers(self):
         markers = [{"combo_id": "a", "freq_ghz": 5.0, "q": 100.0},
@@ -324,6 +346,56 @@ class TestModeMarkersOnThePlot(unittest.TestCase):
         html = plotting.figure_html(frame, [], x="combo_id", y="s21_db",
                                     solution_type="DrivenModal", mode_markers=markers)
         self.assertNotIn("Eigenmodes", html)
+
+    def test_the_eigenmodes_get_a_strip_under_the_plot(self):
+        traces, layout = self.figure(self.frame(), [{"combo_id": "a", "freq_ghz": 5.0, "q": 100.0}])
+        strip, plot = layout["yaxis2"], layout["yaxis"]
+        self.assertLessEqual(strip["domain"][1], plot["domain"][0])     # below the plot, not over it
+        self.assertEqual(plot["domain"][1], 1)
+        self.assertIs(strip["fixedrange"], True)                        # no y zoom, pan or autoscale
+        self.assertEqual(strip["range"], [0, 1])
+        self.assertEqual(layout["xaxis2"]["matches"], "x")              # x zoom and pan move both
+        self.assertEqual(layout["xaxis2"]["title"]["text"], plotting.label_for_column("freq_ghz", []))
+        self.assertNotIn("text", layout["xaxis"]["title"])              # the label moved under the strip
+
+    def test_the_markers_sit_on_the_strip_and_keep_their_hover_text(self):
+        markers = [{"combo_id": "a", "freq_ghz": 5.0, "q": 100.0},
+                   {"combo_id": "b", "freq_ghz": 5.5, "q": None}]
+        traces, _ = self.figure(self.frame(), markers)
+        modes = self.eigenmode_trace(traces)
+        self.assertEqual((modes["xaxis"], modes["yaxis"]), ("x2", "y2"))
+        self.assertEqual(modes["y"], [0.5, 0.5])
+        self.assertEqual(modes["text"], ["eigenmode 5.0000 GHz, Q 100 (a)", "eigenmode 5.5000 GHz (b)"])
+        self.assertEqual(modes["hoverinfo"], "text")
+        for trace in traces:
+            if trace is not modes:
+                self.assertEqual(trace.get("yaxis", "y"), "y")          # the curves stay on the plot
+
+    def test_the_strip_is_drawn_in_the_dark_theme_too(self):
+        traces, layout = self.figure(self.frame(), [{"combo_id": "a", "freq_ghz": 5.0, "q": 100.0}], dark=True)
+        self.assertIn("yaxis2", layout)
+        self.assertEqual(self.eigenmode_trace(traces)["marker"]["color"], "#e9a100")
+
+    def test_no_eigenmodes_means_no_strip(self):
+        traces, layout = self.figure(self.frame(), None)
+        self.assertNotIn("yaxis2", layout)
+        self.assertNotIn("xaxis2", layout)
+        self.assertNotIn("Eigenmodes", [t.get("name") for t in traces])
+        self.assertEqual(layout["xaxis"]["title"]["text"], plotting.label_for_column("freq_ghz", []))
+
+    def test_modes_outside_the_band_mean_no_strip(self):
+        traces, layout = self.figure(self.frame(), [{"combo_id": "a", "freq_ghz": 40.0, "q": 100.0}])
+        self.assertNotIn("yaxis2", layout)
+        self.assertNotIn("Eigenmodes", [t.get("name") for t in traces])
+
+    def test_the_strip_follows_the_combinations_shown(self):
+        frame = self.frame()
+        markers = [{"combo_id": "a", "freq_ghz": 5.0, "q": 100.0},
+                   {"combo_id": "b", "freq_ghz": 5.5, "q": 100.0}]
+        traces, _ = self.figure(frame[frame["combo_id"] == "a"], markers)
+        self.assertEqual(self.eigenmode_trace(traces)["text"], ["eigenmode 5.0000 GHz, Q 100 (a)"])
+        traces, layout = self.figure(frame[frame["combo_id"] == "b"], [markers[0]])
+        self.assertNotIn("yaxis2", layout)                              # its only mode is filtered out
 
 
 if __name__ == "__main__":

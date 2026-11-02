@@ -517,7 +517,8 @@ them with it.
   (as before); the other choice is just above the highest eigenmode in
   the band.
 - **Results.** The S-parameter plot against frequency marks the eigenmodes
-  as triangles along its foot (they follow the combination filter; hover for
+  as triangles in a strip of their own under it, which stays in view
+  whatever the y zoom (they follow the combination filter; hover for
   frequency and Q), and an *Eigenmodes* table under it lists them, with a
   CSV. The chip-field heatmaps come from the eigenmode step too.
 
