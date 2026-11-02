@@ -57,7 +57,10 @@ the chip plane does not is made outside the die.
 
 No option changes the board. The connectors are placed either way and
 the cavity is the same cavity; beyond the excitation, the only difference
-is which bore ports are reported and which are terminations.
+is which bore ports are reported and which are terminations. An eigenmode
+run has no ports at all, so its optional connector termination
+(`connector_termination_ohm`) is an impedance boundary across the same bore,
+built by `eigenmode/terminations.py`, rather than a port.
 
 Port 1 is always the -x end of the board and port 2 the +x end, matching
 `place_connectors`' own index-to-end convention, so S21 always runs the
@@ -268,10 +271,7 @@ def _connector_wave_ports(hfss, impedance: float, log,
             )
         port_name = name_for(index)
         air = _bore_section(hfss, bead, centre, vacuum, port_name, log=log)
-        face = max(
-            (f for f in hfss.modeler[air].faces if f.is_planar),
-            key=lambda f: f.center[UP],
-        )
+        face = _bore_top_face(hfss, air)
         inner, outer = _annulus_radii(face, air, log=log)
         start, stop = _radial_integration_line(face, inner, outer)
         try:
@@ -299,7 +299,15 @@ def _connector_wave_ports(hfss, impedance: float, log,
     return names
 
 
-def _bore_section(hfss, bead: str, centre: str, vacuum, port_name: str, log) -> str:
+def _bore_top_face(hfss, air: str):
+    """The air bore's highest flat face: where its port, or its termination, goes."""
+    return max(
+        (f for f in hfss.modeler[air].faces if f.is_planar),
+        key=lambda f: f.center[UP],
+    )
+
+
+def _bore_section(hfss, bead: str, centre: str, vacuum, port_name: str, log, cap: bool = True) -> str:
     """Model the air bore just above the bead and close it; return the air body.
 
     Two annuli stacked on the bead's top face, both cut to fit between
@@ -322,17 +330,21 @@ def _bore_section(hfss, bead: str, centre: str, vacuum, port_name: str, log) -> 
     so the port sees a uniform air coax, and the bead's step out to Ø4.4
     is BORE_PORT_HEIGHT below it -- inside the measurement, as the
     connector transition is meant to be.
+
+    With `cap=False` the bore is left open at the top, so that top face is
+    the boundary of the solved region. An eigenmode termination puts an
+    impedance boundary on it instead (eigenmode/terminations.py).
     """
     top = _mating_end_face(hfss, bead).center[UP]
     along, across = _connector_axis(hfss, bead, top)
     outer = f"connector_{bead.split('_')[1]}_outer"
     conductors = [body for body in (centre, outer) if body in hfss.modeler.object_names]
 
+    layers = [(f"{port_name}_bore", top, BORE_PORT_HEIGHT, "vacuum")]
+    if cap:
+        layers.append((f"{port_name}_cap", top + BORE_PORT_HEIGHT, BORE_CAP_HEIGHT, "pec"))
     bodies = []
-    for name, bottom, height, material in (
-        (f"{port_name}_bore", top, BORE_PORT_HEIGHT, "vacuum"),
-        (f"{port_name}_cap", top + BORE_PORT_HEIGHT, BORE_CAP_HEIGHT, "pec"),
-    ):
+    for name, bottom, height, material in layers:
         # Drawn wider than the bore and cut back by both conductors, so
         # each meets the pin and the bore wall exactly -- no sliver
         # between them and no metal overlap, whatever the true radii are.
@@ -341,16 +353,14 @@ def _bore_section(hfss, bead: str, centre: str, vacuum, port_name: str, log) -> 
             height=height, name=name, material=material,
         )
         if not body:
-            raise PortPlacementError(f"Could not create {name} for the wave port.")
+            raise PortPlacementError(f"Could not create {name} for the connector's air bore.")
         body.solve_inside = material != "pec"
         hfss.modeler.subtract(name, conductors, keep_originals=True)
         bodies.append(name)
     if vacuum is not None:
         hfss.modeler.subtract(vacuum, bodies, keep_originals=True)
-    log(
-        f"{bodies[0]}: air bore from {top:.3f} to {top + BORE_PORT_HEIGHT:.3f} mm, "
-        f"closed by {bodies[1]} above it."
-    )
+    closing = f"closed by {bodies[1]} above it" if cap else "open at its top"
+    log(f"{bodies[0]}: air bore from {top:.3f} to {top + BORE_PORT_HEIGHT:.3f} mm, {closing}.")
     return bodies[0]
 
 

@@ -1497,10 +1497,7 @@ def build_model(
             try:
                 port_names = solver.place_ports(hfss, layout, analysis_settings, log=log)
             except registry.PortPlacementError as exc:
-                log(
-                    f"{combo_id}: {exc} Not saving or queueing this combination -- a driven "
-                    "model with no ports has nothing to excite and no S-matrix to read."
-                )
+                log(f"{combo_id}: {exc} Not saving or queueing this combination.")
                 return
 
             # A driven run paired with an Eigenmode run gets that run's modes for

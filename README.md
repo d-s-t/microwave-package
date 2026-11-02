@@ -428,6 +428,13 @@ even a perfect line reads S11 = S21 = -6 dB at low frequency. They are for seein
 where a feature comes from -- a notch the connector plane shows and the chip plane
 does not is made outside the die.
 
+An Eigenmode run has no ports, so by default HFSS closes each connector's top as its
+perfect-E outer boundary, which shorts the pin to its shell. `connector_termination_ohm`
+(`--setting connector_termination_ohm=50` on the command line; "Connector termination"
+in the form) puts a resistance across each connector's air bore instead, as an
+impedance boundary, so the modes are found with each connector terminated. 50 is the
+driven runs' reference impedance; 0, the default, is off.
+
 Without `--no-pair` the command above solves both: an Eigenmode run first
 and then the Driven run, which gets fine frequency windows around the
 modes (`--no-pair` solves just the `--solution-type`). `--fine-windows

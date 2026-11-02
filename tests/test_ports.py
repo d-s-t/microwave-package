@@ -171,8 +171,9 @@ DRIVEN = {"solution_type": DRIVEN_MODAL, "port_impedance_ohm": 50.0}
 # --- an eigenmode run has no ports ------------------------------------
 
 class TestEigenmodeRunsGetNoPorts(unittest.TestCase):
-    """Not this module's doing: the eigenmode solver simply does not fill
-    `place_ports` in, so the registry's do-nothing default stands."""
+    """The eigenmode solver's `place_ports` is the connector termination, which
+    is off unless `connector_termination_ohm` is set (see
+    tests/test_eigen_terminations.py), so with the default it builds nothing."""
 
     def test_the_eigenmode_solver_builds_nothing(self):
         hfss = bead_model()
