@@ -15,7 +15,7 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional
 
 from ..registry import Solver, register
-from . import results, setup
+from . import results, setup, terminations
 
 EIGENMODE = "Eigenmode"
 
@@ -28,6 +28,15 @@ FIELDS: List[Dict[str, Any]] = [
         "help": "The cavity's estimated lowest resonance is multiplied by "
                 "this to pick MinimumFrequency, so the sweep starts below "
                 "the first real mode rather than on top of it.",
+    },
+    {
+        "name": "connector_termination_ohm", "label": "Connector termination (ohm, 0 = off)",
+        "kind": "float", "default": 0.0,
+        "help": "Terminates each SMP connector in this resistance across its air bore, "
+                "so the modes are found with the connector matched rather than shorted. "
+                "0 leaves the bore's top as HFSS's perfect-E outer boundary, which shorts "
+                "each pin to its shell. 50 is the reference impedance the driven runs "
+                "terminate in.",
     },
 ]
 
@@ -88,6 +97,7 @@ SOLVER = register(Solver(
     fields=FIELDS,
     result_fields=RESULT_FIELDS,
     create_setup=setup.create_setup,
+    place_ports=terminations.place_terminations,
     read_results=results.read_results,
     post_processing_ops=post_processing_ops,
     default_axes=default_axes,
