@@ -1,0 +1,55 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[utf8]{inputenc}
+\usepackage[english]{babel}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{booktabs} % For professional tables
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{geometry}
+\usepackage{enumitem}
+\usepackage{graphicx}
+
+\geometry{margin=0.8in}
+
+\usepackage{calc}
+
+\newcommand{\boxedsymbol}[2][1em]{%
+  \begingroup
+  \setlength{\fboxsep}{0pt}
+  \framebox{%
+    \makebox[#1][c]{%
+      \rule[-0.25\dimexpr#1\relax]{0pt}{#1}% 
+      #2%
+    }%
+  }%
+  \endgroup
+}
+
+\newcommand{\notstarted}{\boxedsymbol{}}
+\newcommand{\inprogress}{\textcolor{blue}{\boxedsymbol{$\rightarrow$}}}
+\newcommand{\done}{\textcolor{green}{\boxedsymbol{\checkmark}}}
+
+\title{\textbf{Microwave Packaging \& PCB Design Specifications}}
+\author{David Shem-Tov\\{\small Nadav Katz Lab}}
+\date{\today}
+
+\begin{document}
+
+\maketitle
+
+\begin{itemize}
+    \item[\inprogress] design the PCB.
+    \item[\notstarted] design the box.
+    \item[\notstarted] HFSS simulation.
+    \item[\notstarted] PCB manufacturing
+    \item[\notstarted] MW box manufacturing
+    % \item[\notstarted]
+\end{itemize}
+
+\include{tex/pcb}
+\include{tex/box}
+\include{tex/materials}
+\include{tex/alternatives}
+
+\end{document}
