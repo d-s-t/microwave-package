@@ -26,7 +26,7 @@ across it; the 5880/TMM defaults are not what matters here, the shapes are).
 
 ## The vents
 
-`vents_on` (default 1), `vent_width` (0.5 mm), `vent_depth` (0.3 mm), all in
+`vents_on` (default 0: the vents are cut after the box is made, so a run has none unless it ticks the box), `vent_width` (0.5 mm), `vent_depth` (0.3 mm), all in
 `base_parts/default.txt`, in the web form, and drawn in
 `base_parts/parameters_visual/vent_width.svg` and `vent_depth.svg`.
 
