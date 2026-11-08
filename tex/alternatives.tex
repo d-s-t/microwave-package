@@ -1,9 +1,25 @@
 \section{Alternative Materials}
 \subsection{PCB Substrate
 \label{subsec:PCBsubstrateAlt}}
-\textcolor{red}{\textbf{partial list!} need to add details!}
+\textcolor{red}{\textbf{partial list!} still to add: the RO4003 data sheet values (it was only simulated, in the quick screening runs), price, lead time, and the stock thickness of each material for a 0.381 mm board.}
 \begin{itemize}
-    \item Rogers RO3003	
-    \item Rogers TTM10
-    \item Rogers TTM10i
+    \item Rogers RO3003
+    \item Rogers TMM10
+    \item Rogers TMM10i
 \end{itemize}
+Values from the Rogers data sheets (10 GHz):
+\begin{center}
+\small
+\begin{tabular}{l|ccc}
+\toprule
+ & RO3003 & TMM10 & TMM10i \\ \midrule
+$\epsilon_r$ (process) & $3.00\pm0.04$ & $9.20\pm0.230$ & $9.80\pm0.245$ \\
+$\epsilon_r$ (design) & 3.00 & 9.8 & 9.9 \\
+$\tan\delta$ & 0.0010 & 0.0022 & 0.0020 \\
+CTE $x/y/z$ (ppm/K) & 17/16/25 & 21/21/20 & 19/19/20 \\
+thermal conductivity (W/(m\,K)) & 0.50 & 0.76 & 0.76 \\
+\bottomrule
+\end{tabular}
+\end{center}
+Standard thicknesses: RO3003 0.127, 0.254, 0.508, 0.762, 1.524 mm. TMM10 and TMM10i 0.381, 0.635, 0.762, 1.270, 1.524, 1.900, 2.500, 3.175, 3.810, 5.080, 6.350 and 12.70 mm.\par
+\noindent What the simulations of this project say, on 0.381 mm boards: the launch alone reflects $|\Gamma| = 0.333$ on RO3003 and $0.467$ on TMM10i; the S21 ripple between the two launches has a period of 3.25 GHz on RO3003 and 2.05 GHz on TMM10i, and is smaller on RO3003; the 50 $\Omega$ trace is 0.40 mm on RO3003 and 0.20 mm on TMM10i. TMM10 was not simulated.
