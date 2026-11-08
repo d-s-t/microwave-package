@@ -129,7 +129,8 @@ BOOLEAN_PARAMETERS = {NO_CHIP_PARAM, SCREWS_PARAM, VENTS_PARAM}
 # shared equations file happens to hold at the time -- see
 # step_generation.check_baseline. Must equal the committed base_parts/default.txt
 # (checked by tests/test_switch_pins.py).
-SWITCH_PINS = {NO_CHIP_PARAM: 0.0, SCREWS_PARAM: 1.0, VENTS_PARAM: 1.0}
+# Vents are off: they are cut after the box is made (decided 2026-11-08).
+SWITCH_PINS = {NO_CHIP_PARAM: 0.0, SCREWS_PARAM: 1.0, VENTS_PARAM: 0.0}
 
 # Parameters this project no longer has. The distortion option (no_distortion,
 # and the distortion_radius / distortion_x / distortion_y geometry under it) and the

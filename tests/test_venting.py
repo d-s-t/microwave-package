@@ -27,15 +27,17 @@ def defaults():
 
 
 def values(**overrides):
-    return dict(defaults(), **overrides)
+    # The vents are off by default (they are cut after the box is made); these tests are about the feature, so they ask for it.
+    return {**defaults(), "vents_on": 1, **overrides}
 
 
 class TestThePlan(unittest.TestCase):
     def test_off_by_default_and_on_when_told(self):
         # The vents are cut after the box is made (2026-11-08), so a run has none unless it asks.
         self.assertEqual(defaults()["vents_on"], 0)
-        self.assertEqual(venting.plan(values()), [])
-        self.assertTrue(venting.plan(values(vents_on=1)))
+        self.assertEqual(venting.plan(dict(defaults())), [])
+        self.assertEqual(venting.plan(values(vents_on=0)), [])
+        self.assertTrue(venting.plan(values()))
 
     def test_it_is_a_flag_with_two_dimensions_in_the_form(self):
         self.assertIn("vents_on", parameter_meta.BOOLEAN_PARAMETERS)

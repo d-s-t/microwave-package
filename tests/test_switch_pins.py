@@ -42,7 +42,7 @@ class TestTheSwitchPins(unittest.TestCase):
         pinned = pin_switches(sweep, {"screws_on": 0.0}, committed_values())
         self.assertNotIn("no_chip", pinned)
         self.assertEqual(pinned["screws_on"], 0.0)
-        self.assertEqual(pinned["vents_on"], 1.0)
+        self.assertEqual(pinned["vents_on"], 0.0)
 
     def test_a_file_without_the_switch_gets_no_pin(self):
         pinned = pin_switches([], None, {"pedestal_depth": 0.2})
