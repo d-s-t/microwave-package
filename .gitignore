@@ -29,3 +29,12 @@ microwave_package/vendor/
 # design/step_generation.py): local to each checkout, never committed.
 base_parts/*.txt.baseline
 base_parts/*.txt.lock
+
+# From the older microwave_package repository (the LaTeX plan in tex/), merged in: local measurement data,
+# an AEDT project and scratch files kept beside it, and the LaTeX build output.
+/measurements
+/package model.aedt
+/package model.aedtresults
+/playground.py
+/Z_C_L_CPW_calculations.ipynb
+/tex/latex/
