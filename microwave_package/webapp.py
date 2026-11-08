@@ -42,7 +42,7 @@ from . import paths, pipeline, pipeline_child
 from .design import parameter_meta
 from .design import equations as eq
 from .design.sweep import SweepParameter, expand_values, split_swept_and_fixed
-from .hfss import model_builder, registry
+from .hfss import model_builder, registry, viewer_parts
 from .hfss.driven import ports
 from .hfss.driven import windows as fine_windows
 # The chip |E| heatmap is an eigenmode picture end to end -- the export,
@@ -1781,33 +1781,103 @@ def vendor_file(name):
     return response
 
 
+# The STEP files a combination has, by part: the two the 3D view draws from.
+STEP_PARTS = ("box", "lid_inside")
+
+
+def _step_file(run, combo_id: str, part: str) -> Optional[str]:
+    """Where one part's STEP file is, or None when the combination has none.
+
+    The path the run recorded is used while it exists. Otherwise the file
+    is found in the combination's folder by its name: a run moved to another
+    disk records paths that no longer exist. The box alone falls back to the
+    single assembly STEP of a run exported before the parts were split, and
+    that fallback never picks up the lid's file.
+    """
+    recorded = (run.state["combos"][combo_id].get("step_paths") or {}).get(part)
+    if recorded and os.path.exists(recorded):
+        return recorded
+    folder = run.combo_path(combo_id)
+    if part == "box":
+        matches = sorted(glob.glob(os.path.join(folder, "*_box.STEP"))) or [
+            path for path in sorted(glob.glob(os.path.join(folder, "*.STEP")))
+            if not path.endswith("_lid_inside.STEP")]
+    else:
+        matches = sorted(glob.glob(os.path.join(folder, f"*_{part}.STEP")))
+    return matches[0] if matches else None
+
+
 @app.route("/runs/<run_id>/combos/<combo_id>/step")
 def combo_step_file(run_id, combo_id):
-    """The raw STEP file for one combination, for the in-browser viewer."""
+    """The raw STEP file of one part of a combination, for the in-browser
+    3D view: the box by default, or `?part=lid_inside` for the lid."""
     try:
         run = Run.load(run_id)
     except (OSError, ValueError):
         return Response("run not found", status=404)
     if combo_id not in run.state.get("combos", {}):
         return Response("unknown combination", status=404)
-
-    # box is the representative preview -- lid_inside is the rest of the
-    # enclosure, but this endpoint (and the in-browser viewer behind it)
-    # only ever shows one file at a time. A run exported before the parts
-    # were split has a single assembly STEP instead, found by the glob.
-    step_paths = run.state["combos"][combo_id].get("step_paths") or {}
-    step_path = step_paths.get("box")
-    if not step_path or not os.path.exists(step_path):
-        combo_dir = run.combo_dir(combo_id)
-        matches = sorted(glob.glob(os.path.join(combo_dir, "*_box.STEP"))) or sorted(
-            glob.glob(os.path.join(combo_dir, "*.STEP"))
-        )
-        step_path = matches[0] if matches else None
+    part = request.args.get("part", "box")
+    if part not in STEP_PARTS:
+        return Response("unknown part", status=404)
+    step_path = _step_file(run, combo_id, part)
     if not step_path:
-        return Response("no STEP file for this combination", status=404)
+        return Response(f"no {part} STEP file for this combination", status=404)
 
     folder, filename = os.path.split(step_path)
     return send_from_directory(folder, filename, mimetype="model/step")
+
+
+def _board_for(run, combo_id: str):
+    """(board, note) for one combination: the PCB and the die, worked out
+    from its dimensions.txt (see hfss/viewer_parts), or None with a note
+    saying why they are not drawn."""
+    path = os.path.join(run.combo_path(combo_id), "dimensions.txt")
+    if not os.path.isfile(path):
+        return None, "No dimensions.txt for this combination, so the PCB and the die are not drawn."
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            values = eq.get_numeric_parameters(f.read())
+    except (OSError, ValueError) as exc:
+        return None, f"dimensions.txt could not be read ({exc}), so the PCB and the die are not drawn."
+    return viewer_parts.board(values), None
+
+
+@app.route("/runs/<run_id>/combos/<combo_id>/parts.json")
+def combo_parts(run_id, combo_id):
+    """What the 3D view draws for one combination: where its STEP files are,
+    and the PCB and die from its dimensions. Whatever a run lacks is left
+    out, with a note saying so."""
+    try:
+        run = Run.load(run_id)
+    except (OSError, ValueError):
+        return jsonify(ok=False, error="run not found"), 404
+    if combo_id not in run.state.get("combos", {}):
+        return jsonify(ok=False, error="unknown combination"), 404
+
+    box = _step_file(run, combo_id, "box")
+    lid = _step_file(run, combo_id, "lid_inside")
+    notes = []
+    # A run exported before the parts were split has one assembly STEP, which
+    # may already hold the board and the die and the lid. Show that file as it
+    # is, and draw nothing of our own on top of it.
+    legacy = box is not None and not box.endswith("_box.STEP")
+    if legacy:
+        notes.append("This run predates the split: its one STEP is the whole assembly, shown as it is.")
+        lid = None
+        board = None
+    else:
+        board, note = _board_for(run, combo_id)
+        if note:
+            notes.append(note)
+    return jsonify(
+        combo_id=combo_id,
+        box_url=url_for("combo_step_file", run_id=run_id, combo_id=combo_id) if box else None,
+        lid_url=(url_for("combo_step_file", run_id=run_id, combo_id=combo_id, part="lid_inside")
+                 if lid else None),
+        board=board,
+        notes=notes,
+    )
 
 
 # -- manufacturing files ---------------------------------------------------
@@ -1946,8 +2016,8 @@ def combo_details(run_id, combo_id):
             combo.get("post_error") or combo.get("model_error") or combo.get("step_error")),
         "results": results,
         "actions": {
-            "step_url": (url_for("combo_step_file", run_id=run_id, combo_id=combo_id)
-                         if _step_viewer_available() and combo.get("step_status") == "done" else None),
+            "parts_url": (url_for("combo_parts", run_id=run_id, combo_id=combo_id)
+                          if _step_viewer_available() and combo.get("step_status") == "done" else None),
             "aedt_url": (url_for("open_combo_in_aedt", run_id=run_id, combo_id=combo_id)
                          if has_project else None),
             "start_url": url_for("index", from_run=run_id, combo=combo_id),
