@@ -690,6 +690,58 @@ class LayoutContext:
 SHEET_BELOW_MM = 0.001
 
 
+def board_centre_fallback(v: Dict[str, float]) -> "tuple[float, float]":
+    """Where the board's centre sits in the box, worked out from the
+    equations alone: the middle of the box's walls, ignoring any mounting
+    wings.
+
+    This is only the fallback for `cavity_frame`, which measures the real
+    centre from the imported box. The 3D view (hfss/viewer_parts) uses it
+    the same way, when there is no box geometry to measure.
+    """
+    pcb_length = v.get("pcb_length", 26.0)
+    pcb_side = v.get("pcb_side", 10.0)
+    wall = v.get("wall_width", 1.0)
+    return (pcb_length + 2 * wall) / 2.0, (pcb_side + 2 * wall) / 2.0
+
+
+def layout_stack(v: Dict[str, float]) -> "copper_geometry.Stack":
+    """Where each face of the board and the die sits along the box's up
+    axis, from the equations (the box floor is at 0).
+
+    The board rests at floor_width + pedestal_depth: on the floor's top,
+    or on the rim of the pedestal recess the die sits over. Its top face
+    is pcb_width above that. The die is let into the board, so its top
+    finishes flush with the board's top. The lid sits on the board's
+    copper (`place_lid_inside`), which `Stack.pcb_copper_top` gives.
+
+    floor_width is worked out in design/screws.py, not read from the file:
+    with the screws on it is thick enough to thread a screw into, and it
+    is never thinner than the wall.
+    """
+    from ..design import copper_geometry as cg
+    from ..design import screws as screw_plan
+
+    pcb_width = v.get("pcb_width", 0.381)
+    chip_width = v.get("chip_width", 0.381)
+    pedestal = v.get("pedestal_depth", 0.0)
+    pcb_bottom = screw_plan.floor_width(v) + pedestal
+    pcb_top = pcb_bottom + pcb_width
+    # The metal's thickness AS DRAWN: a film below SHEET_BELOW_MM is a
+    # sheet, so it has none in the model, and whatever rests on it --
+    # a bond foot on the die -- rests on the face it lies on.
+    copper = v.get("copper_thickness", 0.035)
+    chip_metal = v.get("chip_metal_thickness", 0.0002)
+    return cg.Stack(
+        pcb_bottom=pcb_bottom,
+        pcb_top=pcb_top,
+        chip_bottom=pcb_top - chip_width,
+        chip_top=pcb_top,
+        copper_thickness=0.0 if copper < SHEET_BELOW_MM else copper,
+        chip_metal_thickness=0.0 if chip_metal < SHEET_BELOW_MM else chip_metal,
+    )
+
+
 def build_layout(hfss, combo_dir: str, dimensions_txt_content: str,
                  lid_inside_names: List[str], include_wirebonds: bool = True,
                  log=logger.info) -> Optional["LayoutContext"]:
@@ -722,10 +774,6 @@ def build_layout(hfss, combo_dir: str, dimensions_txt_content: str,
 
     pcb_length = v.get("pcb_length", 26.0)
     pcb_side = v.get("pcb_side", 10.0)
-    pcb_width = v.get("pcb_width", 0.381)
-    chip_width = v.get("chip_width", 0.381)
-    wall = v.get("wall_width", 1.0)
-    pedestal = v.get("pedestal_depth", 0.0)
     # The board's rounded corners. 0 for a board from before the cavity had
     # rounded corners, which is then sharp like its box.
     pcb_radius = pcb_outline.corner_radius_of(v)
@@ -735,39 +783,15 @@ def build_layout(hfss, combo_dir: str, dimensions_txt_content: str,
     # because the assembly also carries mounting wings that extend it.
     # Measured from the cavity rather than computed, so the mechanical
     # design can grow features this code has never heard of.
-    frame = cavity_frame(
-        hfss,
-        fallback_x=(pcb_length + 2 * wall) / 2.0,
-        fallback_z=(pcb_side + 2 * wall) / 2.0,
-        log=log,
-    )
+    fallback_x, fallback_z = board_centre_fallback(v)
+    frame = cavity_frame(hfss, fallback_x=fallback_x, fallback_z=fallback_z, log=log)
 
-    # Heights follow box_height = wall_width*1.5 + pedestal_depth +
-    # pcb_width + 2*copper_thickness: the board floats on the floor and
-    # the pedestal, the die is let into the board so their faces finish
-    # flush, and the extra half wall_width above the copper is
-    # lid_inside's own headroom (see place_lid_inside).
-    # The floor under the board is its own dimension now (it was the wall
-    # thickness), so that a floor thick enough to thread a screw into does
-    # not thicken the walls. The equations file falls back to the wall for
-    # a dimensions.txt from before the split.
-    from ..design import screws as screw_plan
-
-    pcb_bottom = screw_plan.floor_width(v) + pedestal
-    pcb_top = pcb_bottom + pcb_width
-    # The metal's thickness AS DRAWN: a film below SHEET_BELOW_MM is a
-    # sheet, so it has none in the model, and whatever rests on it --
-    # a bond foot on the die -- rests on the face it lies on.
+    # The heights: see layout_stack.
+    stack = layout_stack(v)
+    # The thicknesses as the equations give them, before the sheet rule,
+    # for the log lines that report which metal was drawn as a sheet.
     copper = v.get("copper_thickness", 0.035)
     chip_metal = v.get("chip_metal_thickness", 0.0002)
-    stack = cg.Stack(
-        pcb_bottom=pcb_bottom,
-        pcb_top=pcb_top,
-        chip_bottom=pcb_top - chip_width,
-        chip_top=pcb_top,
-        copper_thickness=0.0 if copper < SHEET_BELOW_MM else copper,
-        chip_metal_thickness=0.0 if chip_metal < SHEET_BELOW_MM else chip_metal,
-    )
     sheets: List[str] = []
 
     def remember_sheets(made, drawn, real):

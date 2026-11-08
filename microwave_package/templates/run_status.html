@@ -122,6 +122,7 @@
   .viewer3d .side{width:11rem;flex:none;font-size:.85em;display:flex;flex-direction:column;
     gap:.3rem;max-height:60vh;overflow:auto}
   .viewer3d .side label{display:flex;gap:.4rem;align-items:center;cursor:pointer;word-break:break-all}
+  .viewer3d .side label.sub{padding-left:1.1rem}
   .viewer3d .vstatus{padding:0 .9rem .8rem;font-size:.85em;color:var(--muted);min-height:1.2em}
   .viewer3d button.close{background:var(--neutral)}
   .viewer3d button.close:hover{background:var(--neutral-hover)}
@@ -460,9 +461,9 @@
        title="Open the new-run form with this combination's values">Use as a starting point</a>
     {% if step_viewer_available and combo.step_status == "done" %}
     <button type="button" class="mini view-3d"
-            data-url="{{ url_for('combo_step_file', run_id=run.run_id, combo_id=combo_id) }}"
+            data-url="{{ url_for('combo_parts', run_id=run.run_id, combo_id=combo_id) }}"
             data-title="{{ combo_id }}"
-            title="Quick 3D view of this combination's geometry, read from its STEP file">3D view</button>
+            title="Quick 3D view of this combination: box, lid, PCB and die">3D view</button>
     {% endif %}
     {% if combo.step_status == "done" %}
     <button type="button" class="mini mfg-open"
@@ -1298,8 +1299,8 @@ setInterval(poll, 4000);
 
     var actions = data.actions || {};
     html += '<div class="cw-actions">';
-    if (actions.step_url) {
-      html += '<button type="button" class="mini cw-3d" data-url="' + esc(actions.step_url) +
+    if (actions.parts_url) {
+      html += '<button type="button" class="mini cw-3d" data-url="' + esc(actions.parts_url) +
               '" data-title="' + esc(data.combo_id) + '">3D view</button>';
     }
     if (actions.aedt_url) {
@@ -1375,8 +1376,8 @@ setInterval(poll, 4000);
       return;
     }
     var view = event.target.closest("button.cw-3d");
-    if (view && window.showStepViewer) {
-      window.showStepViewer(view.dataset.url, view.dataset.title);
+    if (view && window.showCombination3D) {
+      window.showCombination3D(view.dataset.url, view.dataset.title);
       return;
     }
     var heat = event.target.closest("button.cw-heatmap");
@@ -1542,26 +1543,36 @@ document.querySelectorAll("button.open-aedt").forEach(function (button) {
 </dialog>
 
 <script type="module">
-// Quick 3D view of a combination's STEP file, entirely in the browser:
-// occt-import-js (OpenCascade compiled to WASM) turns the STEP into
-// triangle meshes, three.js draws them. Both come from /vendor and are
-// only fetched the first time the button is clicked -- the WASM is ~7 MB,
-// so the run page itself stays as light as it was.
+// The combination's 3D view, entirely in the browser. Four parts make it up:
+//   * the box and the lid, each read from a STEP file: occt-import-js
+//     (OpenCascade compiled to WASM) turns the file into triangle meshes;
+//   * the PCB and the die, which have no STEP file: the server works them out
+//     from the combination's dimensions.txt (hfss/viewer_parts) and this page
+//     extrudes them.
+// three.js draws all of them. The libraries come from /vendor and are only
+// fetched the first time the button is clicked -- the WASM is ~7 MB, so the
+// run page itself stays as light as it was.
 const dialog = document.getElementById("viewer3d");
 const titleEl = document.getElementById("viewer3d-title");
 const statusEl = document.getElementById("viewer3d-status");
 const partsEl = document.getElementById("viewer3d-parts");
 const canvasWrap = document.getElementById("viewer3d-canvas-wrap");
 
-// distinct, mid-tone colours that read on the page's own background in
-// either theme -- used only for meshes the STEP itself gives no colour.
+// Mid-tone colours that read on the page's own background in either theme,
+// for the solids a STEP file gives no colour to.
 const PALETTE = [0x4f9dc9, 0xe08a4a, 0x67b98e, 0xc76b98, 0xb0a24a, 0x8a7fd0, 0x5cb0b0, 0xd07f6b];
+// The parts this page makes itself, each with a colour of its own.
+const PCB_COLOUR = 0x2f7d4a;   // board green
+const DIE_COLOUR = 0xd9b04a;   // gold, so the die stands out from the board
+const LID_COLOUR = 0xcfdded;   // pale and see-through, so the inside shows
+const LID_OPACITY = 0.3;
 
 let three = null;      // { THREE, OrbitControls }, loaded once
 let occt = null;       // the occt-import-js module, loaded once
 let active = null;     // teardown handle for whatever is on screen
 
 function setStatus(text) { statusEl.textContent = text || ""; }
+function messageOf(e) { return e && e.message ? e.message : String(e); }
 
 async function loadThree() {
   if (!three) {
@@ -1595,7 +1606,103 @@ function teardown() {
   partsEl.replaceChildren();
 }
 
-function buildScene(THREE, OrbitControls, meshes) {
+// The triangle meshes of one STEP file, as occt-import-js reads them.
+async function readStep(url, occtModule) {
+  const resp = await fetch(url);
+  if (!resp.ok) { throw new Error("could not fetch the STEP file"); }
+  const buffer = new Uint8Array(await resp.arrayBuffer());
+  const result = occtModule.ReadStepFile(buffer, null);
+  if (!result || !result.success || !result.meshes || !result.meshes.length) {
+    throw new Error("occt-import-js could not read this STEP file");
+  }
+  return result.meshes;
+}
+
+// The material for one kind of part. A translucent one is drawn without
+// writing depth, so what is behind it still shows through.
+function surface(THREE, colour, opacity) {
+  const translucent = opacity !== undefined && opacity < 1;
+  return new THREE.MeshStandardMaterial({
+    color: colour, metalness: 0.1, roughness: 0.75, side: THREE.DoubleSide,
+    transparent: translucent, opacity: translucent ? opacity : 1, depthWrite: !translucent,
+  });
+}
+
+// A part read from a STEP file: a group of meshes, one per solid in the file.
+// `style` may fix the colour and the opacity of every solid in it.
+function stepPart(THREE, name, meshes, style) {
+  const group = new THREE.Group();
+  const solids = [];
+  meshes.forEach((m, i) => {
+    const pos = m.attributes && m.attributes.position && m.attributes.position.array;
+    if (!pos || !pos.length) { return; }
+    const g = new THREE.BufferGeometry();
+    g.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3));
+    if (m.attributes.normal && m.attributes.normal.array) {
+      g.setAttribute("normal", new THREE.Float32BufferAttribute(m.attributes.normal.array, 3));
+    }
+    if (m.index && m.index.array) { g.setIndex(m.index.array); }
+    if (!m.attributes.normal) { g.computeVertexNormals(); }
+
+    let colour = PALETTE[i % PALETTE.length];
+    if (style.colour !== undefined) { colour = style.colour; }
+    else if (m.color) { colour = new THREE.Color(m.color[0], m.color[1], m.color[2]); }
+    const mesh = new THREE.Mesh(g, surface(THREE, colour, style.opacity));
+    mesh.name = m.name || ("solid " + (i + 1));
+    if (/vacuum|air/i.test(mesh.name)) { mesh.visible = false; }  // the air volume hides everything
+    group.add(mesh);
+    solids.push(mesh);
+  });
+  if (!solids.length) { throw new Error("the STEP file has no visible geometry"); }
+  return { name, group, solids };
+}
+
+// A solid with a flat footprint: `outline` in board coordinates (u along the
+// feedline, v across it), less any `holes`, from height y0 up to y1. The
+// footprint is drawn in XY and extruded along +Z; turning it about X maps
+// (u, v, w) to (u, w, -v), the same as copper_geometry.Frame.point, so the
+// board lands where the model has it.
+function prism(THREE, outline, holes, y0, y1) {
+  const points = (ring) => ring.map(([u, v]) => new THREE.Vector2(u, v));
+  const shape = new THREE.Shape(points(outline));
+  for (const hole of holes) { shape.holes.push(new THREE.Path(points(hole))); }
+  const g = new THREE.ExtrudeGeometry(shape, { depth: y1 - y0, bevelEnabled: false });
+  g.rotateX(-Math.PI / 2);
+  g.translate(0, y0, 0);
+  return g;
+}
+
+// A part made here from its geometries, all one colour, in a group placed at
+// the board's centre.
+function madePart(THREE, name, geometries, colour, centre) {
+  const group = new THREE.Group();
+  for (const g of geometries) { group.add(new THREE.Mesh(g, surface(THREE, colour))); }
+  group.position.set(centre.x, 0, centre.z);
+  return { name, group, solids: [] };
+}
+
+function toggle(text, checked, onChange, sub) {
+  const label = document.createElement("label");
+  if (sub) { label.className = "sub"; }
+  const cb = document.createElement("input");
+  cb.type = "checkbox"; cb.checked = checked;
+  cb.addEventListener("change", () => onChange(cb.checked));
+  label.append(cb, " " + text);
+  return label;
+}
+
+// One row of the side panel for a part: a toggle for the whole part, and one
+// for each solid when a STEP file has more than one.
+function addPartRow(part) {
+  partsEl.appendChild(toggle(part.name, part.group.visible, (on) => { part.group.visible = on; }));
+  if (part.solids.length > 1) {
+    for (const mesh of part.solids) {
+      partsEl.appendChild(toggle(mesh.name, mesh.visible, (on) => { mesh.visible = on; }, true));
+    }
+  }
+}
+
+function buildScene(THREE, OrbitControls, parts) {
   const canvas = document.createElement("canvas");
   canvasWrap.appendChild(canvas);
   const sizeTo = () => {
@@ -1617,38 +1724,14 @@ function buildScene(THREE, OrbitControls, meshes) {
   const fill = new THREE.DirectionalLight(0xffffff, 0.45); fill.position.set(-1, -0.6, -0.8); scene.add(fill);
 
   const group = new THREE.Group();
-  meshes.forEach((m, i) => {
-    const pos = m.attributes && m.attributes.position && m.attributes.position.array;
-    if (!pos || !pos.length) { return; }
-    const g = new THREE.BufferGeometry();
-    g.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3));
-    if (m.attributes.normal && m.attributes.normal.array) {
-      g.setAttribute("normal", new THREE.Float32BufferAttribute(m.attributes.normal.array, 3));
-    }
-    if (m.index && m.index.array) { g.setIndex(m.index.array); }
-    if (!m.attributes.normal) { g.computeVertexNormals(); }
-
-    const c = m.color
-      ? new THREE.Color(m.color[0], m.color[1], m.color[2])
-      : new THREE.Color(PALETTE[i % PALETTE.length]);
-    const mesh = new THREE.Mesh(g, new THREE.MeshStandardMaterial({
-      color: c, metalness: 0.1, roughness: 0.75, side: THREE.DoubleSide,
-    }));
-    mesh.name = m.name || ("solid " + (i + 1));
-    if (/vacuum|air/i.test(mesh.name)) { mesh.visible = false; }  // the air volume hides everything
-    group.add(mesh);
-
-    const label = document.createElement("label");
-    const cb = document.createElement("input");
-    cb.type = "checkbox"; cb.checked = mesh.visible;
-    cb.addEventListener("change", () => { mesh.visible = cb.checked; });
-    label.append(cb, " " + mesh.name);
-    partsEl.appendChild(label);
-  });
+  for (const part of parts) {
+    group.add(part.group);
+    addPartRow(part);
+  }
   scene.add(group);
 
   const box = new THREE.Box3().setFromObject(group);
-  if (box.isEmpty()) { throw new Error("the STEP file has no visible geometry"); }
+  if (box.isEmpty()) { throw new Error("the parts have no visible geometry"); }
   const center = box.getCenter(new THREE.Vector3());
   const radius = Math.max(box.getBoundingSphere(new THREE.Sphere()).radius, 1e-3);
 
@@ -1717,26 +1800,80 @@ function closeViewer() {
   if (dialog.open) { dialog.close(); }
 }
 
-async function show(url, title) {
+// Shows one combination in the dialog. `partsUrl` is its parts.json (see
+// webapp.combo_parts). Each part loads on its own: one that fails adds a note
+// to the status line and the rest still show.
+async function show(partsUrl, title) {
   teardown();
   titleEl.textContent = title;
   if (!dialog.open) { dialog.showModal(); }
   setStatus("loading the 3D engine…");
   try {
     const [{ THREE, OrbitControls }, occtModule] = await Promise.all([loadThree(), loadOcct()]);
-    setStatus("downloading geometry…");
-    const resp = await fetch(url);
-    if (!resp.ok) { throw new Error("could not fetch the STEP file"); }
-    const buffer = new Uint8Array(await resp.arrayBuffer());
-    setStatus("reading the STEP file…");
-    const result = occtModule.ReadStepFile(buffer, null);
-    if (!result || !result.success || !result.meshes || !result.meshes.length) {
-      throw new Error("occt-import-js could not read this STEP file");
+    setStatus("reading the combination…");
+    const resp = await fetch(partsUrl);
+    if (!resp.ok) { throw new Error("could not load this combination"); }
+    const spec = await resp.json();
+    const board = spec.board;
+    const notes = (spec.notes || []).slice();
+    const fail = (what, e) => notes.push(what + " could not be shown (" + messageOf(e) + ")");
+    const parts = [];
+
+    // The box as its STEP file has it. Its middle, in x and z, is where the
+    // model centres the board and the lid (cavity_frame in
+    // hfss/model_builder.py); the equations give that centre only when the box
+    // is missing.
+    let centre = board ? { x: board.centre_fallback[0], z: board.centre_fallback[1] } : { x: 0, z: 0 };
+    if (spec.box_url) {
+      try {
+        const box = stepPart(THREE, "box", await readStep(spec.box_url, occtModule), {});
+        parts.push(box);
+        const b = new THREE.Box3().setFromObject(box.group);
+        if (!b.isEmpty()) { centre = { x: (b.min.x + b.max.x) / 2, z: (b.min.z + b.max.z) / 2 }; }
+      } catch (e) { fail("The box", e); }
     }
-    buildScene(THREE, OrbitControls, result.meshes);
-    setStatus(result.meshes.length + " solid(s) — drag to orbit, scroll to zoom");
+
+    // The lid, put where the model puts it (place_lid_inside): centred on the
+    // board, its underside on the board's copper. Without dimensions.txt it
+    // stays where its STEP file has it.
+    if (spec.lid_url) {
+      try {
+        const lid = stepPart(THREE, "lid", await readStep(spec.lid_url, occtModule),
+                             { colour: LID_COLOUR, opacity: LID_OPACITY });
+        if (board) {
+          const b = new THREE.Box3().setFromObject(lid.group);
+          lid.group.position.set(centre.x - (b.min.x + b.max.x) / 2,
+                                 board.lid_bottom - b.min.y,
+                                 centre.z - (b.min.z + b.max.z) / 2);
+        }
+        parts.push(lid);
+      } catch (e) { fail("The lid", e); }
+    }
+
+    // The PCB and the die, from the server's geometry. The PCB is the
+    // rounded board less its opening, with a floor under a blind pocket.
+    if (board) {
+      try {
+        const pcb = board.pcb;
+        const pcbGeometries = [prism(THREE, pcb.outline, pcb.opening ? [pcb.opening] : [], pcb.bottom, pcb.top)];
+        if (pcb.floor_top !== null) {
+          pcbGeometries.push(prism(THREE, pcb.opening, [], pcb.bottom, pcb.floor_top));
+        }
+        parts.push(madePart(THREE, "PCB", pcbGeometries, PCB_COLOUR, centre));
+        if (board.die) {
+          const die = board.die;
+          parts.push(madePart(THREE, "die", [prism(THREE, die.outline, [], die.bottom, die.top)],
+                              DIE_COLOUR, centre));
+        }
+      } catch (e) { fail("The PCB and the die", e); }
+    }
+
+    if (!parts.length) { throw new Error("there is nothing to draw for this combination"); }
+    buildScene(THREE, OrbitControls, parts);
+    const names = parts.map((p) => p.name).join(", ");
+    setStatus(names + " — drag to orbit, scroll to zoom" + (notes.length ? " · " + notes.join(" · ") : ""));
   } catch (e) {
-    setStatus("could not show this model — " + (e && e.message ? e.message : e));
+    setStatus("could not show this model — " + messageOf(e));
   }
 }
 
@@ -1745,7 +1882,7 @@ document.querySelectorAll("button.view-3d").forEach((button) => {
 });
 // The combination window offers the same view, and lives in a classic
 // script that cannot import from this module -- so hand it a way in.
-window.showStepViewer = show;
+window.showCombination3D = show;
 // Close only on deliberate action. The dialog's own close/cancel events
 // are not fired reliably everywhere, and wiring teardown to them turned
 // out to also strip a freshly built scene on some browsers -- so Escape
