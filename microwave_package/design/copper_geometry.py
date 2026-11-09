@@ -1121,17 +1121,25 @@ def clear_cavity_area(
     """Cut the die's opening out of the board's copper.
 
     The generator already keeps copper out of the opening -- the trace
-    stops either side of it and both ground planes are drawn round it --
-    so on a board built by the current generator this cuts nothing. It
-    stays because it costs one boolean and it is the only thing standing
-    between a copper.txt written by an older generator and a model with
-    a ground plane spanning the hole in its own board. A stray conductor
-    across the cavity is exactly the sort of thing that moves a mode,
-    and it would not look wrong in a tree.
+    stops either side of it, and a through opening's ground planes are
+    drawn round it -- so on a board built by the current generator this
+    cuts nothing. It stays because it costs one boolean and it is the only
+    thing standing between a copper.txt written by an older generator and a
+    model with a ground plane spanning the hole in its own board. A stray
+    conductor across the cavity is exactly the sort of thing that moves a
+    mode, and it would not look wrong in a tree.
 
-    The cut spans the full stack plus a copper thickness at each end, so
-    it takes the top and bottom layers together whether the opening is
-    blind or through. In plane it is the opening exactly, with no added
+    A through opening is cut the full stack, a copper thickness past each
+    face, so it takes the top and bottom layers together.
+
+    A blind pocket is cut from its floor up only. The tool starts at the
+    top of the laminate floor (`pcb_top - depth`) and reaches past the top
+    face: the top layer inside the pocket is cleared, and the bottom plane
+    is left whole, as the Altium generator leaves it under a blind pocket
+    (`base_parts/altium/GenerateFromParams.pas`, the back plane beside
+    `CavThrough`). A blind pocket does not take the far face.
+
+    In plane it is the opening exactly, with no added
     margin: the opening already stands `cavity_clearance` clear of the
     die's own copper, so there is no coincident face here to work around
     -- which is what the margin that used to be here was for, back when
@@ -1141,18 +1149,25 @@ def clear_cavity_area(
         return
 
     margin = max(stack.copper_thickness, stack.chip_metal_thickness) * 2.0
+    # Where the cut starts: a through opening goes below the bottom face, so
+    # both layers are in it; a blind pocket stops at the top of its floor.
+    base = (stack.pcb_bottom - margin) if cavity.through else (stack.pcb_top - cavity.depth)
+    top = stack.pcb_top + margin
     origin, sizes = frame.box(
         -cavity.half_length, -cavity.half_side,
         cavity.half_length, cavity.half_side,
-        stack.pcb_bottom - margin,
-        (stack.pcb_top - stack.pcb_bottom) + 2 * margin,
+        base, top - base,
     )
     tool = modeler.create_box(origin=origin, sizes=sizes)
     # Named rather than left as NewObject_*, so an operation that fails
     # to consume it is obvious in the tree instead of anonymous.
     tool.name = "cavity_area_cut"
     modeler.subtract(list(targets), ["cavity_area_cut"], keep_originals=False)
-    log(f"Cleared the die's opening out of {', '.join(targets)}.")
+    if cavity.through:
+        log(f"Cleared the die's opening out of {', '.join(targets)}.")
+    else:
+        log("Cleared the copper above the die's blind pocket floor; "
+            "the back plane under it is left whole.")
 
 
 def copper_reaching_corners(copper: BoardCopper, half_length: float, half_side: float,

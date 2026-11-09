@@ -67,10 +67,11 @@ def build_vents(hfss, frame, stack, values, log=logger.info) -> Optional[List[st
 
 
 def build_recess_skin(hfss, frame, stack, values, log=logger.info) -> Optional[str]:
-    """Put the box back under a bare board's whole bottom copper over its recess.
+    """Put the box back under the board's whole bottom copper over its recess.
 
-    A bare board has no opening, so its bottom copper is whole and lies over the
-    pedestal recess as well as the rim. As with a vent groove (see
+    Where the bottom copper is whole -- a bare board has no opening, and a
+    blind pocket leaves its back plane whole under the die -- it lies over
+    the pedestal recess as well as the rim. As with a vent groove (see
     `_restore_copper_skin`), the copper is drawn 35 um down into the floor, so
     the recess would leave it half over air at its walls. The copper is
     whole on the real board, so the recess's top two copper thicknesses are
@@ -78,13 +79,17 @@ def build_recess_skin(hfss, frame, stack, values, log=logger.info) -> Optional[s
     below that skin, closed by the solid ground plane on every side.
 
     Returns the skin's name, or None when there is nothing to skin: a die board
-    (its copper has an opening over the recess and sits on the rim), no recess,
-    or a copper layer drawn as a sheet.
+    with a through opening (its copper has the opening over the recess and sits
+    on the rim), no recess, or a copper layer drawn as a sheet.
     """
     from ..design import parameter_meta, pedestal
 
     thickness = stack.copper_thickness
-    if thickness <= 0 or not parameter_meta.is_bare_board(values):
+    if thickness <= 0:
+        return None
+    # A through opening takes the copper out over the recess. A bare board has
+    # no opening, so its plan is never through and its copper stays whole.
+    if cavity_plan.plan(values).through:
         return None
     if values.get("pedestal_depth", 0.0) <= 0:
         return None
@@ -94,7 +99,8 @@ def build_recess_skin(hfss, frame, stack, values, log=logger.info) -> Optional[s
     skin = hfss.modeler.create_box(origin=origin, sizes=sizes)
     skin.name = "recess_skin"
     hfss.modeler.unite(["box", skin.name])
-    log(f"Bare board: the bottom copper over the pedestal recess is carried on a "
+    kind = "Bare board" if parameter_meta.is_bare_board(values) else "Blind pocket"
+    log(f"{kind}: the bottom copper over the pedestal recess is carried on a "
         f"{SKIN_DEPTH * thickness * 1000:g} um skin of the box.")
     return skin.name
 
@@ -110,7 +116,8 @@ def _restore_copper_skin(hfss, frame, stack, values, vents, log) -> List[str]:
     The copper is whole on the real board, so the groove's top
     two copper thicknesses are given back to the box as a skin under it, wherever
     copper lies over the groove: for the pedestal vent from the die's opening
-    to the board's edge, for a screw vent from the keep-out circle round
+    to the board's edge (all the way across it under a blind pocket, whose back
+    plane is whole), for a screw vent from the keep-out circle round
     the screw to the board's edge (inside the circle there is no copper).
     The groove runs below the ground plane, which is what it is meant to do.
     The skin floats above the groove's floor, so it is joined to the box
@@ -122,7 +129,8 @@ def _restore_copper_skin(hfss, frame, stack, values, vents, log) -> List[str]:
     if thickness <= 0:
         return []
     reach = values.get("pcb_side", 25.0) / 2.0 + WALL_OVERLAP
-    inner = cavity_plan.plan(values).half_side
+    opening = cavity_plan.plan(values)
+    inner = opening.half_side
     screws = screw_plan.plan(values)
     keepout = screws.keepout_diameter / 2.0 if screws is not None else 0.0
     modeler = hfss.modeler
@@ -131,7 +139,13 @@ def _restore_copper_skin(hfss, frame, stack, values, vents, log) -> List[str]:
         if vent.name == "pedestal":
             if inner <= 0:      # no die opening to start from: nothing is over this groove
                 continue
-            spans = ((inner, reach), (-reach, -inner))
+            if opening.through:
+                spans = ((inner, reach), (-reach, -inner))
+            else:
+                # A blind pocket leaves the back plane whole under the die, so the
+                # copper lies over the groove all the way across it, not only past
+                # the opening's edge.
+                spans = ((-reach, reach),)
         else:
             sign = 1.0 if vent.end[1] > 0 else -1.0
             start = abs(vent.start[1]) + keepout - KEEPOUT_SLACK
