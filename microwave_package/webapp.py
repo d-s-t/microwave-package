@@ -70,6 +70,8 @@ _STAGE_DISPLAY = {
     "geometry_ready": ("Waiting for the queue", "busy"),
     "monitoring": ("Analysing", "busy"),
     "postprocessing": ("Post-processing", "busy"),
+    "waiting_for_worker": ("Waiting for the worker", "busy"),
+    "solving_on_worker": ("Solving on the worker", "busy"),
     "plotting": ("Plotting results", "busy"),
     "complete": ("Complete", "ok"),
     "stopped": ("Stopped", "muted"),
@@ -108,6 +110,8 @@ _STALLED_WORDS = {
     "geometry_ready": "waiting for the queue",
     "monitoring": "analysing",
     "postprocessing": "post-processing",
+    "waiting_for_worker": "waiting for the worker",
+    "solving_on_worker": "solving on the worker",
     "plotting": "plotting results",
 }
 
@@ -131,12 +135,20 @@ def _going(run_id: str, stage: Optional[str], elsewhere=_LOOK_UP) -> bool:
     return _is_running(run_id) or bool(elsewhere)
 
 
-def _run_stage_display(stage: Optional[str], failed: int, going: bool) -> dict:
+def _run_stage_display(stage: Optional[str], failed: int, going: bool,
+                       shown: Optional[str] = None) -> dict:
     """A run's stage pill. A live stage that nothing drives reads "Stalled", with
-    the stage it was in; every other stage reads as `_stage_display` says."""
+    the stage it was in; every other stage reads as `_stage_display` says.
+
+    `shown` is the stage the page words (run_manager.displayed_stage): a run
+    stored as "postprocessing" while its analyses are on the worker shows
+    "Waiting for the worker" or "Solving on the worker". Stalling is still
+    decided by the stored stage."""
+    if shown is None:
+        shown = stage
     if stage in run_manager.ACTIVE_STAGES and not going:
-        return {"label": f"Stalled (was {_STALLED_WORDS[stage]})", "kind": "muted"}
-    return _stage_display(stage, failed)
+        return {"label": f"Stalled (was {_STALLED_WORDS[shown]})", "kind": "muted"}
+    return _stage_display(shown, failed)
 
 
 def _parse_dt(value):
@@ -636,7 +648,8 @@ def _runs_for_display(runs: list) -> list:
             "name": name,
             "date_text": date_text,
             "started_ago": _fmt_ago(started),
-            "stage_display": _run_stage_display(stage, r.get("failed", 0), going),
+            "stage_display": _run_stage_display(stage, r.get("failed", 0), going,
+                                                shown=r.get("stage_shown")),
             "swept_text": ", ".join(f'{s["label"]} ×{s["n"]}' for s in r["swept"]),
             "has_results": os.path.isfile(
                 os.path.join(Run(r["run_id"]).plots_dir, plotting.RESULTS_FILENAME)),
@@ -1166,7 +1179,8 @@ def run_status(run_id):
         driven_elsewhere=elsewhere,
         plot_exists=plot_exists,
         progress=progress,
-        stage_display=_run_stage_display(stage, progress["failed"], going),
+        stage_display=_run_stage_display(stage, progress["failed"], going,
+                                         shown=run_manager.displayed_stage(stage, run.state.get("combos"))),
         started_text=_fmt_dt(started),
         updated_text=_fmt_ago(updated),
         duration_text=_fmt_dur(duration),
@@ -1528,7 +1542,8 @@ def run_status_json(run_id):
     return jsonify({
         "run_id": run.run_id,
         "stage": stage,
-        "stage_display": _run_stage_display(stage, prog["failed"], _going(run_id, stage, elsewhere)),
+        "stage_display": _run_stage_display(stage, prog["failed"], _going(run_id, stage, elsewhere),
+                                            shown=run_manager.displayed_stage(stage, run.state.get("combos"))),
         "progress": prog,
         "error": run.state.get("error"),
         "is_running": _is_running(run_id) or bool(elsewhere),

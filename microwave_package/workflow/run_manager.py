@@ -238,6 +238,37 @@ def part_kind(config: dict) -> str:
 ACTIVE_STAGES = frozenset({"eigenmodes", "generating_and_queuing", "geometry_ready",
                            "monitoring", "postprocessing", "plotting"})
 
+# A remote-worker run stays in stage "postprocessing" for its whole wait, while
+# its analyses are still on the worker (the pipeline's waiting loop). What the
+# page calls that wait is worked out from the combinations, by displayed_stage.
+WAITING_ON_WORKER = "waiting_for_worker"
+SOLVING_ON_WORKER = "solving_on_worker"
+
+
+def displayed_stage(stage: Optional[str], combos: Optional[dict]) -> Optional[str]:
+    """The stage the page shows for a run. Only "postprocessing" is reworded, and
+    only while some of its analyses are still on the worker: "solving_on_worker"
+    while one of them is in progress there, "waiting_for_worker" while the rest
+    are pending or held. Otherwise the stage as stored is shown -- a run whose
+    analyses are all back is really being read and processed.
+
+    `stage` stays as stored: this is the words only, so ACTIVE_STAGES and resume
+    are unaffected, and runs saved before this was written need no migration.
+    """
+    if stage != "postprocessing":
+        return stage
+    unfinished = [
+        combo.get("queue_status") for combo in (combos or {}).values()
+        if isinstance(combo, dict) and combo.get("task_id")
+        and combo.get("queue_status") not in ("done", "failed")
+    ]
+    if "in_progress" in unfinished:
+        return SOLVING_ON_WORKER
+    if any(status in ("pending", "held", None) for status in unfinished):
+        return WAITING_ON_WORKER
+    return stage
+
+
 # The part states that are not still going, and not a failure to act on.
 DONE_PART_STATES = frozenset({"complete", "failed", "stopped"})
 
@@ -633,6 +664,7 @@ class Run:
                 "label": (config.get("label") or "").strip(),
                 "created_at": config.get("created_at"),
                 "stage": shown_stage,
+                "stage_shown": displayed_stage(shown_stage, progress_state.get("combos")),
                 "swept": swept,
                 "facet_inputs": facet_inputs(config),
                 "held": held_count(state),
