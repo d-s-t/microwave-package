@@ -20,6 +20,7 @@ real benefit to overlapping it anyway.
 """
 from __future__ import annotations
 
+import fnmatch
 import json
 import logging
 import os
@@ -66,6 +67,11 @@ def postprocess_task(
     if task.get("solution_type"):
         kwargs["solution_type"] = task["solution_type"]
 
+    # As in build_model: with the cross-process lock nothing else has this
+    # project open, so a lock file here is a leftover of a crashed read-out,
+    # and refusing to open it would make the combination unresumable.
+    kwargs["remove_lock"] = True
+
     hfss = Hfss(**kwargs)
     try:
         setup_names = list(getattr(hfss, "setup_names", []) or [])
@@ -106,6 +112,9 @@ def long_path(path: str) -> str:
     return LONG_PREFIX + os.path.abspath(path)
 
 
+LOCK_PATTERN = "*.lock"
+
+
 def copy_tree_verified(source: str, destination: str) -> List[str]:
     """Copy a folder and check every file arrived intact.
 
@@ -114,11 +123,19 @@ def copy_tree_verified(source: str, destination: str) -> List[str]:
     empty -- the queue copy is the only copy until then.
     """
     source, destination = long_path(source), long_path(destination)
-    shutil.copytree(source, destination, dirs_exist_ok=True)
+    # `*.lock` files are never copied. The worker's `.aedt.lock` names its
+    # AEDT process, IP and gRPC port, and only blocks a local open; it is
+    # not part of the results. They are skipped in the walk too, so they
+    # are not reported as missing.
+    shutil.copytree(source, destination, dirs_exist_ok=True,
+                    ignore=shutil.ignore_patterns(LOCK_PATTERN))
 
     missing = []
-    for folder, _, files in os.walk(source):
+    for folder, dirs, files in os.walk(source):
+        dirs[:] = [name for name in dirs if not fnmatch.fnmatch(name, LOCK_PATTERN)]
         for name in files:
+            if fnmatch.fnmatch(name, LOCK_PATTERN):
+                continue
             original = os.path.join(folder, name)
             relative = os.path.relpath(original, source)
             copied = os.path.join(destination, relative)

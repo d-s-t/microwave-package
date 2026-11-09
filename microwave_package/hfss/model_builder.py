@@ -13,14 +13,18 @@ solver rather than branched on. See registry.py for that contract.
 """
 from __future__ import annotations
 
+import errno
 import functools
+import inspect
 import itertools
+import json
 import logging
 import os
 import re
 import threading
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Callable, Dict, List, Optional
 
 from ansys_analyze_common import queue_common
@@ -98,15 +102,147 @@ def aedt_version_for(requested: Optional[str]) -> Optional[str]:
 # Had it got past that, it would have started a second AEDT, which the
 # licence refuses. A model build and a post-processing each hold this
 # for their whole length.
+#
+# That is one process only. The web app starts each run's pipeline as a
+# child PROCESS, so two runs can each hold their own copy of AEDT_LOCK at
+# once, and the licence still has one AEDT (2026-11-08: two model builds
+# at 13:38 and two read-outs at 16:15, and one of each pair crashed). So
+# `one_aedt_at_a_time` also holds an OS file lock that every process on
+# this PC shares -- see `_acquire_file_lock`. The thread lock is taken
+# first, the file lock second, and only by the outermost call in a process.
 AEDT_LOCK = threading.RLock()
+
+AEDT_LOCK_ENV = "MICROWAVE_AEDT_LOCK_PATH"
+# The holder writes who it is into the first bytes of the file. The lock
+# itself is a byte range far past that text: on Windows a byte range that
+# msvcrt has locked cannot be read through another handle.
+_AEDT_INFO_BYTES = 4096
+_AEDT_LOCK_OFFSET = 1 << 20
+_POLL_SECONDS = 0.5
+_REPORT_EVERY_SECONDS = 60
+
+# Only ever changed while AEDT_LOCK is held, so no thread-local is needed.
+_aedt_depth = 0        # how many one_aedt_at_a_time calls this process is inside
+_aedt_lock_fd = None   # the file lock they hold together, while _aedt_depth > 0
+
+
+def aedt_lock_path() -> str:
+    """The file every process on this PC locks around AEDT. Read at call
+    time, so a test can point it somewhere else with AEDT_LOCK_ENV."""
+    override = os.environ.get(AEDT_LOCK_ENV)
+    if override:
+        return override
+    return str(Path.home() / ".microwave_package" / "aedt_session.lock")
+
+
+def _try_file_lock(fd) -> bool:
+    """Take the file lock without waiting. False when another process has it."""
+    if os.name == "nt":
+        import msvcrt
+        os.lseek(fd, _AEDT_LOCK_OFFSET, os.SEEK_SET)
+        try:
+            msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+            return True
+        except OSError as exc:
+            if exc.errno in (errno.EACCES, errno.EDEADLK):
+                return False
+            raise
+    import fcntl
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return True
+    except BlockingIOError:
+        return False
+
+
+def _holder_text(path: str) -> str:
+    """Who holds the file lock, from the text the holder wrote. Empty or
+    garbled text (the holder is between truncating and writing) is 'unknown'."""
+    try:
+        with open(path, "rb") as handle:
+            info = json.loads(handle.read(_AEDT_INFO_BYTES).decode("utf-8") or "null")
+        return f"held by pid {info['pid']} ({info['function']}) since {info['since']}"
+    except (OSError, ValueError, KeyError, TypeError):
+        return "held by unknown process"
+
+
+def _acquire_file_lock(name: str, log: Callable[[str], None]) -> int:
+    """Wait until no process holds the AEDT file lock, then take it.
+
+    The OS frees the lock when its holder exits for any reason, so there is
+    no stale file to clear by hand. There is no timeout: a build or a
+    read-out can take an hour. Returns the open file descriptor, which
+    must go to _release_file_lock."""
+    path = aedt_lock_path()
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o644)
+    try:
+        if not _try_file_lock(fd):
+            log(f"waiting for AEDT: {_holder_text(path)}")
+            waiting_since = time.monotonic()
+            reported_at = waiting_since
+            while not _try_file_lock(fd):
+                time.sleep(_POLL_SECONDS)
+                if time.monotonic() - reported_at >= _REPORT_EVERY_SECONDS:
+                    reported_at = time.monotonic()
+                    log(f"still waiting for AEDT: {_holder_text(path)}")
+            log(f"AEDT is free after {time.monotonic() - waiting_since:.0f} s; going ahead.")
+        # Written only now that we hold the lock, and always from offset 0.
+        info = json.dumps({"pid": os.getpid(), "function": name,
+                           "since": time.strftime("%H:%M:%S")}).encode("utf-8")
+        os.lseek(fd, 0, os.SEEK_SET)
+        os.ftruncate(fd, 0)
+        os.write(fd, info[:_AEDT_INFO_BYTES])
+        return fd
+    except BaseException:
+        os.close(fd)  # closing the handle is what frees the lock
+        raise
+
+
+def _release_file_lock(fd: int) -> None:
+    try:
+        # Empty the text first, so a waiter never reads the last holder's name.
+        os.ftruncate(fd, 0)
+        if os.name == "nt":
+            import msvcrt
+            os.lseek(fd, _AEDT_LOCK_OFFSET, os.SEEK_SET)
+            msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(fd, fcntl.LOCK_UN)
+    finally:
+        os.close(fd)
+
+
+def _log_of(fn, args, kwargs) -> Callable[[str], None]:
+    """The call's own `log` argument if it has one (by keyword or position),
+    else the module logger -- so a wait shows up in the run's log."""
+    try:
+        log = inspect.signature(fn).bind_partial(*args, **kwargs).arguments.get("log")
+    except TypeError:
+        log = None
+    return log if callable(log) else logger.info
 
 
 def one_aedt_at_a_time(fn):
-    """Run `fn` holding AEDT_LOCK -- see there."""
+    """Run `fn` holding AEDT_LOCK and the machine-wide AEDT file lock.
+
+    Only the outermost such call in a process takes the file lock; a nested
+    call (same thread, already inside) just runs, or it would wait on itself."""
     @functools.wraps(fn)
     def wrapper(*args, **kwargs):
+        global _aedt_depth, _aedt_lock_fd
         with AEDT_LOCK:
-            return fn(*args, **kwargs)
+            if _aedt_depth == 0:
+                _aedt_lock_fd = _acquire_file_lock(fn.__name__, _log_of(fn, args, kwargs))
+            _aedt_depth += 1
+            try:
+                return fn(*args, **kwargs)
+            finally:
+                _aedt_depth -= 1
+                if _aedt_depth == 0:
+                    fd, _aedt_lock_fd = _aedt_lock_fd, None
+                    _release_file_lock(fd)
     return wrapper
 
 
