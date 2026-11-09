@@ -737,19 +737,6 @@ class TestClearCavityArea(unittest.TestCase):
         self.assertLess(low, STACK.pcb_bottom - STACK.copper_thickness)
         self.assertGreater(high, STACK.pcb_top + STACK.copper_thickness)
 
-    def test_a_blind_pocket_is_cut_through_both_layers_too(self):
-        """The opening only reaches part way into the board, but the
-        copper that must go is on both faces of it: the top layer is
-        inside the pocket, and the bottom layer is under the die with no
-        gap. Cutting only as deep as the pocket would leave the second."""
-        modeler = FakeModeler()
-        cg.clear_cavity_area(modeler, FRAME, STACK, POCKET,
-                             ["pcb_copper_top", "pcb_copper_bottom"],
-                             log=lambda _m: None)
-        origin, sizes = modeler.boxes[0]
-        self.assertLess(origin[1], STACK.pcb_bottom - STACK.copper_thickness)
-        self.assertGreater(origin[1] + sizes[1], STACK.pcb_top + STACK.copper_thickness)
-
     def test_both_layers_are_cut_together(self):
         modeler = self._clear()
         target, tools, keep = modeler.subtractions[0]
@@ -768,6 +755,68 @@ class TestClearCavityArea(unittest.TestCase):
         cg.clear_cavity_area(modeler, FRAME, STACK, THROUGH, [], log=lambda _m: None)
         self.assertEqual(modeler.boxes, [])
         self.assertEqual(modeler.subtractions, [])
+
+
+class TestBlindPocketKeepsTheBackPlane(unittest.TestCase):
+    """A blind pocket leaves the board's bottom copper whole under the die.
+
+    The Altium generator draws the back plane unbroken under a blind pocket
+    (`base_parts/altium/GenerateFromParams.pas`: a blind pocket does not take
+    the far face). The model has to match it, or it simulates a board that is
+    not the one that gets made. So the cutting tool stops at the pocket's
+    floor and clears only what lies above it. A through opening still takes
+    both layers.
+    """
+
+    # The 0.508 mm board with the 0.381 mm die, through the planner itself, so
+    # the blind decision these tests rely on is the one the builder makes.
+    VALUES = {"pcb_width": 0.508, "chip_width": 0.381,
+              "chip_length": 6.3, "chip_side": 6.3, "cavity_clearance": 0.1}
+    BLIND = cav.plan(VALUES)
+    THICK = cg.Stack(pcb_bottom=1.0, pcb_top=1.508, chip_bottom=1.127, chip_top=1.508,
+                     copper_thickness=0.035, chip_metal_thickness=0.0002)
+
+    def _cut(self, cavity, stack):
+        modeler = FakeModeler()
+        cg.clear_cavity_area(modeler, FRAME, stack, cavity,
+                             ["pcb_copper_top", "pcb_copper_bottom"],
+                             log=lambda _m: None)
+        return modeler
+
+    def _extent(self, cavity, stack):
+        """The cutting tool's bottom and top faces, along the board's thickness."""
+        origin, sizes = self._cut(cavity, stack).boxes[0]
+        return origin[1], origin[1] + sizes[1]
+
+    def test_the_planner_makes_this_board_a_blind_pocket(self):
+        self.assertFalse(self.BLIND.through, "precondition: a blind pocket")
+        self.assertAlmostEqual(self.BLIND.depth, 0.381)
+
+    def test_the_tool_starts_at_the_top_of_the_floor(self):
+        low, _high = self._extent(self.BLIND, self.THICK)
+        self.assertAlmostEqual(low, self.THICK.pcb_top - self.BLIND.depth)
+
+    def test_the_tool_stays_above_the_bottom_copper(self):
+        low, high = self._extent(self.BLIND, self.THICK)
+        bottom_low = self.THICK.pcb_bottom - self.THICK.copper_thickness
+        bottom_high = self.THICK.pcb_bottom
+        self.assertGreater(low, self.THICK.pcb_bottom)
+        self.assertFalse(low < bottom_high and high > bottom_low,
+                         "the cutting tool reaches the bottom copper")
+
+    def test_the_top_layer_inside_the_pocket_is_still_cleared(self):
+        _low, high = self._extent(self.BLIND, self.THICK)
+        self.assertGreater(high, self.THICK.pcb_top + self.THICK.copper_thickness)
+
+    def test_the_blind_cut_is_named_and_consumed(self):
+        _target, tools, keep = self._cut(self.BLIND, self.THICK).subtractions[0]
+        self.assertEqual(tools, ["cavity_area_cut"])
+        self.assertFalse(keep, "the cutting tool must be consumed")
+
+    def test_a_through_opening_still_takes_the_full_stack(self):
+        low, high = self._extent(THROUGH, STACK)
+        self.assertAlmostEqual(low, STACK.pcb_bottom - 2 * STACK.copper_thickness)
+        self.assertAlmostEqual(high, STACK.pcb_top + 2 * STACK.copper_thickness)
 
 
 class TestPocketedSubstrate(unittest.TestCase):

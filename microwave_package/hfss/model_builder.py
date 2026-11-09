@@ -985,10 +985,13 @@ def build_layout(hfss, combo_dir: str, dimensions_txt_content: str,
             thickness=stack.copper_thickness, prefix="pcb", log=log,
         )
         remember_sheets(made, stack.copper_thickness, copper)
-        # The generator already draws the copper round the opening, so
-        # this normally cuts nothing. It is here for the copper.txt an
-        # older generator wrote, where it is the difference between a
-        # model and a model with a ground plane across its own cutout.
+        # The generator already keeps the copper out of a through opening,
+        # so this cuts nothing there. A blind pocket keeps its back plane
+        # whole under the die, and this cuts only the top layer above the
+        # pocket's floor (see copper_geometry.clear_cavity_area). It is here
+        # for the copper.txt an older generator wrote, where it is the
+        # difference between a model and a model with a ground plane across
+        # its own cutout.
         cg.clear_cavity_area(
             hfss.modeler, frame, stack, opening,
             targets=[name for names in made.values() for name in names],
@@ -1093,8 +1096,9 @@ def build_layout(hfss, combo_dir: str, dimensions_txt_content: str,
     except ValueError as exc:
         raise RuntimeError(f"Vents: {exc}") from exc
 
-    # A bare board's whole bottom copper over a pedestal recess: the box is
-    # given back a skin under it there (see vents.build_recess_skin).
+    # Where the bottom copper is whole over a pedestal recess (a bare board, or
+    # a die board with a blind pocket), the box is given back a skin under it
+    # there (see vents.build_recess_skin).
     vent_builder.build_recess_skin(hfss, frame, stack, v, log=log)
 
     ground_offset = None
