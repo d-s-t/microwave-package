@@ -8,6 +8,7 @@ post-processed at the same moment and one of them failed with PyAEDT's
 Run: python -m unittest discover -s tests
 """
 import os
+import shutil
 import tempfile
 import threading
 import time
@@ -16,6 +17,21 @@ from unittest import mock
 
 from microwave_package.hfss import model_builder
 from microwave_package.workflow import postprocess
+
+
+def setUpModule():
+    # The decorated functions also take the machine-wide AEDT lock file;
+    # keep these tests off the PC's own copy of it.
+    global _lock_folder, _lock_env
+    _lock_folder = tempfile.mkdtemp(prefix="aedt_lock_test_")
+    _lock_env = mock.patch.dict(
+        os.environ, {model_builder.AEDT_LOCK_ENV: os.path.join(_lock_folder, "aedt_session.lock")})
+    _lock_env.start()
+
+
+def tearDownModule():
+    _lock_env.stop()
+    shutil.rmtree(_lock_folder, ignore_errors=True)
 
 
 class TestTheVersionHandedToPyAEDT(unittest.TestCase):
@@ -218,6 +234,27 @@ class TestADoneCombinationShowsNoError(unittest.TestCase):
     def test_a_failed_one_still_says_why(self):
         self.run.update_combo(self.combo_id, post_status="failed", post_error="it broke")
         self.assertEqual(self.error_shown(), "it broke")
+
+
+class TestLockFilesStayOnTheQueue(unittest.TestCase):
+    def test_a_lock_file_is_neither_copied_nor_reported_missing(self):
+        root = tempfile.mkdtemp(prefix="queue_lock_test_")
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        source = os.path.join(root, "queue", "task")
+        os.makedirs(os.path.join(source, "x.aedtresults"))
+        for relative, text in (("x.aedt", "project"),
+                               (os.path.join("x.aedtresults", "sol.dat"), "data"),
+                               ("x.aedt.lock", "pid 1 ip 10.0.0.1 port 9")):
+            with open(os.path.join(source, relative), "w") as handle:
+                handle.write(text)
+        destination = os.path.join(root, "local")
+
+        missing = postprocess.copy_tree_verified(source, destination)
+
+        self.assertEqual(missing, [])
+        self.assertFalse(os.path.exists(os.path.join(destination, "x.aedt.lock")))
+        self.assertTrue(os.path.exists(os.path.join(destination, "x.aedt")))
+        self.assertTrue(os.path.exists(os.path.join(destination, "x.aedtresults", "sol.dat")))
 
 
 if __name__ == "__main__":

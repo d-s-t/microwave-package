@@ -135,4 +135,6 @@ def main(indices):
 
 
 if __name__ == "__main__":
-    main([int(x) for x in sys.argv[1:]] or list(range(len(CASES))))
+    # It starts AEDT, so it takes the same one-at-a-time lock as the pipeline.
+    from microwave_package.hfss import model_builder
+    model_builder.one_aedt_at_a_time(main)([int(x) for x in sys.argv[1:]] or list(range(len(CASES))))
