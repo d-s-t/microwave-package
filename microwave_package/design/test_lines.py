@@ -35,7 +35,7 @@ import json
 import math
 import os
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
@@ -229,6 +229,7 @@ class Route:
     widths: Tuple[float, ...]
     joints: Tuple[str, ...]
     marks: Tuple[Tuple[float, str], ...] = ()  # (arc length, label) of each corner or bend
+    groups: Tuple[Tuple[str, str, float, float], ...] = ()  # (label, matched/unmatched/step, s from, s to)
 
     def __post_init__(self):
         if len(self.widths) != len(self.vertices) - 1:
@@ -250,6 +251,11 @@ class Route:
         v = np.asarray(self.vertices)
         h = np.asarray(self.widths) / 2.0
         return float(max(np.max(np.abs(v[:, 1])), 0.0) + np.max(h))
+
+    def footprint_extent(self) -> float:
+        """Largest distance from the centre line to the edge of the CPW footprint: the trace, its
+        half width, and the gap to the pour. The lid's channel must clear this, not the copper."""
+        return self.lateral_extent() + GAP
 
     def x_at_arc(self, s: float) -> float:
         return float(self.point_at(s)[0])
@@ -291,7 +297,8 @@ def build_route(name: str, corners: Sequence, leg_widths: Sequence[float],
 
     `corners`: (x, y, kind) for each corner, first and last 'end'. kind is 'straight',
     'sharp', 'mitre' or ('arc', R): an arc of radius R replaces the corner, tangent to both
-    legs. `leg_widths[i]` is the width of the leg from corner i to corner i+1."""
+    legs. `leg_widths[i]` is the width of the leg from corner i to corner i+1. Two arcs with no
+    straight between them (an S-bend) share a tangent point: it is written once."""
     pts = [np.asarray(c[:2], dtype=float) for c in corners]
     kinds = [c[2] for c in corners]
     if kinds[0] != "end" or kinds[-1] != "end":
@@ -301,32 +308,35 @@ def build_route(name: str, corners: Sequence, leg_widths: Sequence[float],
     items: List[Tuple[np.ndarray, Optional[str]]] = [(pts[0], None)]
     widths: List[float] = []
     marks_at: List[Tuple[int, str]] = []  # (item index, label) of each corner
+
+    def add(point: np.ndarray, joint: Optional[str], width: float) -> int:
+        if math.hypot(*(point - items[-1][0])) < 1e-9:
+            return len(items) - 1  # a shared tangent point: already written
+        items.append((point, joint))
+        widths.append(width)
+        return len(items) - 1
+
     for i in range(len(pts) - 1):
         cur = float(leg_widths[i])
         c = i + 1
         if c == len(pts) - 1:
-            items.append((pts[c], None))
-            widths.append(cur)
+            add(pts[c], None, cur)
             break
         kind = kinds[c]
         if isinstance(kind, tuple) and kind[0] == "arc":
             t_in, samples, t_out, _ = _arc_samples(pts[c - 1], pts[c], pts[c + 1], float(kind[1]),
                                                    sample_deg)
-            items.append((t_in, "straight"))
-            widths.append(cur)
+            add(t_in, "straight", cur)
             first_sample = len(items)
             for s in samples:
-                items.append((s, "arc"))
-                widths.append(cur)
-            marks_at.append((first_sample + len(samples) // 2 - 1 if samples else len(items) - 1,
+                add(s, "arc", cur)
+            marks_at.append((first_sample + (len(samples) - 1) // 2 if samples else len(items) - 1,
                              f"bend R={float(kind[1]):g}"))
-            items.append((t_out, "straight"))
-            widths.append(cur)
+            add(t_out, "straight", cur)
         elif kind in ("straight", "sharp", "mitre"):
-            items.append((pts[c], kind))
-            widths.append(cur)
+            k = add(pts[c], kind, cur)
             if kind != "straight":
-                marks_at.append((len(items) - 1, f"{kind} 90 deg"))
+                marks_at.append((k, f"{kind} 90 deg"))
         else:
             raise ValueError(f"unknown corner kind {kind!r}")
     vertices = tuple((float(p[0]), float(p[1])) for p, _ in items)
@@ -692,6 +702,28 @@ def splice_region(points: List[Point], inner_path: np.ndarray, ) -> List[Point]:
     return points[:idx_l + 1] + interior + points[idx_r:]
 
 
+def _is_section_via(line: str) -> bool:
+    return line.startswith("via|") and abs(float(line.split("|")[1])) < SPLICE_X - 1e-9
+
+
+def section_free_lines(text: str) -> List[str]:
+    """The copper.txt lines outside the section: everything except the signal track and regions
+    (inside the launch edges), the vias with |x| < SPLICE_X, and the top pours that the splice changes. A variant and its parent must
+    agree on these, in order, or the parent is not the reference for the variant."""
+    out = []
+    for line in text.splitlines():
+        if line.startswith("track|") or _is_section_via(line):
+            continue
+        if line.startswith("region|top|"):
+            pts = _parse_point_list(line.split("|", 2)[2])
+            if len(pts) >= 82 and any(abs(abs(x) - SPLICE_X) < 1e-9 for x, _ in pts):
+                continue  # a top pour the splice changes
+            if all(abs(x) <= PORT_X + 1e-9 for x, _ in pts):
+                continue  # a signal region (mitred leg, corner square): inside the launch edges
+        out.append(line)
+    return out
+
+
 def write_variant(base_text: str, route: Route, out_path: Optional[str] = None) -> Tuple[str, VariantReport]:
     """The variant's copper.txt, built from TV0's text. Returns (text, report)."""
     lines = base_text.splitlines()
@@ -800,46 +832,117 @@ def tv2_taper() -> Route:
     return build_route("TV2", corners, widths)
 
 
-# The routed family for TV3..TV5: from port 1 out to x = -9.6, a 4 mm jog down to y = -4, a run along
-# y = -4 to x = +8.0, and a 4 mm jog back up to y = 0 and out to port 2. Each jog's two corners are
-# one resolution apart (not separable by the TDR); the jogs sit at least one resolution (3.9 mm)
-# inside each launch, including the bend's own extent.
-ROUTED_X1 = -9.6
-ROUTED_X2 = 8.0
-ROUTED_STEP = (-4.8, 3.2)  # TV5's 0.30 mm section, 8 mm long, centred in the 17.6 mm run
+# ----------------------------------------------------------------- the routed family (TV3..TV5)
+# The 12 mm pocket is not buildable (the SMP window check). The routed family lives in the
+# 2.7 mm relief channel (route_width 2.7, route_clearence 0.3): the copper edge must stay
+# POCKET_MARGIN inside the wall, which leaves a centre line within about +-0.9 mm of the axis.
+# Every corner is a stack or a bump: a route that starts and ends on the axis has an even
+# number of 90 degree corners, so a stack of three cannot close; a bump of four corners can.
+POCKET_WIDTH = 2.7
+POCKET_HALF = POCKET_WIDTH / 2.0
+POCKET_MARGIN = 0.15  # the CPW footprint (trace and both gaps) stays this far inside the lid's wall
+BUMP_H = 0.8  # a stack's bump height on the centre line
+BUMP_W = 0.8  # a stack's top width: four corners within 2.4 mm
+WAVE_PLATEAU = 0.05  # the straight between the two S-bends of a wave
+WAVE_LATERAL = 0.80  # the wave's lateral offset on the centre line: footprint margin 0.19 mm
+WAVE_MATCHED = (1.44, math.acos(1.0 - WAVE_LATERAL / (2.0 * 1.44)))  # R = 3 W: 43.8 degrees
+WAVE_TIGHT = (0.48, math.acos(1.0 - WAVE_LATERAL / (2.0 * 0.48)))  # R = W: 80.4 degrees
+FEATURE_X = 9.6  # the feature zone: one resolution (3.9 mm) clear of each launch
+RESOLUTION_MM = 3.89  # the 20 GHz distance resolution of the lidded line (report)
+STEP_X = (-4.0, 4.0)  # TV5's 0.30 mm section, 8 mm long
 
 
-def _routed(name: str, kinds: Sequence, width_step: Optional[Tuple[float, float, float]] = None) -> Route:
-    x1, x2 = ROUTED_X1, ROUTED_X2
-    corners = [(-PORT_X, 0.0, "end"), (x1, 0.0, kinds[0]), (x1, -4.0, kinds[1]),
-               (x2, -4.0, kinds[2]), (x2, 0.0, kinds[3]), (PORT_X, 0.0, "end")]
-    widths = [TRACE_W, TRACE_W, TRACE_W, TRACE_W, TRACE_W]
-    if width_step is not None:
-        xa, xb, w = width_step
-        # the long run (corners 2 -> 3) split at xa and xb
-        corners = [corners[0], corners[1], corners[2], (xa, -4.0, "straight"), (xb, -4.0, "straight"),
-                   corners[3], corners[4], corners[5]]
-        widths = [TRACE_W, TRACE_W, TRACE_W, w, TRACE_W, TRACE_W, TRACE_W]
+def _bump(x0: float, kind: str) -> List[Tuple[float, float, object]]:
+    """Four corners of a bump: up, along, down, along, all within BUMP_W x BUMP_H."""
+    return [(x0, 0.0, kind), (x0, BUMP_H, kind), (x0 + BUMP_W, BUMP_H, kind), (x0 + BUMP_W, 0.0, kind)]
+
+
+def _wave(x0: float, radius: float, theta: float):
+    """Two S-bends of radius R and angle theta: up to lateral d and back, with a short plateau.
+    Four curved corners. Returns (corners, x of the wave's end); the wave starts at x0."""
+    t = radius * math.tan(theta / 2.0)  # tangent length of each arc
+    d = 2.0 * radius * (1.0 - math.cos(theta))  # lateral offset of one S-bend
+    run = d / math.tan(theta)
+    a1 = x0 + t
+    b1 = a1 + run
+    a2 = b1 + 2.0 * t + WAVE_PLATEAU
+    b2 = a2 + run
+    arc = ("arc", radius)
+    return [(a1, 0.0, arc), (b1, d, arc), (a2, d, arc), (b2, 0.0, arc)], b2 + t
+
+
+def _wave_extent(radius: float, theta: float) -> float:
+    return _wave(0.0, radius, theta)[1]
+
+
+def wave_lateral(radius: float, theta: float) -> float:
+    return 2.0 * radius * (1.0 - math.cos(theta))
+
+
+def _routed_line(name: str, middle: Sequence, step: Optional[Tuple[float, float, float]] = None) -> Route:
+    corners = [(-PORT_X, 0.0, "end")] + list(middle) + [(PORT_X, 0.0, "end")]
+    widths = []
+    for (ax, ay, _), (bx, by, _) in zip(corners[:-1], corners[1:]):
+        mx, my = 0.5 * (ax + bx), 0.5 * (ay + by)
+        inside = step is not None and abs(my) < 1e-9 and step[0] - 1e-9 <= mx <= step[1] + 1e-9
+        widths.append(step[2] if inside else TRACE_W)
     return build_route(name, corners, widths)
 
 
+def _spans(route: Route, boxes) -> Tuple[Tuple[str, str, float, float], ...]:
+    """Arc range of each group, from the vertices inside its box (x0, x1, y1), y from 0 to y1."""
+    v = np.asarray(route.vertices)
+    arc = route.arc_at_vertices()
+    out = []
+    for label, status, x0, x1, y1 in boxes:
+        sel = (v[:, 0] >= x0 - 1e-9) & (v[:, 0] <= x1 + 1e-9) & (v[:, 1] >= -1e-9) & (v[:, 1] <= y1 + 1e-9)
+        out.append((label, status, float(arc[sel].min()), float(arc[sel].max())))
+    return tuple(out)
+
+
 def tv3_matched() -> Route:
-    """TV3: matched corners and bends. Corners 1 and 3 are optimal mitres; corners 2 and 4 are
-    curved bends of radius 1.44 mm (3 x the 0.48 mm trace)."""
-    return _routed("TV3", ["mitre", ("arc", 1.44), "mitre", ("arc", 1.44)])
+    """TV3, matched only: a stack of four optimal 45 degree mitres (a bump), then a matched wave of
+    two S-bends of radius 1.44 mm (3 W), separated by two resolutions."""
+    bump = _bump(-FEATURE_X, "mitre")
+    ext = _wave_extent(*WAVE_MATCHED)
+    wx0 = FEATURE_X - ext
+    wave, _ = _wave(wx0, *WAVE_MATCHED)
+    route = _routed_line("TV3", bump + wave)
+    return replace(route, groups=_spans(route, [
+        ("stack M1: four optimal mitres (matched corners)", "matched", -FEATURE_X, -FEATURE_X + BUMP_W, BUMP_H),
+        ("wave W1: two S-bends, R 1.44 mm (matched bends)", "matched", wx0, FEATURE_X, wave_lateral(*WAVE_MATCHED)),
+    ]))
 
 
 def tv4_unmatched() -> Route:
-    """TV4: unmatched corners and tight bends. Corners 1 and 3 are unmitred 90 degree corners;
-    corners 2 and 4 are tight bends of radius 0.48 mm (1 x the trace)."""
-    return _routed("TV4", ["sharp", ("arc", 0.48), "sharp", ("arc", 0.48)])
+    """TV4, unmatched only: two stacks of four unmitred 90 degree corners (bumps), with a tight wave
+    of two S-bends of radius 0.48 mm (1 W) between them, each separated by two resolutions."""
+    bump1 = _bump(-FEATURE_X, "sharp")
+    bump2 = _bump(FEATURE_X - BUMP_W, "sharp")
+    ext = _wave_extent(*WAVE_TIGHT)
+    wx0 = -0.5 * ext
+    wave, _ = _wave(wx0, *WAVE_TIGHT)
+    route = _routed_line("TV4", bump1 + wave + bump2)
+    return replace(route, groups=_spans(route, [
+        ("stack U1: four unmitred corners (unmatched corners)", "unmatched", -FEATURE_X, -FEATURE_X + BUMP_W, BUMP_H),
+        ("wave W2: two S-bends, R 0.48 mm (unmatched bends)", "unmatched-bend", wx0, -wx0, wave_lateral(*WAVE_TIGHT)),
+        ("stack U2: four unmitred corners (unmatched corners)", "unmatched", FEATURE_X - BUMP_W, FEATURE_X, BUMP_H),
+    ]))
 
 
 def tv5_combined() -> Route:
-    """TV5: matched mitres at corners 1 and 3, unmatched at corners 2 (sharp) and 4 (tight bend),
-    and a 0.30 mm section 8 mm long in the middle of the long run (x from -4.8 to 3.2 mm)."""
-    return _routed("TV5", ["mitre", "sharp", "mitre", ("arc", 0.48)],
-                   width_step=(ROUTED_STEP[0], ROUTED_STEP[1], 0.30))
+    """TV5: a stack of four optimal mitres (matched), a 0.30 mm section 8 mm long at the centre, and a
+    stack of four unmitred corners (unmatched). The stacks are one resolution from the section: the
+    27 mm launch to launch leaves no room for two resolutions on each side."""
+    bump1 = _bump(-FEATURE_X, "mitre")
+    bump2 = _bump(FEATURE_X - BUMP_W, "sharp")
+    middle = bump1 + [(STEP_X[0], 0.0, "straight"), (STEP_X[1], 0.0, "straight")] + bump2
+    route = _routed_line("TV5", middle, step=(STEP_X[0], STEP_X[1], 0.30))
+    return replace(route, groups=_spans(route, [
+        ("stack M1: four optimal mitres (matched corners)", "matched", -FEATURE_X, -FEATURE_X + BUMP_W, BUMP_H),
+        ("section: 0.30 mm, 8 mm (width mismatch)", "step", STEP_X[0], STEP_X[1], 0.0),
+        ("stack U1: four unmitred corners (unmatched corners)", "unmatched", FEATURE_X - BUMP_W, FEATURE_X, BUMP_H),
+    ]))
 
 
 VARIANTS = {"TV1": tv1_step, "TV2": tv2_taper, "TV3": tv3_matched, "TV4": tv4_unmatched,
@@ -915,26 +1018,37 @@ def corner_prediction(width: float = TRACE_W, gap: float = GAP) -> dict:
 
 def _main(argv: Optional[Sequence[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="Write the TV1..TV5 copper.txt variants from TV0's.")
-    parser.add_argument("tv0_copper", help="TV0's copper.txt")
+    parser.add_argument("--straight", required=True, help="TV0's copper.txt: the base for TV1 and TV2")
+    parser.add_argument("--pocket", help="the 2.7 mm pocket parent's copper.txt: the base for TV3 to TV5 "
+                                         "(default: --straight). It must agree with --straight outside the section.")
     parser.add_argument("--out", required=True, help="folder for <TVn>/copper.txt and variant.json")
     parser.add_argument("--only", nargs="*", help="variant names (default: all)")
     args = parser.parse_args(argv)
-    with open(args.tv0_copper, encoding="utf-8") as f:
-        base = f.read()
-    summary = {}
+    with open(args.straight, encoding="utf-8") as f:
+        straight = f.read()
+    pocket = straight
+    if args.pocket:
+        with open(args.pocket, encoding="utf-8") as f:
+            pocket = f.read()
+        if section_free_lines(pocket) != section_free_lines(straight):
+            print("test_lines: the pocket parent's copper differs from TV0's outside the section; "
+                  "it is not the reference for these variants", file=sys.stderr)
+            return 2
     for name, make in VARIANTS.items():
         if args.only and name not in args.only:
             continue
         route = make()
+        base = straight if name in ("TV1", "TV2") else pocket
         folder = os.path.join(args.out, name)
         text, report = write_variant(base, route, os.path.join(folder, "copper.txt"))
-        meta = {"name": name, "length_mm": route.length, "lateral_extent_mm": route.lateral_extent(),
+        meta = {"name": name, "parent": "TV0" if base is straight else "TV0 pocket (route_width 2.7)",
+                "length_mm": route.length, "lateral_extent_mm": route.lateral_extent(),
                 "vertices": [list(p) for p in route.vertices], "widths": list(route.widths),
-                "joints": list(route.joints), "sections": section_truth(route),
-                "features": features(route), "report": report.__dict__}
+                "joints": list(route.joints), "groups": [list(g) for g in route.groups],
+                "sections": section_truth(route), "features": features(route),
+                "report": report.__dict__}
         with open(os.path.join(folder, "variant.json"), "w", encoding="utf-8") as f:
             json.dump(meta, f, indent=2)
-        summary[name] = report.__dict__
         print(f"{name}: {report}")
     return 0
 

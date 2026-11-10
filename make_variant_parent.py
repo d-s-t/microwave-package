@@ -2,7 +2,11 @@
 Make a standalone run from a finished TV0 run and a test-line copper.txt, so the variant can be
 refined and solved like any run, without rebuilding the box and the lid.
 
-    python make_variant_parent.py <TV0 run folder> <variant copper.txt> --label "TV1: ..." [--route-width W]
+    python make_variant_parent.py <parent run folder> <variant copper.txt> --label "TV3: ..." [--route-width W]
+
+The parent is a finished bare-board run whose copper is the straight reference: TV0 for TV1 and TV2,
+and TV0b (the same board with route_width 2.7) for TV3 to TV5. The script checks that the variant and
+the parent agree outside the test section, so the parent is the variant's differential reference.
 
 What it writes (a new folder under the runs root, never over an existing one):
 
@@ -32,9 +36,10 @@ import sys
 from typing import Dict, List, Optional, Sequence
 
 from microwave_package.design import equations
+from microwave_package.design import test_lines
 from microwave_package.workflow import layout_image
 
-CHANNEL_MARGIN_MM = 0.1  # the lid's wall must stay this far from the signal's edge
+CHANNEL_MARGIN_MM = 0.15  # the lid's wall must stay this far from the CPW footprint (test_lines.POCKET_MARGIN)
 GEOMETRY_FILES = ("copper.txt", "bonds.txt", "dimensions.txt")
 STEP_FILES = {"box": "default_box.STEP", "lid_inside": "default_lid_inside.STEP"}
 DROP_KEYS = ("part_of", "part_role", "refines_run_id")
@@ -84,7 +89,16 @@ def make_parent(source_run: str, copper_path: str, runs_root: str, label: str,
         dims_text = f.read()
     tv0_width = _route_width_of(dims_text)
     width = tv0_width if route_width is None else float(route_width)
-    reach = signal_reach(copper_path)
+    with open(copper_path, encoding="utf-8") as f:
+        variant_text = f.read()
+    with open(os.path.join(source_models, "copper.txt"), encoding="utf-8") as f:
+        parent_text = f.read()
+    if test_lines.section_free_lines(variant_text) != test_lines.section_free_lines(parent_text):
+        raise VariantRefused(
+            "the parent's copper differs from the variant's outside the test section, so the parent is not "
+            "its differential reference (TV1 and TV2 need TV0; TV3 to TV5 need TV0b, the same board at route_width 2.7)."
+        )
+    reach = signal_reach(copper_path) + test_lines.GAP  # the CPW footprint: trace, both gaps
     half_channel = width / 2.0
     if reach > half_channel - CHANNEL_MARGIN_MM:
         raise VariantRefused(
@@ -177,7 +191,7 @@ def make_parent(source_run: str, copper_path: str, runs_root: str, label: str,
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="Make a standalone run from a finished TV0 run and a variant copper.txt.")
-    parser.add_argument("source", help="the finished TV0 run folder")
+    parser.add_argument("parent", help="the parent run folder: TV0, or TV0b for the 2.7 mm pocket")
     parser.add_argument("copper", help="the variant's copper.txt")
     parser.add_argument("--label", required=True, help="the run's label, as the web app shows it")
     parser.add_argument("--route-width", type=float, help="widen the lid's relief channel to this width (mm)")
@@ -190,7 +204,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
         runs_root = str(paths.RUNS_ROOT)
     try:
-        run_dir = make_parent(args.source, args.copper, runs_root, args.label, args.route_width)
+        run_dir = make_parent(args.parent, args.copper, runs_root, args.label, args.route_width)
     except VariantRefused as exc:
         print(f"make_variant_parent: refused: {exc}", file=sys.stderr)
         return 2

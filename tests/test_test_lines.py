@@ -79,25 +79,44 @@ class TestRoutes(unittest.TestCase):
     def test_route_lengths(self):
         self.assertAlmostEqual(tl.tv1_step().length, 27.0, places=6)
         self.assertAlmostEqual(tl.tv2_taper().length, 27.0, places=6)
-        self.assertAlmostEqual(tl.tv3_matched().length, 33.76, places=2)
-        self.assertAlmostEqual(tl.tv4_unmatched().length, 34.59, places=2)
-        self.assertAlmostEqual(tl.tv5_combined().length, 34.79, places=1)
+        self.assertAlmostEqual(tl.tv3_matched().length, 29.015, places=2)
+        self.assertAlmostEqual(tl.tv4_unmatched().length, 31.001, places=2)
+        self.assertAlmostEqual(tl.tv5_combined().length, 30.20, places=2)
 
-    def test_features_keep_a_resolution_from_each_launch(self):
-        resolution = 3.9  # mm: the 20 GHz resolution of the lidded line (see the report)
+    def test_no_zero_length_segments(self):
+        """Two S-bend arcs share a tangent point: it must be written once, or the offsets break."""
+        for make in tl.VARIANTS.values():
+            route = make()
+            v = np.asarray(route.vertices)
+            self.assertGreater(float(np.hypot(*np.diff(v, axis=0).T).min()), 1e-6, route.name)
+
+    def test_groups_keep_a_resolution_from_each_launch(self):
         for make in (tl.tv3_matched, tl.tv4_unmatched, tl.tv5_combined):
             route = make()
-            positions = [s for s, _ in route.marks]
-            self.assertGreaterEqual(min(positions), resolution, route.name)
-            self.assertGreaterEqual(route.length - max(positions), resolution, route.name)
+            starts = [g[2] for g in route.groups]
+            ends = [g[3] for g in route.groups]
+            self.assertGreaterEqual(min(starts), tl.RESOLUTION_MM - 0.01, route.name)
+            self.assertGreaterEqual(route.length - max(ends), tl.RESOLUTION_MM - 0.01, route.name)
 
-    def test_the_routed_lines_leave_the_straight_lid_channel(self):
-        """Why TV3 to TV5 need a wider relief pocket: their signal is more than the channel's
-        half-width (0.6 mm) from the centre line, under a perfect-E lid."""
+    def test_groups_are_separated_by_two_resolutions_where_the_budget_allows(self):
+        """27 mm holds two-resolution gaps for TV3 and TV4. TV5's section needs its stacks at one
+        resolution (4.8 mm, 1.2 resolutions): two on each side do not fit."""
+        for make, need in ((tl.tv3_matched, 2), (tl.tv4_unmatched, 2), (tl.tv5_combined, 1)):
+            route = make()
+            for a, b in zip(route.groups[:-1], route.groups[1:]):
+                self.assertGreaterEqual(b[2] - a[3], need * tl.RESOLUTION_MM - 0.02, route.name)
+        self.assertLess(min(b[2] - a[3] for a, b in zip(tl.tv5_combined().groups[:-1], tl.tv5_combined().groups[1:])),
+                        2 * tl.RESOLUTION_MM)
+
+    def test_the_routed_lines_leave_the_straight_lid_channel_and_fit_the_pocket(self):
+        """TV3 to TV5 are outside TV0's 1.2 mm channel, so they need the 2.7 mm pocket. Their copper edge
+        footprint (trace and both gaps) must stay POCKET_MARGIN inside the pocket's wall."""
         self.assertLessEqual(tl.tv1_step().lateral_extent(), tl.LID_CHANNEL / 2.0)
         self.assertLessEqual(tl.tv2_taper().lateral_extent(), tl.LID_CHANNEL / 2.0)
         for make in (tl.tv3_matched, tl.tv4_unmatched, tl.tv5_combined):
-            self.assertGreater(make().lateral_extent(), tl.LID_CHANNEL / 2.0, make.__name__)
+            route = make()
+            self.assertGreater(route.lateral_extent(), tl.LID_CHANNEL / 2.0, route.name)
+            self.assertLessEqual(route.footprint_extent(), tl.POCKET_HALF - tl.POCKET_MARGIN, route.name)
 
     def test_the_taper_is_smooth_and_the_step_is_eight_millimetres(self):
         taper = tl.tv2_taper()
@@ -107,6 +126,16 @@ class TestRoutes(unittest.TestCase):
         narrow = [s for s in secs if abs(s["width"] - 0.30) < 1e-9]
         self.assertEqual(len(narrow), 1)
         self.assertAlmostEqual(narrow[0]["s1"] - narrow[0]["s0"], 8.0, places=6)
+
+    def test_matched_and_unmatched_groups_are_kept_apart(self):
+        """No unmatched group sits within one resolution of a matched one (the no-detection groups)."""
+        for make in (tl.tv3_matched, tl.tv4_unmatched, tl.tv5_combined):
+            groups = make().groups
+            for a in groups:
+                for b in groups:
+                    if a[1].startswith("matched") and b[1].startswith("unmatched") or                             a[1].startswith("unmatched") and b[1].startswith("matched"):
+                        gap = max(a[2], b[2]) - min(a[3], b[3])
+                        self.assertGreater(gap, tl.RESOLUTION_MM, f"{make.__name__}: {a[0]} and {b[0]}")
 
 
 class TestCopper(unittest.TestCase):
@@ -214,6 +243,30 @@ class TestCopper(unittest.TestCase):
         # one cylinder per via, and two rounded ends per track (TV0 shows the same 2 for its one track)
         self.assertEqual(len(modeler.cylinders) - 2 * len(board.tracks), len(board.vias))
 
+    def test_the_pocket_parent_must_agree_with_tv0_outside_the_section(self):
+        folder = tempfile.mkdtemp(prefix="test_lines_parent_")
+        self.addCleanup(shutil.rmtree, folder, True)
+        straight = os.path.join(folder, "tv0.txt")
+        pocket = os.path.join(folder, "tv0b.txt")
+        with open(straight, "w", encoding="utf-8") as f:
+            f.write(self.base)
+        with open(pocket, "w", encoding="utf-8") as f:
+            f.write(self.base.replace("pad|top|14.4|-2|0.5|0.5|90", "pad|top|14.4|-2|0.6|0.5|90"))
+        import contextlib
+        import io
+
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            with contextlib.redirect_stdout(io.StringIO()):
+                code = tl._main(["--straight", straight, "--pocket", pocket, "--out",
+                                 os.path.join(folder, "out"), "--only", "TV3"])
+        self.assertEqual(code, 2)
+        self.assertIn("not the reference", err.getvalue())
+
+    def test_section_free_lines_match_for_a_variant_and_its_straight_parent(self):
+        for make in tl.VARIANTS.values():
+            text, _ = tl.write_variant(self.base, make())
+            self.assertEqual(tl.section_free_lines(text), tl.section_free_lines(self.base), make.__name__)
+
     def test_the_command_line_writes_the_variant_folders(self):
         folder = tempfile.mkdtemp(prefix="test_lines_")
         self.addCleanup(shutil.rmtree, folder, True)
@@ -224,7 +277,7 @@ class TestCopper(unittest.TestCase):
         import io
 
         with contextlib.redirect_stdout(io.StringIO()):
-            self.assertEqual(tl._main([src, "--out", os.path.join(folder, "out"), "--only", "TV1"]), 0)
+            self.assertEqual(tl._main(["--straight", src, "--out", os.path.join(folder, "out"), "--only", "TV1"]), 0)
         self.assertTrue(os.path.isfile(os.path.join(folder, "out", "TV1", "copper.txt")))
         self.assertTrue(os.path.isfile(os.path.join(folder, "out", "TV1", "variant.json")))
 

@@ -251,15 +251,16 @@ class TestVariantRegions(unittest.TestCase):
             base = f.read()
         tl.write_variant(base, tl.tv3_matched(), os.path.join(folder, "copper.txt"))
         layout = li.read_layout(folder)  # no variant.json beside it: the route comes from the copper
-        self.assertEqual(len(layout.signal_regions), 4, "the two mitres, each leg a region")
-        self.assertGreater(len(layout.signal_tracks), 80, "the bends are short tracks")
+        self.assertEqual(len(layout.signal_regions), 5,
+                         "the mitred bump's three legs, the lead-in and the leg after the bump")
+        self.assertGreater(len(layout.signal_tracks), 80, "the wave's arcs are short tracks")
         self.assertEqual(layout.port1, (-13.5, 0.0))
         self.assertEqual(layout.port2, (13.5, 0.0))
         self.assertAlmostEqual(layout.route[-1][0], 13.5)
         with open(os.path.join(folder, "variant.json"), "w", encoding="utf-8") as f:
             json.dump({"vertices": [list(p) for p in tl.tv3_matched().vertices]}, f)
         own = li.read_layout(folder)  # with the generator's centre line: the true length
-        self.assertAlmostEqual(own.length_mm, 33.76, places=2)
+        self.assertAlmostEqual(own.length_mm, 29.015, places=2)
 
 
 if __name__ == "__main__":
