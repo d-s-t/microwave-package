@@ -113,12 +113,21 @@ screw groove the importer gives the box back a skin two copper thicknesses deep 
 just inside the keep-out circle to the wall. The skin is model bookkeeping, not part of the real part,
 whose grooves are open to the board's underside.
 
-**No skin in AEDT.** The pedestal groove and a recess get no skin: AEDT imports the box as SolidWorks
-made it. Under a through opening the pedestal groove lies under the bottom copper with nothing under
-it, which is the case the "intersect" refusal above was recorded for (commit 9cfa20d, 2026-10-11, with
-material override already on). Such a run is expected to fail AEDT validation; it was not re-run for
-this change, because AEDT was not run. Undecided: keep a skin for vented boards, or move the groove off
-the copper.
+**No skin in AEDT.** The model builder gives the box no skin: AEDT imports it as SolidWorks made it.
+Two cases that a skin used to close are known limits, refused early (decided 2026-11-10):
+
+- **C1, a recess under copper that stays whole** (a blind pocket, or a bare board with a recess). A
+  run with one is refused when it is created. A refinement or field image of an older run with one is
+  refused too, because its geometry cannot be rebuilt here.
+- **C2, `vents_on` with a pedestal recess under a through opening.** The pedestal groove lies under the
+  bottom copper with nothing under it, which is the case the "intersect" refusal above was recorded for
+  (commit 9cfa20d, 2026-10-11). A run with one is refused when it is created, and so is a refinement or
+  field image of an older run with one. Vents are cut after manufacturing, and simulations stay
+  vent-free.
+
+To rebuild a refused refinement or field image, use the old code: check out the commit before the skin
+removal in a separate worktree, start a second web app from that worktree on `PORT=5001`, and refine
+through that app.
 
 **Pending, needs SolidWorks:** the `no_chip` term in `Vent_Pedestal`'s suppression is
 in `add_vents.py` and `design/venting.py` but the committed `box.SLDPRT` still has the

@@ -83,7 +83,7 @@ def _restore_copper_skin(hfss, frame, stack, values, vents, log) -> List[str]:
     The pedestal groove gets no skin: the box is imported as SolidWorks made
     it (VENTING.md, "No skin in AEDT"). Under a through opening that groove
     lies under the copper, the case the refusal above was for, so such a run
-    is expected to fail AEDT validation (not re-run).
+    is refused before it is made (VENTING.md, known limit C2).
     """
     from ..design import screws as screw_plan
 
