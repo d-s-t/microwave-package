@@ -58,8 +58,8 @@ class TestThePlan(unittest.TestCase):
         self.assertNotIn("pedestal", names)
 
     def test_a_bare_board_has_no_pedestal_vent_but_keeps_its_screw_vents(self):
-        # no die, no opening in the bottom copper: the skin over the pedestal
-        # vent had nothing to start from and the box and copper intersected
+        # no die and no opening in the bottom copper, so a recess there is not a
+        # pocket this vent serves
         for extra in (dict(no_chip=1), dict(no_chip=1, pedestal_depth=0.5), dict(no_chip=1, pedestal_depth=0)):
             names = [v.name for v in venting.plan(values(**extra))]
             self.assertEqual(names, ["screw_1", "screw_2", "screw_3", "screw_4"], extra)
@@ -168,31 +168,22 @@ class TestTheBuilder(unittest.TestCase):
             self.assertAlmostEqual(origin[1], 3.0 - 0.3)
             self.assertAlmostEqual(sizes[1], 0.3)
 
-    def test_the_bottom_copper_keeps_its_box_under_the_grooves(self):
+    def test_the_bottom_copper_keeps_its_box_under_the_screw_grooves(self):
         # the copper is drawn down into the floor's top 35 um; a groove to
         # the floor's top would leave it half over air and HFSS refuses that
         hfss = FakeHfss()
         vent_builder.build_vents(hfss, cg.Frame(), self.stack, values())
         skins = hfss.modeler.boxes[5:]
-        self.assertEqual(len(skins), 2 + 4)
+        self.assertEqual(len(skins), 4)
         self.assertEqual([u[1] for u in hfss.modeler.unions],
-                         ["vent_skin_pedestal_0", "vent_skin_pedestal_1"] +
                          [f"vent_skin_screw_{i}_0" for i in (1, 2, 3, 4)])
         for origin, sizes in skins:
             # twice the copper's depth, so the skin's underside is not the copper's
             self.assertAlmostEqual(origin[1], 3.0 - 2 * 0.035)
             self.assertAlmostEqual(sizes[1], 2 * 0.035)
         wall = vent_builder.WALL_OVERLAP
-        # pedestal: from the die's opening (3.25) into the wall past the board
-        # edge (12.5), both sides, across the groove's own width
-        spans = sorted((o[2], o[2] + s[2]) for o, s in skins[:2])
-        self.assertAlmostEqual(spans[0][0], -12.5 - wall)
-        self.assertAlmostEqual(spans[0][1], -3.25)
-        self.assertAlmostEqual(spans[1][0], 3.25)
-        self.assertAlmostEqual(spans[1][1], 12.5 + wall)
-        self.assertAlmostEqual(skins[0][1][0], 0.5 + 2 * vent_builder.SKIN_OVERLAP)
         # screws: from just inside the keep-out circle round the tap hole (9 + 1.5) to the wall
-        for origin, sizes in skins[2:]:
+        for origin, sizes in skins:
             near = min(abs(origin[2]), abs(origin[2] + sizes[2]))
             far = max(abs(origin[2]), abs(origin[2] + sizes[2]))
             self.assertAlmostEqual(near, 9.0 + 1.5 - vent_builder.KEEPOUT_SLACK)
@@ -216,75 +207,23 @@ class TestTheBuilder(unittest.TestCase):
         self.assertEqual([u[1] for u in hfss.modeler.unions],
                          [f"vent_skin_screw_{i}_0" for i in (1, 2, 3, 4)])
 
-    def test_a_bare_board_recess_gets_one_skin_under_its_whole_copper(self):
-        # the recess is under solid copper: the box is given back a skin across it
-        hfss = FakeHfss()
-        name = vent_builder.build_recess_skin(hfss, cg.Frame(), self.stack,
-                                              values(no_chip=1, pedestal_depth=0.5))
-        self.assertEqual(name, "recess_skin")
-        self.assertEqual([u[1] for u in hfss.modeler.unions], ["recess_skin"])
-        self.assertEqual(hfss.modeler.unions[0][0], "box")
-        (origin, sizes), = hfss.modeler.boxes
-        self.assertAlmostEqual(origin[1], 3.0 - 2 * 0.035)
-        self.assertAlmostEqual(sizes[1], 2 * 0.035)
-        half = 6.2 / 2.0 + vent_builder.SKIN_OVERLAP
-        self.assertAlmostEqual(origin[0], -half)
-        self.assertAlmostEqual(sizes[0], 2 * half)
-        self.assertAlmostEqual(origin[2], -half)
-        self.assertAlmostEqual(sizes[2], 2 * half)
-
-    def test_a_circle_recess_is_skinned_across_its_diameter(self):
-        hfss = FakeHfss()
-        vent_builder.build_recess_skin(hfss, cg.Frame(), self.stack,
-                                       values(no_chip=1, pedestal_depth=0.5, pedestal_shape=1))
-        (origin, sizes), = hfss.modeler.boxes
-        self.assertAlmostEqual(sizes[0], 2 * (6.25 / 2.0 + vent_builder.SKIN_OVERLAP))
-
-    def test_no_recess_skin_for_a_die_board_a_flat_bare_board_or_a_sheet(self):
-        # a die board with a through opening: its copper has the opening over the
-        # recess and sits on the rim. A blind pocket is skinned instead (see below).
+    def test_no_recess_or_pedestal_groove_is_skinned_on_any_board(self):
+        # the box is imported as SolidWorks made it: a recess under copper gets no
+        # skin, and neither does the pedestal groove (VENTING.md, "No skin in AEDT")
+        blind = cg.Stack(pcb_bottom=3.0, pcb_top=3.508, chip_bottom=3.127, chip_top=3.508,
+                         copper_thickness=0.035, chip_metal_thickness=0.0002)
         for kind, stack, extra in (
-                ("die board", self.stack, dict(no_chip=0, pedestal_depth=0.5)),
-                ("bare, no recess", self.stack, dict(no_chip=1, pedestal_depth=0)),
-                ("bare, sheet copper", cg.Stack(pcb_bottom=3.0, pcb_top=3.381, chip_bottom=3.0,
-                                                chip_top=3.381, copper_thickness=0.0,
-                                                chip_metal_thickness=0.0),
-                 dict(no_chip=1, pedestal_depth=0.5))):
+                ("through opening", self.stack, {}),
+                ("blind pocket", blind, dict(pcb_width=0.508)),
+                ("bare board", self.stack, dict(no_chip=1, pedestal_depth=0.5))):
             with self.subTest(kind):
                 hfss = FakeHfss()
-                self.assertIsNone(vent_builder.build_recess_skin(hfss, cg.Frame(), stack, values(**extra)))
-                self.assertEqual(hfss.modeler.unions, [])
+                vent_builder.build_vents(hfss, cg.Frame(), stack, values(**extra))
+                names = [name for _blank, name in hfss.modeler.unions]
+                self.assertFalse([n for n in names if "pedestal" in n or "recess" in n], names)
 
-    def test_a_blind_pocket_over_a_recess_gets_the_skin_too(self):
-        # the back plane stays whole under a blind pocket, so the copper over the
-        # recess lies on air unless the box is given back under it, as a bare board's is
-        blind = cg.Stack(pcb_bottom=3.0, pcb_top=3.508, chip_bottom=3.127, chip_top=3.508,
-                         copper_thickness=0.035, chip_metal_thickness=0.0002)
-        hfss = FakeHfss()
-        name = vent_builder.build_recess_skin(hfss, cg.Frame(), blind,
-                                              values(pcb_width=0.508, pedestal_depth=0.5))
-        self.assertEqual(name, "recess_skin")
-        (origin, sizes), = hfss.modeler.boxes
-        self.assertAlmostEqual(origin[1], 3.0 - 2 * 0.035)
-        self.assertAlmostEqual(sizes[1], 2 * 0.035)
-        half = 6.2 / 2.0 + vent_builder.SKIN_OVERLAP
-        self.assertAlmostEqual(sizes[0], 2 * half)
-        self.assertAlmostEqual(sizes[2], 2 * half)
-
-    def test_a_blind_pocket_skins_the_pedestal_groove_across_the_die(self):
-        # the back plane is whole under the die too, so copper lies over the groove
-        # all the way across it, not only past the opening's edge
-        blind = cg.Stack(pcb_bottom=3.0, pcb_top=3.508, chip_bottom=3.127, chip_top=3.508,
-                         copper_thickness=0.035, chip_metal_thickness=0.0002)
-        hfss = FakeHfss()
-        vent_builder.build_vents(hfss, cg.Frame(), blind, values(pcb_width=0.508))
-        pedestal = [name for _blank, name in hfss.modeler.unions
-                    if name.startswith("vent_skin_pedestal")]
-        self.assertEqual(pedestal, ["vent_skin_pedestal_0"])
-        origin, sizes = hfss.modeler.boxes[5]     # the five vent tools come first
-        wall = vent_builder.WALL_OVERLAP
-        self.assertAlmostEqual(origin[2], -12.5 - wall)
-        self.assertAlmostEqual(origin[2] + sizes[2], 12.5 + wall)
+    def test_the_recess_skin_is_gone(self):
+        self.assertFalse(hasattr(vent_builder, "build_recess_skin"))
 
     def test_nothing_when_off(self):
         hfss = FakeHfss()
