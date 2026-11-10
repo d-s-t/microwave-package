@@ -774,8 +774,8 @@ def new_run():
     if parameter_meta.NO_CHIP_PARAM in available and "no_chip" in request.form:
         # A bare board with no pedestal asked for keeps the box's floor flat:
         # zero is the value the box has always rebuilt cleanly with. A typed
-        # pedestal depth still wins, and a bare board with a recess is built
-        # with its bottom copper carried over the recess (see hfss/vents.py).
+        # pedestal depth still wins, and a bare board with a recess is refused
+        # when the run is made (see constraints.check_recess_copper).
         if "pedestal_depth" in available and not any(
                 p.name == "pedestal_depth" for p in requested):
             requested.append(SweepParameter(name="pedestal_depth", values=[0.0]))

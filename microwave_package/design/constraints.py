@@ -567,6 +567,42 @@ def check_cavity_corners(values: Dict[str, float], wall_gap: float = PCB_WALL_GA
     return None
 
 
+# --- a recess under copper that stays whole -----------------------------
+#
+# A pedestal recess is cut into the box floor under the die (pedestal_depth > 0,
+# square or circle). Where the board's bottom copper lies over that recess
+# unchanged -- a blind pocket leaves its back plane whole, and a bare board has no
+# opening at all -- the recess is a sealed air void under a ground plane. Electrically
+# it changes nothing (bare-board runs with and without one differed by <= 0.09 dB),
+# and the model can only be built with a skin of box metal under the copper, which
+# the box must not carry: AEDT imports the box as it is. So such a run is refused.
+# A through opening takes the copper out over the recess and is allowed.
+
+def check_recess_copper(values: Dict[str, float]) -> Optional[str]:
+    """Why a pedestal recess under the die cannot be built on this board, or None.
+
+    The rule is the copper cut's own decision (`cavity.Cavity.cuts_bottom_copper`),
+    not a copy of the thickness comparison. Run where a run is created, for every
+    combination (see `run_manager.recess_refusal`); the layout check does not carry it.
+    """
+    from . import cavity as cavity_plan
+
+    depth = values.get("pedestal_depth", 0.0)
+    if depth <= 0 or cavity_plan.plan(values).cuts_bottom_copper:
+        return None
+    if parameter_meta.is_bare_board(values):
+        return (f"pedestal_depth {_fmt(depth)} mm on a bare board (no_chip): a bare board has no die "
+                f"opening, so its whole bottom copper lies over the recess as a sealed air void under "
+                f"the ground plane -- set pedestal_depth to 0 (a thicker board does not help without an "
+                f"opening)")
+    pcb = values.get("pcb_width", 0.381)
+    die = values.get("chip_width", 0.381)
+    return (f"pedestal_depth {_fmt(depth)} mm under a {_fmt(die)} mm die in a {_fmt(pcb)} mm board: the "
+            f"die's opening stays blind, so the bottom copper lies whole over the recess as a sealed air "
+            f"void under the ground plane -- set pedestal_depth to 0, or use a board less than "
+            f"{_fmt(cavity_plan.MIN_FLOOR)} mm thicker than the die so the opening goes through")
+
+
 def check_layout(values: Dict[str, float], mat_pcb: Optional[str] = None,
                  mat_chip: Optional[str] = None) -> Optional[str]:
     """Why this combination's layout cannot be built, or None if it can.
@@ -706,9 +742,8 @@ def check_layout(values: Dict[str, float], mat_pcb: Optional[str] = None,
                 "the SMP launch reaches past the middle of the board -- lengthen "
                 "pcb_length, or move the connectors out with port_space"
             )
-        # The recess under a bare board sits under its solid bottom copper; its
-        # shape and size are checked as for a die board (see hfss/vents.py for
-        # how the copper is carried over it in the model).
+        # A bare board's recess is refused when its run is made (see
+        # check_recess_copper); its shape and size are checked here as for a die board.
         reason = pedestal.check(values)
         if reason:
             return reason

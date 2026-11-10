@@ -551,6 +551,13 @@ def create_run(sweep_params, analysis_settings: dict, parameter_defaults=None) -
         complaint = registry.get(solution_type).validate(port_counts)
         if complaint:
             raise ValueError(complaint)
+    # A pedestal recess under bottom copper that stays whole is a sealed void. The
+    # whole run is refused here, before anything is made (constraints.check_recess_copper).
+    # Gated on Altium, as the via grid is: without copper nothing is sealed.
+    if analysis_settings.get("use_altium", True):
+        reason = run_manager.recess_refusal(sweep_params, parameter_defaults)
+        if reason:
+            raise ValueError(reason)
     if both:
         return companion.create_pair(sweep_params, analysis_settings, parameter_defaults)[1]
     return Run.create(sweep_params, analysis_settings, parameter_defaults)

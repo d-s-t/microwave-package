@@ -91,6 +91,19 @@ class Cavity:
         all: nothing is cut, and every consumer leaves its copper whole."""
         return self.half_length <= 0.0 or self.half_side <= 0.0
 
+    @property
+    def cuts_bottom_copper(self) -> bool:
+        """Whether the opening takes the board's bottom copper out with it.
+
+        Only a through cutout does. A blind pocket leaves the back plane whole
+        under the die, and a bare board has no opening at all. This is the one
+        answer to "is the bottom copper under the die cut?": the copper cut
+        (`copper_geometry.clear_cavity_area`) goes by it, and the recess rule
+        (`constraints.check_recess_copper`) refuses a recess under copper that
+        stays whole, so the two cannot disagree.
+        """
+        return not self.is_empty and self.through
+
 
 def plan(values: Dict[str, float]) -> Cavity:
     """The opening for one combination's equation-file values.
