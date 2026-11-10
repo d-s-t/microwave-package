@@ -3,6 +3,7 @@ colouring by a value, and the PNG written from a run's own files.
 
 Run: python -m unittest tests.test_layout_image   (or: python -m unittest discover -s tests)
 """
+import json
 import math
 import os
 import shutil
@@ -83,7 +84,7 @@ class TestSignalCopper(unittest.TestCase):
             tracks=[cg.Track("top", -13.5, 0.0, 13.5, 0.0, 0.48),
                     cg.Track("top", 1.0, 5.0, 2.0, 5.0, 0.48)],  # touches nothing
             pads=[cg.Pad("top", -13.5, 0.0, 0.48, 1.4, 90.0), cg.Pad("top", 13.5, 0.0, 0.48, 1.4, 270.0)])
-        tracks_out, _, route, p1, p2 = li.signal_copper(package, None, [])
+        tracks_out, _, _, route, p1, p2 = li.signal_copper(package, None, [])
         self.assertEqual(len(tracks_out), 1)
         self.assertEqual(p1, (-13.5, 0.0))
         self.assertEqual(p2, (13.5, 0.0))
@@ -234,6 +235,31 @@ class TestRender(unittest.TestCase):
         with contextlib.redirect_stderr(io.StringIO()) as err:
             self.assertEqual(li.main([os.path.join(self.folder, "missing")]), 2)
         self.assertIn("no copper.txt", err.getvalue())
+
+
+class TestVariantRegions(unittest.TestCase):
+    """A mitred variant's signal is regions, and the renderer must find it through them. Without the
+    variant's own centre line (variant.json) the route comes from the copper, and must still reach
+    both ports."""
+
+    def test_a_mitred_route_is_signal_through_its_regions(self):
+        from microwave_package.design import test_lines as tl
+
+        folder = tempfile.mkdtemp(prefix="layout_variant_")
+        self.addCleanup(shutil.rmtree, folder, True)
+        with open(os.path.join(FIXTURE, "..", "test_lines", "tv0_copper.txt"), encoding="utf-8") as f:
+            base = f.read()
+        tl.write_variant(base, tl.tv3_matched(), os.path.join(folder, "copper.txt"))
+        layout = li.read_layout(folder)  # no variant.json beside it: the route comes from the copper
+        self.assertEqual(len(layout.signal_regions), 4, "the two mitres, each leg a region")
+        self.assertGreater(len(layout.signal_tracks), 80, "the bends are short tracks")
+        self.assertEqual(layout.port1, (-13.5, 0.0))
+        self.assertEqual(layout.port2, (13.5, 0.0))
+        self.assertAlmostEqual(layout.route[-1][0], 13.5)
+        with open(os.path.join(folder, "variant.json"), "w", encoding="utf-8") as f:
+            json.dump({"vertices": [list(p) for p in tl.tv3_matched().vertices]}, f)
+        own = li.read_layout(folder)  # with the generator's centre line: the true length
+        self.assertAlmostEqual(own.length_mm, 33.76, places=2)
 
 
 if __name__ == "__main__":

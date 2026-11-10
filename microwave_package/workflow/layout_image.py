@@ -82,6 +82,7 @@ class Layout:
     signal_pads: List[Tuple[str, cg.Pad]]  # (board name, pad)
     port1: Point
     port2: Point
+    signal_regions: List[List[Point]] = field(default_factory=list)
     landmarks: List[Landmark] = field(default_factory=list)
     label: str = ""
 
@@ -151,16 +152,37 @@ def read_layout(path: str) -> Layout:
 
     outline = _outline(dims, package)
     die_half = _die_half(dims, chip)
-    tracks, pads, route, port1, port2 = signal_copper(package, chip, bond_list)
+    tracks, regions, pads, route, port1, port2 = signal_copper(package, chip, bond_list)
+    own_route = _variant_route(folder)
+    if own_route is not None:
+        route = own_route
 
     layout = Layout(
         name=_run_name(folder),
         package=package, chip=chip, bonds=list(bond_list), outline=outline, die_half=die_half,
-        route=route, signal_tracks=tracks, signal_pads=pads, port1=port1, port2=port2,
+        route=route, signal_tracks=tracks, signal_pads=pads, signal_regions=regions,
+        port1=port1, port2=port2,
         label=_label(folder),
     )
     layout.landmarks = _landmarks(layout)
     return layout
+
+
+def _variant_route(folder: str) -> Optional[List[Point]]:
+    """A test line's own centre line, from the variant.json the generator writes beside its copper.
+    A routed variant's mitred legs have no track ends to read a centre line from, so the generator's
+    vertices are the route; a run folder has none and the route comes from the copper."""
+    path = os.path.join(folder, "variant.json")
+    if not os.path.isfile(path):
+        return None
+    try:
+        with open(path, encoding="utf-8") as f:
+            vertices = json.load(f).get("vertices")
+    except (OSError, ValueError):
+        return None
+    if not vertices:
+        return None
+    return [(float(x), float(y)) for x, y in vertices]
 
 
 def _outline(dims: Dict[str, float], package: cg.BoardCopper) -> List[Point]:
@@ -213,57 +235,104 @@ def _nearest_pad(pads: Sequence[cg.Pad], x: float, y: float, reach: float) -> Op
     return best
 
 
+def _track_polygon(track: cg.Track) -> np.ndarray:
+    a = np.array([track.x1, track.y1], dtype=float)
+    b = np.array([track.x2, track.y2], dtype=float)
+    d = b - a
+    n = float(np.hypot(*d))
+    if n == 0.0:
+        return np.array([a, a, a, a])
+    normal = np.array([-d[1], d[0]]) / n * track.width / 2.0
+    return np.array([a + normal, b + normal, b - normal, a - normal])
+
+
+def _boundary_samples(poly: np.ndarray, step: float = 0.05) -> np.ndarray:
+    out = []
+    n = len(poly)
+    for i in range(n):
+        a, b = poly[i], poly[(i + 1) % n]
+        length = float(np.hypot(*(b - a)))
+        k = max(1, int(math.ceil(length / step)))
+        t = np.linspace(0.0, 1.0, k, endpoint=False)[:, None]
+        out.append(a + t * (b - a))
+    return np.vstack(out) if out else np.zeros((0, 2))
+
+
+def _pieces_touch(pa: np.ndarray, pb: np.ndarray, tol: float) -> bool:
+    """Two copper pieces touch when their outlines come within `tol` of each other. A piece lying
+    wholly inside another without touching its outline is not linked: a ground pour is a
+    polygon around the signal, and the signal does not join the ground by lying inside it."""
+    if (pa[:, 0].min() > pb[:, 0].max() + tol or pb[:, 0].min() > pa[:, 0].max() + tol
+            or pa[:, 1].min() > pb[:, 1].max() + tol or pb[:, 1].min() > pa[:, 1].max() + tol):
+        return False
+    a, b = _boundary_samples(pa), _boundary_samples(pb)
+    gap = np.hypot(a[:, None, 0] - b[None, :, 0], a[:, None, 1] - b[None, :, 1]).min()
+    return bool(gap <= tol)
+
+
 def signal_copper(package: cg.BoardCopper, chip: Optional[cg.BoardCopper],
                   bond_list: Sequence[bonds_mod.Bond]):
     """The signal path, found by connectivity from the port pads.
 
-    Nodes are the top-layer tracks and pads of both boards. Two tracks join when
-    their ends meet; a track joins a pad when an end is within PAD_TOUCH_MM of its
-    footprint; a SIGNAL bond joins the package pad at its PCB end to the chip pad at
-    its die end. Ground bonds are not linked: they are not part of the signal, and
-    linking them would merge the ground network into it.
+    Nodes are the top-layer tracks, regions and pads of both boards. Two tracks or regions join
+    when their outlines come within TRACK_JOIN_MM (so a mitred corner's two polygons, which share
+    the cut, and a square corner laid over its legs, both join); a track joins a pad when an end is
+    within PAD_TOUCH_MM of its footprint; a SIGNAL bond joins the package pad at its PCB end to the
+    chip pad at its die end. Ground bonds are not linked: they are not part of the signal, and
+    linking them would merge the ground network into it. Ground pours touch no signal piece, so
+    they are never reached.
 
-    The ports are the outermost package pads that the first package track reaches,
-    so ground lands that touch no track (the SMP ground pads) are never ports.
+    The ports are the outermost package pads that the first package track reaches, so ground lands
+    that touch no track (the SMP ground pads) are never ports.
 
-    Returns (tracks, pads, route, port1, port2): the signal tracks and pads the port
-    reaches, the centre line from port 1 to port 2 as points, and the two ports.
-    """
+    Returns (tracks, regions, pads, route, port1, port2): the signal tracks, the signal regions
+    (as point lists), the signal pads the port reaches, the centre line from port 1 to port 2, and
+    the two ports. A region on the route is taken at its centroid unless a variant's own centre
+    line is supplied (see read_layout)."""
     boards = [("package", package)] + ([("chip", chip)] if chip is not None else [])
-    nodes: List[Tuple[str, str, object]] = []  # (board, kind, item)
+    nodes: List[Tuple[str, str, object, Optional[np.ndarray]]] = []  # (board, kind, item, outline)
     for name, copper in boards:
         for track in copper.tracks:
             if track.layer == "top":
-                nodes.append((name, "track", track))
+                nodes.append((name, "track", track, _track_polygon(track)))
+        for region in copper.regions:
+            if region.layer == "top":
+                nodes.append((name, "region", region, np.asarray(region.points, dtype=float)))
         for pad in copper.pads:
             if pad.layer == "top":
-                nodes.append((name, "pad", pad))
+                nodes.append((name, "pad", pad, None))
     adjacency: Dict[int, set] = {i: set() for i in range(len(nodes))}
 
     def link(i: int, j: int) -> None:
         adjacency[i].add(j)
         adjacency[j].add(i)
 
-    for i, (board_i, kind_i, item_i) in enumerate(nodes):
-        if kind_i != "track":
-            continue
-        for j in range(i + 1, len(nodes)):
-            board_j, kind_j, item_j = nodes[j]
-            if board_j != board_i:
+    pieces = [i for i, (_, kind, _, _) in enumerate(nodes) if kind in ("track", "region")]
+    for x, i in enumerate(pieces):
+        for j in pieces[x + 1:]:
+            if nodes[i][0] != nodes[j][0]:
                 continue
-            if kind_j == "track":
-                touch = any(
-                    math.hypot(a[0] - b[0], a[1] - b[1]) <= TRACK_JOIN_MM
-                    for a in _ends(item_i) for b in _ends(item_j)
-                )
-            else:
+            if _pieces_touch(nodes[i][3], nodes[j][3], TRACK_JOIN_MM):
+                link(i, j)
+    for i, (board_i, kind_i, item_i, outline_i) in enumerate(nodes):
+        if kind_i not in ("track", "region"):
+            continue
+        samples = _boundary_samples(outline_i) if kind_i == "region" else None
+        for j, (board_j, kind_j, item_j, _) in enumerate(nodes):
+            if kind_j != "pad" or board_j != board_i:
+                continue
+            if kind_i == "track":
                 touch = min(_pad_gap(item_j, x, y) for x, y in _ends(item_i)) <= PAD_TOUCH_MM
+            else:
+                # a region joins a pad only where its outline lies on the pad: a pour keeps its
+                # clearance from the lands, so it does not come within a touch of one
+                touch = min(_pad_gap(item_j, x, y) for x, y in samples) <= TRACK_JOIN_MM
             if touch:
                 link(i, j)
 
-    index_of = {id(item): i for i, (_, _, item) in enumerate(nodes)}
-    package_pads = [item for name, kind, item in nodes if name == "package" and kind == "pad"]
-    chip_pads = [item for name, kind, item in nodes if name == "chip" and kind == "pad"]
+    index_of = {id(item): i for i, (_, _, item, _) in enumerate(nodes)}
+    package_pads = [item for name, kind, item, _ in nodes if name == "package" and kind == "pad"]
+    chip_pads = [item for name, kind, item, _ in nodes if name == "chip" and kind == "pad"]
     for bond in bond_list:
         if bond.kind != "signal":
             continue
@@ -272,7 +341,7 @@ def signal_copper(package: cg.BoardCopper, chip: Optional[cg.BoardCopper],
         if p is not None and q is not None:
             link(index_of[id(package_pads[p])], index_of[id(chip_pads[q])])
 
-    package_tracks = [i for i, (name, kind, _) in enumerate(nodes) if name == "package" and kind == "track"]
+    package_tracks = [i for i, (name, kind, _, _) in enumerate(nodes) if name == "package" and kind == "track"]
     if not package_tracks:
         raise ValueError("no top-layer signal track on the package board")
     start = package_tracks[0]
@@ -287,24 +356,30 @@ def signal_copper(package: cg.BoardCopper, chip: Optional[cg.BoardCopper],
         raise ValueError("no signal path between the two ports")
 
     tracks = [nodes[i][2] for i in sorted(reached) if nodes[i][1] == "track"]
+    regions = [list(nodes[i][2].points) for i in sorted(reached) if nodes[i][1] == "region"]
     pads = [(nodes[i][0], nodes[i][2]) for i in sorted(reached) if nodes[i][1] == "pad"]
     port1_pad, port2_pad = nodes[port1_i][2], nodes[port2_i][2]
     route: List[Point] = [(port1_pad.x, port1_pad.y)]
     for i in path:
-        name, kind, item = nodes[i]
-        if kind != "track":
+        name, kind, item, outline = nodes[i]
+        if kind == "pad":
             continue
-        a, b = _ends(item)
+        if kind == "track":
+            a, b = _ends(item)
+        else:
+            centroid = tuple(np.mean(outline, axis=0))
+            a, b = centroid, centroid
         last = route[-1]
         entry, exit_ = (a, b) if math.dist(a, last) <= math.dist(b, last) else (b, a)
         # Every track end is a vertex, and the gap from one track to the next (the
         # bond finger, the die's bond) is a straight run between them.
         if math.dist(entry, last) > TRACK_JOIN_MM:
             route.append(entry)
-        route.append(exit_)
+        if math.dist(exit_, route[-1]) > TRACK_JOIN_MM or kind == "region":
+            route.append(exit_)
     if math.dist(route[-1], (port2_pad.x, port2_pad.y)) > TRACK_JOIN_MM:
         route.append((port2_pad.x, port2_pad.y))
-    return tracks, pads, route, (port1_pad.x, port1_pad.y), (port2_pad.x, port2_pad.y)
+    return tracks, regions, pads, route, (port1_pad.x, port1_pad.y), (port2_pad.x, port2_pad.y)
 
 
 def _reach(adjacency: Dict[int, set], start: int) -> set:
@@ -427,8 +502,9 @@ def _rect_corners(x1, y1, x2, y2, width) -> List[Point]:
 
 
 def render(layout: Layout, out_path: str, *, profile=None, cmap="RdBu_r", norm=None,
-           title: Optional[str] = None, dpi: int = 150) -> str:
-    """Draw the layout to a PNG. `profile` = (positions_mm, z_ohm, offset_mm) paints the route."""
+           title: Optional[str] = None, dpi: int = 150, window: Optional[Tuple[float, float, float, float]] = None) -> str:
+    """Draw the layout to a PNG. `profile` = (positions_mm, z_ohm, offset_mm) paints the route.
+    `window` = (x0, x1, y0, y1) in mm zooms the view; the default is the whole board."""
     from matplotlib.backends.backend_agg import FigureCanvasAgg
     from matplotlib.collections import EllipseCollection, LineCollection, PolyCollection
     from matplotlib.colors import TwoSlopeNorm
@@ -488,6 +564,9 @@ def render(layout: Layout, out_path: str, *, profile=None, cmap="RdBu_r", norm=N
                 ax.add_collection(PolyCollection([corners], facecolors=GROUND_PAD_RGB, edgecolors="none", zorder=2.5))
     if signal_tracks:
         ax.add_collection(PolyCollection(signal_tracks, facecolors=SIGNAL_RGB, edgecolors="none", zorder=3.2))
+    if layout.signal_regions:
+        ax.add_collection(PolyCollection(layout.signal_regions, facecolors=SIGNAL_RGB, edgecolors="none",
+                                         zorder=3.2))
 
     vias = layout.package.vias
     if vias:
@@ -530,6 +609,9 @@ def render(layout: Layout, out_path: str, *, profile=None, cmap="RdBu_r", norm=N
         ys = [p[1] for p in layout.outline]
         xlim = (min(xs) - 2.0, max(xs) + 2.0)
         ylim = (min(ys) - 2.6, max(ys) + 2.0)
+    if window is not None:
+        xlim = (window[0], window[1])
+        ylim = (window[2], window[3])
     ax.set_xlim(*xlim)
     ax.set_ylim(*ylim)
     ax.set_xlabel("x along the feedline, mm from the board centre")
@@ -629,7 +711,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser.add_argument("path", help="a run folder, a combination folder, or a copper.txt")
     parser.add_argument("--out", help="PNG to write (default: layout.png beside the copper.txt)")
     parser.add_argument("--title", help="heading for the picture (default: the run's folder name)")
+    parser.add_argument("--window", help="zoom to x0,x1,y0,y1 in mm (default: the whole board)")
     args = parser.parse_args(argv)
+    window = tuple(float(v) for v in args.window.split(",")) if args.window else None
     try:
         layout = read_layout(args.path)
     except (OSError, ValueError) as exc:
@@ -637,7 +721,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return 2
     copper_path, folder = _resolve(args.path)
     out = args.out or os.path.join(folder, "layout.png")
-    render(layout, out, title=args.title)
+    render(layout, out, title=args.title, window=window)
     print(out)
     return 0
 
