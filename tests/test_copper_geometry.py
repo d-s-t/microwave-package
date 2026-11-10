@@ -409,26 +409,79 @@ class TestBuildingCopper(unittest.TestCase):
         self.assertEqual(sides, [cg.VIA_SIDES])
         self.assertGreaterEqual(cg.VIA_SIDES, 6, "coarser than a hexagon stops looking like a via")
 
-    def test_several_via_blocks_stay_bodies_of_their_own(self):
-        """Joining the blocks is a boolean over every via at once -- on a
-        dense board, one of the long AEDT calls. They are named instead,
-        each one a name the via material rule matches."""
-        from microwave_package.hfss import model_builder
-
-        modeler = FakeModeler()
-        board = cg.BoardCopper(name="package", vias=[
+    def _two_blocks(self):
+        """Two blocks of one layer: a row of two 0.3 mm vias, and one 0.4 mm."""
+        return cg.BoardCopper(name="package", vias=[
             cg.Via(0.0, 0.0, 0.3, 0.15), cg.Via(1.0, 0.0, 0.3, 0.15),
             cg.Via(5.0, 3.0, 0.4, 0.2),
         ])
-        created = cg.build(modeler, board, FRAME, top_face=STACK.pcb_top,
-                           bottom_face=STACK.pcb_bottom, thickness=STACK.copper_thickness,
-                           prefix="pcb", log=lambda _m: None)
-        self.assertEqual(created["pcb_vias"], ["pcb_vias", "pcb_vias_2"])
-        self.assertEqual(modeler.unites, [])
-        self.assertEqual(sorted(s.name for s in modeler._by_name.values()),
-                         ["pcb_vias", "pcb_vias_2"])
+
+    def _build_vias(self, modeler, messages):
+        return cg.build(modeler, self._two_blocks(), FRAME, top_face=STACK.pcb_top,
+                        bottom_face=STACK.pcb_bottom, thickness=STACK.copper_thickness,
+                        prefix="pcb", log=messages.append)
+
+    def test_several_via_blocks_are_joined_into_one_body(self):
+        """One unite of the blocks, and one body with every post in it,
+        named for the via material rule. The run log gets the count and
+        the seconds the unite took."""
+        from microwave_package.hfss import model_builder
+
+        modeler, messages = FakeModeler(), []
+        created = self._build_vias(modeler, messages)
+        self.assertEqual(created["pcb_vias"], ["pcb_vias"])
+        self.assertEqual(modeler.unites, [["cyl1", "cyl2"]], "the two blocks, in one unite")
+        self.assertEqual(len(modeler.carried("cyl1")), 3, "all three posts in the one body")
+        self.assertEqual(modeler.carried("cyl2"), [], "the second block is no body of its own")
         rule = next(r for r in model_builder.MATERIAL_RULES if r[1] == "pcb_vias")
-        self.assertTrue(all(rule[0] in name for name in created["pcb_vias"]))
+        self.assertIn(rule[0], created["pcb_vias"][0])
+        line = next(m for m in messages if m.startswith("pcb_vias:"))
+        self.assertRegex(line, r"^pcb_vias: 2 via bodies before the unite, 1 after; "
+                               r"the unite took \d+\.\d{2} s\.$")
+
+    def test_a_refused_via_join_leaves_the_blocks_apart_and_named(self):
+        """AEDT undoes a refused unite, so nothing folds into the first
+        block: the two are still bodies, each named for the rule, and the
+        run log says what was left."""
+        class Refusing(FakeModeler):
+            def unite(self, parts):
+                self.unites.append(list(parts))
+                return False
+
+        modeler, messages = Refusing(), []
+        created = self._build_vias(modeler, messages)
+        self.assertEqual(created["pcb_vias"], ["pcb_vias", "pcb_vias_2"])
+        self.assertEqual(len(modeler.carried("cyl1")), 2)
+        self.assertEqual(len(modeler.carried("cyl2")), 1)
+        self.assertTrue(any(m.startswith("WARNING") and "via blocks" in m for m in messages))
+        self.assertTrue(any(m.startswith("pcb_vias: 2 via bodies before the unite, 2 after;")
+                            for m in messages))
+
+    def test_a_via_join_that_aedt_raises_on_leaves_the_blocks_apart(self):
+        """PyAEDT re-raises an AEDT error unless its error handler is on.
+        The blocks are still there, so the build goes on with them."""
+        class Raising(FakeModeler):
+            def unite(self, parts):
+                raise RuntimeError("Failed to execute gRPC AEDT command: Unite")
+
+        messages = []
+        created = self._build_vias(Raising(), messages)
+        self.assertEqual(created["pcb_vias"], ["pcb_vias", "pcb_vias_2"])
+        self.assertTrue(any(m.startswith("WARNING") and "gRPC" in m for m in messages))
+
+    def test_the_via_body_is_named_for_its_rule_not_plainly_via(self):
+        """The name is what the material rules match on. The first rule
+        that matches `pcb_vias` is the one for its key, and `via` alone
+        matches none of them -- a body like that keeps the modeller's
+        default, vacuum."""
+        from microwave_package.hfss import model_builder
+
+        def key_for(name):
+            return next((r[1] for r in model_builder.MATERIAL_RULES if r[0] in name), None)
+
+        self.assertEqual(key_for("pcb_vias"), "pcb_vias")
+        self.assertEqual(key_for("chip_vias"), "chip_vias")
+        self.assertIsNone(key_for("via"))
 
     def test_top_copper_sits_on_the_board_face(self):
         """Regions and rectangular pads are now boxes (create_box), not
@@ -1034,6 +1087,7 @@ class TestBuildingInBlocks(unittest.TestCase):
         self.assertTrue(all(attach for *_rest, attach in modeler.duplicates),
                         "clones must join the original's body, not each become one")
         self.assertEqual(created["pcb_vias"], ["pcb_vias"])
+        self.assertEqual(modeler.unites, [], "one block, so there is nothing to join")
 
     def test_every_via_is_in_the_model_where_the_layout_put_it(self):
         points, board = self._via_grid()
@@ -1055,16 +1109,20 @@ class TestBuildingInBlocks(unittest.TestCase):
             self.assertEqual(FRAME.vector(u, v, w), [a - b for a, b in zip(moved, origin)])
 
     def test_a_block_aedt_will_not_clone_is_built_one_by_one(self):
-        """Slow and right beats fast and wrong -- and says so."""
+        """Slow and right beats fast and wrong -- and says so. The posts
+        are not joined: uniting thousands of them is the boolean the
+        blocks exist to avoid, so they are named apart instead."""
         class NoClones(FakeModeler):
             def duplicate_along_line(self, *a, **k):
                 raise RuntimeError("nope")
 
         points, board = self._via_grid()
-        modeler, _, messages = self._build(board, NoClones())
+        modeler, created, messages = self._build(board, NoClones())
         self.assertEqual(len(modeler.cylinders), len(points))
         self.assertTrue(modeler.deleted, "the half-cloned original must go")
         self.assertTrue(any("WARNING" in m for m in messages))
+        self.assertEqual(modeler.unites, [], "a block cloned one post at a time is not joined")
+        self.assertEqual(len(created["pcb_vias"]), len(points), "each post named apart")
 
     def test_pads_of_one_shape_are_one_pad_cloned(self):
         board = cg.BoardCopper(name="package", pads=[
@@ -1103,6 +1161,26 @@ class TestBuildingInBlocks(unittest.TestCase):
         posts = [c for c in modeler.cylinders
                  if any(abs(c[2] - v.diameter / 2.0) < 1e-9 for v in board.vias[:1])]
         self.assertEqual(len(posts), len(board.vias))
+
+
+class TestLaunchStudyViasJoin(unittest.TestCase):
+    def test_the_launch_studys_vias_join_into_one_body_too(self):
+        """The LaunchStudy draws its board through `build` as well, so its
+        vias come out as one body by the same route."""
+        from microwave_package.hfss.launch import geometry as launch_geometry
+
+        # The baseline of test_launch_geometry.py.
+        launch = launch_geometry.from_values(
+            {"cpw_trace_width": 0.2, "launch_clearance": 0.2, "port_space": 6.0,
+             "pcb_length": 50.0}, 0.34737 - 0.1)
+        board = launch_geometry.board(launch)
+        self.assertGreater(len(board.vias), 1)
+        messages = []
+        created = cg.build(FakeModeler(), board, FRAME, top_face=STACK.pcb_top,
+                           bottom_face=STACK.pcb_bottom, thickness=STACK.copper_thickness,
+                           prefix="pcb", log=messages.append)
+        self.assertEqual(created["pcb_vias"], ["pcb_vias"])
+        self.assertTrue(any(m.startswith("pcb_vias:") and " after; " in m for m in messages))
 
 
 class TestExportedLayoutIsSane(unittest.TestCase):
