@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import logging
 import math
+import time
 from dataclasses import dataclass, field, replace
 from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
@@ -404,18 +405,19 @@ def build(
         # Vias run along the up axis, which is Y here rather than Z, and
         # each is a solid post -- see `_via_post`. A stitching grid is
         # thousands of them, so they are built a block at a time (see
-        # `blocks`), and each block is left a body of its own: joining
-        # them is a boolean over every post at once, which on the dense
-        # boards is itself one of the long AEDT calls this avoids.
+        # `blocks`), and the blocks are then united into one body (see
+        # `_join_vias`): the model holds one via body, not one per block.
         parts = []
+        planned = 0
         for (diameter,), where in _positions_by(copper.vias, lambda v: (v.diameter,)).items():
             def post_at(u, v, diameter=diameter):
                 return _via_post(modeler, Via(u, v, diameter, 0.0), frame,
                                  bottom_face, top_face)
 
             parts.extend(_replicate(modeler, frame, where, post_at, log=log))
+            planned += len(blocks(where))
         name = f"{prefix}_vias"
-        created[name] = _name_each(modeler, parts, name)
+        created[name] = _join_vias(modeler, parts, planned, name, log)
 
     log(
         f"Built {len(copper)} copper records for {copper.name} as "
@@ -663,7 +665,13 @@ def _unite_as(modeler, parts: Sequence[str], name: str, log=logger.info) -> List
     return [name]
 
 
-def _unite_or_warn(modeler, parts: Sequence[str], what: str, log=logger.info) -> None:
+# What a refused unite leaves behind, unless the caller says otherwise.
+_LEFT_OVER = ("the parts left over will not get the right material -- "
+              "check them in the model.")
+
+
+def _unite_or_warn(modeler, parts: Sequence[str], what: str, log=logger.info,
+                   consequence: str = _LEFT_OVER) -> bool:
     """Unite `parts`, and say so in the run log when AEDT will not.
 
     PyAEDT's unite does not raise when AEDT refuses: it writes to its own
@@ -671,22 +679,79 @@ def _unite_or_warn(modeler, parts: Sequence[str], what: str, log=logger.info) ->
     no material rule matches -- vacuum -- which is how the bond wires once
     went missing from every model with signal bonds, with nothing in the
     run log but the generic unmatched-body warning.
+
+    Returns whether the parts were united. `consequence` says what a
+    refusal leaves behind, where that is not the default.
     """
-    if not modeler.unite(list(parts)):
-        log(f"WARNING: AEDT would not unite {what}; the parts left over will not get "
-            "the right material -- check them in the model.")
+    united = bool(modeler.unite(list(parts)))
+    if not united:
+        log(f"WARNING: AEDT would not unite {what}; {consequence}")
+    return united
 
 
 def _name_each(modeler, parts: Sequence[str], name: str) -> List[str]:
     """Name `parts` `name`, `name_2`, `name_3`... without uniting them.
 
-    For bodies that need a name the material rules match, but have no
-    need to be one body -- the via blocks in `build`.
+    For bodies that need a name the material rules match, but are not
+    joined into one -- the via blocks, when `_join_vias` leaves them apart.
     """
     names: List[str] = []
     for part in (p for p in parts if p):
         names.append(name if not names else f"{name}_{len(names) + 1}")
         modeler[part].name = names[-1]
+    return names
+
+
+def _join_vias(modeler, parts: Sequence[str], planned: int, name: str,
+               log=logger.info) -> List[str]:
+    """Join one layer's via bodies into one body called `name`.
+
+    One unite of the via blocks, a few dozen bodies. The long boolean that
+    `_via_post` describes was over thousands of single posts. The joined
+    body keeps the first block's name, so it is renamed `name`, which is
+    what the material rules match on.
+
+    `planned` is how many bodies the blocks should have made, one each.
+    More than that means a block was cloned one post at a time (see
+    `_replicate`). Those are not joined, since uniting thousands of single
+    posts is the boolean the blocks exist to avoid; they are named apart.
+
+    A refused unite -- or one AEDT raises on, which PyAEDT re-raises unless
+    its error handler is on -- leaves the blocks apart, named `name`,
+    `name_2`... as they were. Either way the run log gets one line: the
+    bodies before and after, and the seconds the unite took.
+    """
+    parts = [p for p in parts if p]
+    if not parts:
+        return []
+    before = len(parts)
+    if before == 1:
+        modeler[parts[0]].name = name
+        log(f"{name}: 1 via body before the unite, 1 after; no unite was needed.")
+        return [name]
+    if before > planned:
+        names = _name_each(modeler, parts, name)
+        log(f"{name}: {before} via bodies before the unite, {len(names)} after; "
+            "no unite was tried, since a block was cloned one post at a time.")
+        return names
+
+    apart = "the blocks stay apart, each still named for its via material rule."
+    started = time.perf_counter()
+    try:
+        united = _unite_or_warn(modeler, parts, f"the {before} via blocks of {name!r}",
+                                log, consequence=apart)
+    except Exception as exc:
+        log(f"WARNING: AEDT raised {exc!r} uniting the via blocks of {name!r}; {apart}")
+        united = False
+    seconds = time.perf_counter() - started
+
+    if united:
+        modeler[parts[0]].name = name
+        names = [name]
+    else:
+        names = _name_each(modeler, parts, name)
+    log(f"{name}: {before} via bodies before the unite, {len(names)} after; "
+        f"the unite took {seconds:.2f} s.")
     return names
 
 
@@ -706,7 +771,8 @@ def _name_each(modeler, parts: Sequence[str], name: str) -> List[str]:
 # build one copy, then DuplicateAlongLine along each side of the block
 # with "attach to original", which puts the clones into the SAME body.
 # A block of any size costs one copy and two calls, and the model never
-# holds more than a handful of bodies.
+# holds more than a handful of bodies. The blocks of one layer of vias are
+# united afterwards -- see `_join_vias`.
 
 
 @dataclass(frozen=True)
