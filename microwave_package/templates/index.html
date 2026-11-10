@@ -99,6 +99,36 @@
   table.runs tr.part-row td{font-size:.9em;background:var(--surface)}
   table.runs td.part-name{padding-left:1.6rem}
   table.runs .part-note{display:block;font-size:.82em;color:var(--accent);text-decoration:none}
+  /* The run list takes up to 1700 px of the window (96 % of a narrower one).
+     The new-run form below it keeps its readable 900 px column (.new-run).
+     Only this page widens: style.css still gives the comparison and run
+     pages their 900 px. */
+  body{max-width:min(1700px,96vw)}
+  .new-run{max-width:900px;margin:0 auto}
+  .new-run .load-form select{max-width:100%}
+  /* The table scrolls inside its own box, so a narrow window scrolls the list
+     sideways rather than pushing the whole page wider. The compare bar stays
+     outside the box, so it still sticks to the top. */
+  .runs-scroll{overflow-x:auto}
+  /* A long label is cut on one line with an ellipsis, at one width for every
+     row: room for the Swept, Progress and Stage columns (about 600 px together),
+     growing with the window up to 42 rem. The full label is in the tooltip. */
+  table.runs a.run-name,table.runs a.part-link{display:inline-block;vertical-align:middle;
+    max-width:clamp(12rem,calc(96vw - 40rem),42rem);overflow:hidden;text-overflow:ellipsis;
+    white-space:nowrap}
+  /* A long progress text (held and skipped tasks) wraps inside its cell rather
+     than widening the table past the window. */
+  table.runs .progress-num{white-space:normal}
+  /* The floating Start run button and the combination count belong to the
+     new-run form. They hide while the form is off screen (the script puts
+     .new-run-away on <body>), so they never sit over the run list. */
+  button.start-run,.combo-count{transition:opacity .15s,visibility .15s}
+  body.new-run-away button.start-run,body.new-run-away .combo-count{
+    visibility:hidden;opacity:0;pointer-events:none}
+  /* On a desktop-width window the theme switch scrolls with the top bar, so it
+     cannot cover the Stage column while the list is scrolled. Phones already
+     put it in the flow (_theme.html). */
+  @media (min-width:701px){body .theme-switch{position:absolute;top:calc(2rem + .25rem)}}
 </style>
 </head>
 <body>
@@ -137,7 +167,7 @@
 {% macro part_row(r, part, extra=false) -%}
 <tr class="part-row" data-owner="{{ r.run_id }}" data-part-id="{{ part.run_id }}"{% if extra %} hidden{% endif %}>
   <td class="pick"></td>
-  <td class="part-name"><a class="part-link" href="{{ part.href }}">↳ {{ part.label }}</a></td>
+  <td class="part-name"><a class="part-link" href="{{ part.href }}" title="{{ part.label }}">↳ {{ part.label }}</a></td>
   <td class="run-swept"></td>
   <td>
     <span class="bar-cell">
@@ -167,7 +197,7 @@
     </label>
   </td>
   <td>
-    <a class="run-name" href="{{ url_for('run_status', run_id=r.run_id) }}">{{ r.name }}</a>{% if r.solver_status == "failed" %}<span class="solver-badge" title="A frequency sweep of this run did not converge: its S11 and S21 values between the solved frequencies are unreliable. Open the run for details.">Sweep did not converge</span>{% endif %}
+    <a class="run-name" href="{{ url_for('run_status', run_id=r.run_id) }}" title="{{ r.name }}">{{ r.name }}</a>{% if r.solver_status == "failed" %}<span class="solver-badge" title="A frequency sweep of this run did not converge: its S11 and S21 values between the solved frequencies are unreliable. Open the run for details.">Sweep did not converge</span>{% endif %}
     <span class="run-id">{% if r.label and r.date_text %}{{ r.date_text }} · {% endif %}{{ r.started_ago }}</span>
     {% if r.refined_done %}<a class="part-note" href="{{ url_for('run_status', run_id=r.run_id) }}#refine">+{{ r.refined_done }} refined solve{{ "" if r.refined_done == 1 else "s" }}</a>{% endif %}
     {% if r.field_done %}<a class="part-note field-note" href="{{ url_for('run_status', run_id=r.run_id) }}#field-images">+{{ r.field_done }} field image{{ "" if r.field_done == 1 else "s" }}</a>{% endif %}
@@ -212,6 +242,7 @@
 </form>
 {# The newest few rows always show, and so does any run that is going: the
    rest fold behind "Show N more" (see the run list script). #}
+<div class="runs-scroll">
 <table class="runs">
 <thead><tr><th class="pick"><span class="visually-hidden">Compare</span></th>
   <th>Run</th><th>Swept</th><th>Progress</th><th>Stage</th></tr></thead>
@@ -228,11 +259,13 @@
 </tfoot>
 {% endif %}
 </table>
+</div>
 {% else %}
 <p class="muted">No runs yet.</p>
 {% endif %}
 </section>
 
+<div class="new-run">
 <h2>Start a new run</h2>
 
 <form method="get" action="{{ url_for('index') }}" class="load-form">
@@ -269,7 +302,7 @@
 </p>
 {% endif %}
 
-<form method="post" action="{{ url_for('new_run') }}">
+<form id="new-run-form" method="post" action="{{ url_for('new_run') }}">
   <p><label>Name <span class="muted">(optional)</span>
     <input type="text" name="label" maxlength="80" placeholder="e.g. pedestal depth sweep" style="width:20rem"></label></p>
 
@@ -509,6 +542,7 @@
   <div class="combo-count" id="combo-count" aria-live="polite"></div>
   <button type="submit" class="start-run">Start run</button>
 </form>
+</div>
 
 <div id="lightbox" hidden>
   <div class="panel" role="dialog" aria-modal="true" aria-labelledby="lightbox-title">
@@ -876,6 +910,22 @@
   update();
 })();
 
+// The floating Start run button and the combination count belong to the
+// new-run form: they show only while some of it is on screen. The bottom
+// margin holds them back until the form's top is well up the window, so
+// they never appear over the heading or the load box just above it. Without
+// IntersectionObserver they stay visible, as they always were.
+(function () {
+  var form = document.getElementById('new-run-form');
+  if (!form || !('IntersectionObserver' in window)) { return; }
+  document.body.classList.add('new-run-away');
+  var watch = new IntersectionObserver(function (entries) {
+    var last = entries[entries.length - 1];
+    document.body.classList.toggle('new-run-away', !last.isIntersecting);
+  }, { rootMargin: '0px 0px -110px 0px' });
+  watch.observe(form);
+})();
+
 // The whole run row is a link to that run's page; the explicit name link
 // keeps it reachable by keyboard and screen reader. The compare tick box
 // is the exception -- ticking a run must not also open it.
@@ -960,6 +1010,7 @@
     var link = row.querySelector('a.part-link');
     link.setAttribute('href', part.href);
     link.textContent = '↳ ' + part.label;
+    link.title = part.label;
     var d = row.querySelector('.progress i.d');
     var f = row.querySelector('.progress i.f');
     if (part.total) {
