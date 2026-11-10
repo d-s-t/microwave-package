@@ -1041,7 +1041,13 @@ def _main(argv: Optional[Sequence[str]] = None) -> int:
         base = straight if name in ("TV1", "TV2") else pocket
         folder = os.path.join(args.out, name)
         text, report = write_variant(base, route, os.path.join(folder, "copper.txt"))
-        meta = {"name": name, "parent": "TV0" if base is straight else "TV0 pocket (route_width 2.7)",
+        if name in ("TV1", "TV2"):
+            parent_label = "TV0"
+        elif args.pocket:
+            parent_label = "TV0b (route_width 2.7)"
+        else:
+            parent_label = "TV0 copy (TV0b pending: copper written from TV0)"
+        meta = {"name": name, "parent": parent_label,
                 "length_mm": route.length, "lateral_extent_mm": route.lateral_extent(),
                 "vertices": [list(p) for p in route.vertices], "widths": list(route.widths),
                 "joints": list(route.joints), "groups": [list(g) for g in route.groups],
