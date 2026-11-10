@@ -26,8 +26,8 @@ Both cut `pedestal_depth` down from the cavity floor, the face the PCB rests
 on, the face base_parts/add_vents.py sketches its grooves on. Both are added
 after the part's final mirror (`box`) and after the vents, and each is centred
 on the origin, so neither depends on the mirror. Both are suppressed when
-pedestal_depth is 0 (bare board or not: a bare board's recess is under its solid
-copper, which the model carries on a skin).
+pedestal_depth is 0 (bare board or not). A recess under copper that stays whole is
+refused when its run is made (constraints.check_recess_copper).
 
 The part's equation link is re-pointed at THIS checkout's default.txt first
 (as add_pedestal_radius.py does), and the two new parameters are imported
@@ -62,9 +62,9 @@ DIAMETER_EQUATION = "pedestal_diameter"  # the circle's diameter
 CREATE_RADIUS = 1.0        # mm: the radius the fillets are made at, before linking
 HALF_SIZE = 6.25 / 2.0     # mm: the real die's half side, the size the recess is drawn at
 
-# The recesses are cut whenever there is a depth, bare board or not. A bare
-# board's recess sits under its solid bottom copper, which the HFSS model
-# carries on a skin (see hfss/vents.py build_recess_skin).
+# The recesses are cut whenever there is a depth, bare board or not. Run creation
+# refuses a recess under copper that stays whole (constraints.check_recess_copper),
+# so only a through opening's recess is ever built.
 SQUARE_SUPPRESS = ('IIF ( "pedestal_shape" < 0.5 , IIF ( "pedestal_depth" > 0 , 0 , 1 ) , 1 )')
 CIRCLE_SUPPRESS = ('IIF ( "pedestal_shape" > 0.5 , IIF ( "pedestal_depth" > 0 , 0 , 1 ) , 1 )')
 

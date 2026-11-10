@@ -583,7 +583,7 @@ def check_recess_copper(values: Dict[str, float]) -> Optional[str]:
 
     The rule is the copper cut's own decision (`cavity.Cavity.cuts_bottom_copper`),
     not a copy of the thickness comparison. Run where a run is created, for every
-    combination (see `run_manager.recess_refusal`); the layout check does not carry it.
+    combination (see `run_manager.geometry_refusal`); the layout check does not carry it.
     """
     from . import cavity as cavity_plan
 
@@ -601,6 +601,29 @@ def check_recess_copper(values: Dict[str, float]) -> Optional[str]:
             f"die's opening stays blind, so the bottom copper lies whole over the recess as a sealed air "
             f"void under the ground plane -- set pedestal_depth to 0, or use a board less than "
             f"{_fmt(cavity_plan.MIN_FLOOR)} mm thicker than the die so the opening goes through")
+
+
+def check_pedestal_vent(values: Dict[str, float]) -> Optional[str]:
+    """Why vents with a pedestal recess cannot be built here, or None.
+
+    The pedestal vent is a groove in the box floor under the recess. Under a through
+    opening the bottom copper lies over that groove outside the die's opening, and with
+    no skin of box metal under it the copper straddles the groove's walls, which AEDT
+    refuses ("pcb_copper_bottom and box intersect", see hfss/vents.py). A blind pocket
+    or a bare board is refused by `check_recess_copper` first, so only the through
+    opening is decided here. Vents are cut after manufacturing, and the simulations
+    stay vent-free.
+    """
+    from . import cavity as cavity_plan, venting
+
+    if not any(vent.name == "pedestal" for vent in venting.plan(values)):
+        return None
+    if not cavity_plan.plan(values).cuts_bottom_copper:
+        return None
+    return ("vents_on = 1 with a pedestal recess under a through opening: the pedestal groove lies "
+            "under the bottom copper, and the model builder no longer closes it (AEDT imports the box "
+            "unchanged), so this run cannot be built here. Vents are cut after manufacturing and "
+            "simulations stay vent-free: untick vents_on, or set pedestal_depth to 0")
 
 
 def check_layout(values: Dict[str, float], mat_pcb: Optional[str] = None,

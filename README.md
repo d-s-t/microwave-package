@@ -205,7 +205,9 @@ than the die) takes the copper out over the recess and is allowed. When any
 combination of a run has a refused recess, the whole run is refused and the form
 shows the reason. The rule is `constraints.check_recess_copper`, decided by
 `cavity.Cavity.cuts_bottom_copper`, the same decision the copper cut makes.
-Refinement and field parts of a run are made from its geometry and are not refused.
+`vents_on` with a pedestal recess under a through opening is refused the same way
+(`constraints.check_pedestal_vent`). Refinement and field parts are made from the run's geometry, so
+they are refused in the same cases. These are known limits, C1 and C2 in `VENTING.md`.
 
 **The SolidWorks parts' equation link.** `box.SLDPRT` and `lid_inside.SLDPRT`
 read their dimensions from `base_parts/default.txt` through a link that is

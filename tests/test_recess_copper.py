@@ -90,6 +90,26 @@ class TestTheRule(unittest.TestCase):
             values(pedestal_depth=0.5, launch_bottom_cutout_radius=1.0)))
 
 
+class TestThePedestalVent(unittest.TestCase):
+    def test_vents_with_a_pedestal_recess_under_a_through_opening_are_refused(self):
+        reason = constraints.check_pedestal_vent(values(vents_on=1, pedestal_depth=0.5))
+        self.assertIn("untick vents_on", reason)
+        self.assertIn("Vents are cut after manufacturing", reason)
+
+    def test_vents_off_are_not_refused(self):
+        self.assertIsNone(constraints.check_pedestal_vent(values(vents_on=0, pedestal_depth=0.5)))
+
+    def test_no_pedestal_recess_means_no_pedestal_vent(self):
+        self.assertIsNone(constraints.check_pedestal_vent(values(vents_on=1, pedestal_depth=0)))
+
+    def test_a_blind_pocket_is_left_to_the_recess_rule(self):
+        self.assertIsNone(constraints.check_pedestal_vent(
+            values(vents_on=1, pedestal_depth=0.5, pcb_width=BLIND_BOARD)))
+
+    def test_a_bare_board_has_no_pedestal_vent(self):
+        self.assertIsNone(constraints.check_pedestal_vent(values(vents_on=1, no_chip=1, pedestal_depth=0.5)))
+
+
 class FakeModeler:
     def __init__(self):
         self.boxes = []
@@ -180,22 +200,86 @@ class TestTheCreatePath(unittest.TestCase):
                                   {"pcb_width": BLIND_BOARD})
         self.assertTrue(os.path.isdir(run.run_dir))
 
-    def test_a_refinement_of_a_refused_shape_is_still_creatable(self):
-        # made the way the web app makes one: from a parent that is already built
-        _eigen, parent = companion.create_pair([sweep("pedestal_depth", 0.5)], self.settings(),
-                                               {"pcb_width": BLIND_BOARD})
-        combo = next(iter(parent.state["combos"]))
-        parent.update_combo(combo, post_status="done")
-        child = companion.create_refinement(Run.load(parent.run_id), "12:13", [combo])
+    def test_vents_with_a_pedestal_recess_under_a_through_opening_are_refused_at_creation(self):
+        with self.assertRaises(ValueError) as caught:
+            pipeline.create_run([sweep("pedestal_depth", 0.5)], self.settings(run_both=False),
+                                {"vents_on": 1.0})
+        self.assertIn("vents_on = 1", str(caught.exception))
+        self.assertIn("untick vents_on", str(caught.exception))
+        self.assertEqual(self.runs_on_disk(), [])
+
+    def test_vents_without_a_pedestal_recess_are_not_refused_here(self):
+        run = pipeline.create_run([], self.settings(run_both=False),
+                                  {"vents_on": 1.0, "pedestal_depth": 0.0})
+        self.assertTrue(os.path.isdir(run.run_dir))
+
+
+class TestTheChildren(unittest.TestCase):
+    """Refinement and field parts are made from the parent's geometry, so they are refused
+    where the builder cannot close it (companion._refuse_unbuildable_geometry)."""
+
+    def setUp(self):
+        logging.disable(logging.CRITICAL)
+        self.addCleanup(logging.disable, logging.NOTSET)
+        saved = paths.RUNS_ROOT
+        paths.RUNS_ROOT = tempfile.mkdtemp(prefix="runs_")
+        self.addCleanup(setattr, paths, "RUNS_ROOT", saved)
+
+    def parent(self, defaults, **settings):
+        """A driven run made the way the web app makes one, with its one combination done."""
+        _eigen, run = companion.create_pair([sweep("pedestal_depth", 0.5)],
+                                            {**pipeline.DEFAULT_ANALYSIS_SETTINGS, **settings}, defaults)
+        combo = next(iter(run.state["combos"]))
+        run.update_combo(combo, post_status="done")
+        return Run.load(run.run_id), combo
+
+    def runs_on_disk(self):
+        return sorted(os.listdir(paths.RUNS_ROOT))
+
+    def test_a_refinement_of_a_blind_pocket_recess_is_refused_and_nothing_is_made(self):
+        parent, combo = self.parent({"pcb_width": BLIND_BOARD})
+        before = self.runs_on_disk()
+        with self.assertRaises(ValueError) as caught:
+            companion.create_refinement(parent, "12:13", [combo])
+        self.assertIn("cannot be rebuilt here", str(caught.exception))
+        self.assertIn("PORT=5001", str(caught.exception))
+        self.assertEqual(self.runs_on_disk(), before)
+
+    def test_a_field_image_of_a_blind_pocket_recess_is_refused(self):
+        parent, combo = self.parent({"pcb_width": BLIND_BOARD})
+        with mock.patch.object(companion, "field_exports_available", return_value=True):
+            with self.assertRaises(ValueError) as caught:
+                companion.create_field_images(parent, "15", [combo], ["E"])
+        self.assertIn("cannot be rebuilt here", str(caught.exception))
+
+    def test_a_refinement_of_a_bare_board_with_a_recess_is_refused(self):
+        parent, combo = self.parent({"no_chip": 1.0, "pedestal_depth": 0.5})
+        with self.assertRaises(ValueError) as caught:
+            companion.create_refinement(parent, "12:13", [combo])
+        self.assertIn("cannot be rebuilt here", str(caught.exception))
+
+    def test_a_refinement_of_a_vented_through_parent_is_refused_with_the_vent_message(self):
+        parent, combo = self.parent({"vents_on": 1.0})
+        with self.assertRaises(ValueError) as caught:
+            companion.create_refinement(parent, "12:13", [combo])
+        self.assertIn("vents_on = 1", str(caught.exception))
+
+    def test_a_field_image_of_a_vented_through_parent_is_refused(self):
+        parent, combo = self.parent({"vents_on": 1.0})
+        with mock.patch.object(companion, "field_exports_available", return_value=True):
+            with self.assertRaises(ValueError) as caught:
+                companion.create_field_images(parent, "15", [combo], ["E"])
+        self.assertIn("vents_on = 1", str(caught.exception))
+
+    def test_a_refinement_of_a_through_opening_with_a_recess_is_creatable(self):
+        parent, combo = self.parent({})
+        child = companion.create_refinement(parent, "12:13", [combo])
         self.assertTrue(os.path.isdir(child.run_dir))
 
-    def test_a_field_image_part_of_a_refused_shape_is_still_creatable(self):
-        _eigen, parent = companion.create_pair([sweep("pedestal_depth", 0.5)], self.settings(),
-                                               {"pcb_width": BLIND_BOARD})
-        combo = next(iter(parent.state["combos"]))
-        parent.update_combo(combo, post_status="done")
-        with mock.patch.object(companion, "field_exports_available", return_value=True):
-            child = companion.create_field_images(Run.load(parent.run_id), "15", [combo], ["E"])
+    def test_a_refinement_of_a_blind_pocket_made_without_altium_is_creatable(self):
+        # no copper is drawn without Altium, so nothing is sealed to rebuild
+        parent, combo = self.parent({"pcb_width": BLIND_BOARD}, use_altium=False)
+        child = companion.create_refinement(parent, "12:13", [combo])
         self.assertTrue(os.path.isdir(child.run_dir))
 
 

@@ -33,8 +33,9 @@ from ansys_analyze_common import queue_common
 from ..hfss import registry
 from ..hfss.driven import DRIVEN_MODAL
 from ..hfss.eigenmode import EIGENMODE
+from ..design import constraints
 from ..design.sweep import SweepParameter
-from .run_manager import Run
+from .run_manager import Run, equation_file_values
 
 logger = logging.getLogger("microwave_package")
 
@@ -131,6 +132,42 @@ def refinable_combos(run: Run) -> List[str]:
     return [cid for cid, combo in run.state["combos"].items() if combo.get("post_status") == "done"]
 
 
+# A refinement or a field-image part is made from its parent's geometry, and the
+# current model builder rebuilds it. Where the parent has a recess under copper that
+# stays whole, or vents with a pedestal recess under a through opening, the builder
+# would need a skin of box metal that it no longer gives (AEDT imports the box
+# unchanged). Such a part cannot be rebuilt here, so it is refused before it is made.
+RECESS_CHILD_REFUSAL = (
+    "This run's geometry has a recess under whole copper, and the model builder no longer "
+    "closes it (AEDT imports the box unchanged), so a refinement or field image of it cannot "
+    "be rebuilt here. To rebuild it, use a worktree at the commit before this change: start a "
+    "second web app from that worktree on PORT=5001 and refine through it.")
+VENT_CHILD_REFUSAL = (
+    "This run has vents_on = 1 with a pedestal recess under a through opening: the pedestal "
+    "groove lies under the bottom copper, and the model builder no longer closes it (AEDT "
+    "imports the box unchanged), so a refinement or field image of it cannot be rebuilt here. "
+    "Vents are cut after manufacturing and simulations stay vent-free. To rebuild it, use a "
+    "worktree at the commit before this change: start a second web app from that worktree on "
+    "PORT=5001 and refine through it.")
+
+
+def _refuse_unbuildable_geometry(parent: Run, combo_ids: List[str]) -> None:
+    """Raise ValueError when a part of `parent` for `combo_ids` cannot be rebuilt here.
+
+    Each combination is checked with the parent's own values, the layering `Run.create`
+    applies. Without Altium there is no copper to close, so nothing is refused.
+    """
+    if not parent.analysis_settings.get("use_altium", True):
+        return
+    base = equation_file_values()
+    for combo_id in combo_ids:
+        values = {**base, **parent.parameter_defaults, **parent.state["combos"][combo_id]["params"]}
+        if constraints.check_recess_copper(values):
+            raise ValueError(RECESS_CHILD_REFUSAL)
+        if constraints.check_pedestal_vent(values):
+            raise ValueError(VENT_CHILD_REFUSAL)
+
+
 def create_refinement(parent: Run, ranges_text: str, combo_ids: List[str],
                       points_cap: int = 20000) -> Run:
     """A new driven run that re-solves `combo_ids` of `parent` over `ranges_text`.
@@ -160,6 +197,7 @@ def create_refinement(parent: Run, ranges_text: str, combo_ids: List[str],
         raise ValueError("Pick at least one combination to refine.")
     if missing:
         raise ValueError(f"These combinations have no results to refine yet: {', '.join(missing)}.")
+    _refuse_unbuildable_geometry(parent, wanted)
     parsed = windows.parse_manual(ranges_text)
     if not parsed:
         raise ValueError("Give at least one frequency range, as lo:hi:step in GHz.")
@@ -252,6 +290,7 @@ def create_field_images(parent: Run, frequency_text: str, combo_ids: List[str],
     missing = [c for c in wanted if c not in available]
     if missing:
         raise ValueError(f"These combinations have no results yet: {', '.join(missing)}.")
+    _refuse_unbuildable_geometry(parent, wanted)
     low, high = float(settings["f_start_ghz"]), float(settings["f_stop_ghz"])
     try:
         frequency = float(str(frequency_text).strip())

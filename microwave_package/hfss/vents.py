@@ -19,7 +19,7 @@ from __future__ import annotations
 import logging
 from typing import List, Optional
 
-from ..design import cavity as cavity_plan, venting
+from ..design import venting
 
 logger = logging.getLogger("microwave_package")
 
@@ -66,62 +66,24 @@ def build_vents(hfss, frame, stack, values, log=logger.info) -> Optional[List[st
     return names
 
 
-def build_recess_skin(hfss, frame, stack, values, log=logger.info) -> Optional[str]:
-    """Put the box back under the board's whole bottom copper over its recess.
-
-    Where the bottom copper is whole -- a bare board has no opening, and a
-    blind pocket leaves its back plane whole under the die -- it lies over
-    the pedestal recess as well as the rim. As with a vent groove (see
-    `_restore_copper_skin`), the copper is drawn 35 um down into the floor, so
-    the recess would leave it half over air at its walls. The copper is
-    whole on the real board, so the recess's top two copper thicknesses are
-    given back to the box as a skin, and the air pocket under the board sits
-    below that skin, closed by the solid ground plane on every side.
-
-    Returns the skin's name, or None when there is nothing to skin: a die board
-    with a through opening (its copper has the opening over the recess and sits
-    on the rim), no recess, or a copper layer drawn as a sheet.
-    """
-    from ..design import parameter_meta, pedestal
-
-    thickness = stack.copper_thickness
-    if thickness <= 0:
-        return None
-    # A through opening takes the copper out over the recess. A bare board has
-    # no opening, so its plan is never through and its copper stays whole.
-    if cavity_plan.plan(values).through:
-        return None
-    if values.get("pedestal_depth", 0.0) <= 0:
-        return None
-    half = pedestal.recess_size(values) / 2.0 + SKIN_OVERLAP
-    origin, sizes = frame.box(-half, -half, half, half,
-                              stack.pcb_bottom - SKIN_DEPTH * thickness, SKIN_DEPTH * thickness)
-    skin = hfss.modeler.create_box(origin=origin, sizes=sizes)
-    skin.name = "recess_skin"
-    hfss.modeler.unite(["box", skin.name])
-    kind = "Bare board" if parameter_meta.is_bare_board(values) else "Blind pocket"
-    log(f"{kind}: the bottom copper over the pedestal recess is carried on a "
-        f"{SKIN_DEPTH * thickness * 1000:g} um skin of the box.")
-    return skin.name
-
-
 def _restore_copper_skin(hfss, frame, stack, values, vents, log) -> List[str]:
-    """Put the box back under the board's bottom copper over each groove.
+    """Put the box back under the board's bottom copper over each screw groove.
 
     The bottom copper is drawn growing DOWN from the board's underside, into
     the floor's top `copper_thickness`, so everywhere else it lies wholly
     inside the box and the two do not "intersect". A groove cut to the
     floor's top face would leave the copper half in metal and half over
     air, and HFSS refuses that ("pcb_copper_bottom and box intersect").
-    The copper is whole on the real board, so the groove's top
-    two copper thicknesses are given back to the box as a skin under it, wherever
-    copper lies over the groove: for the pedestal vent from the die's opening
-    to the board's edge (all the way across it under a blind pocket, whose back
-    plane is whole), for a screw vent from the keep-out circle round
-    the screw to the board's edge (inside the circle there is no copper).
-    The groove runs below the ground plane, which is what it is meant to do.
-    The skin floats above the groove's floor, so it is joined to the box
-    through the groove's walls.
+    Where copper lies over a screw groove -- from just inside the keep-out
+    circle round the screw (inside it there is no copper) to the board's
+    edge -- the groove's top two copper thicknesses are given back to the box
+    as a skin under it. The skin floats above the groove's floor, so it is
+    joined to the box through the groove's walls.
+
+    The pedestal groove gets no skin: the box is imported as SolidWorks made
+    it (VENTING.md, "No skin in AEDT"). Under a through opening that groove
+    lies under the copper, the case the refusal above was for, so such a run
+    is refused before it is made (VENTING.md, known limit C2).
     """
     from ..design import screws as screw_plan
 
@@ -129,37 +91,25 @@ def _restore_copper_skin(hfss, frame, stack, values, vents, log) -> List[str]:
     if thickness <= 0:
         return []
     reach = values.get("pcb_side", 25.0) / 2.0 + WALL_OVERLAP
-    opening = cavity_plan.plan(values)
-    inner = opening.half_side
     screws = screw_plan.plan(values)
     keepout = screws.keepout_diameter / 2.0 if screws is not None else 0.0
     modeler = hfss.modeler
     made: List[str] = []
     for vent in vents:
         if vent.name == "pedestal":
-            if inner <= 0:      # no die opening to start from: nothing is over this groove
-                continue
-            if opening.through:
-                spans = ((inner, reach), (-reach, -inner))
-            else:
-                # A blind pocket leaves the back plane whole under the die, so the
-                # copper lies over the groove all the way across it, not only past
-                # the opening's edge.
-                spans = ((-reach, reach),)
-        else:
-            sign = 1.0 if vent.end[1] > 0 else -1.0
-            start = abs(vent.start[1]) + keepout - KEEPOUT_SLACK
-            spans = (tuple(sorted((sign * start, sign * reach))),)
+            continue
+        sign = 1.0 if vent.end[1] > 0 else -1.0
+        start = abs(vent.start[1]) + keepout - KEEPOUT_SLACK
+        v0, v1 = sorted((sign * start, sign * reach))
+        if v1 - v0 <= 0:
+            continue
         u_min, _, u_max, _ = vent.rectangle()
-        for index, (v0, v1) in enumerate(spans):
-            if v1 - v0 <= 0:
-                continue
-            # a skin as wide as the groove only touches its walls edge to edge, and
-            # a union of bodies that merely touch fails; it reaches into them
-            origin, sizes = frame.box(u_min - SKIN_OVERLAP, v0, u_max + SKIN_OVERLAP, v1,
-                                      stack.pcb_bottom - SKIN_DEPTH * thickness, SKIN_DEPTH * thickness)
-            skin = modeler.create_box(origin=origin, sizes=sizes)
-            skin.name = f"vent_skin_{vent.name}_{index}"
-            modeler.unite(["box", skin.name])
-            made.append(skin.name)
+        # a skin as wide as the groove only touches its walls edge to edge, and
+        # a union of bodies that merely touch fails; it reaches into them
+        origin, sizes = frame.box(u_min - SKIN_OVERLAP, v0, u_max + SKIN_OVERLAP, v1,
+                                  stack.pcb_bottom - SKIN_DEPTH * thickness, SKIN_DEPTH * thickness)
+        skin = modeler.create_box(origin=origin, sizes=sizes)
+        skin.name = f"vent_skin_{vent.name}_0"
+        modeler.unite(["box", skin.name])
+        made.append(skin.name)
     return made

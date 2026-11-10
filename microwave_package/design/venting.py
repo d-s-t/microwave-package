@@ -143,10 +143,9 @@ def plan(values: Dict[str, float]) -> List[Vent]:
     The pedestal vent exists only if there is a recess under a die to vent:
     `pedestal_depth` > 0 and not a bare board (`no_chip`). A bare board has
     no die and no opening in its bottom copper, so a recess there is not a
-    pocket this vent serves and the copper skin that goes with the vent
-    (hfss/vents.py) has no die opening to start from. box.SLDPRT's
-    `Vent_Pedestal` is suppressed by the same condition. The screw vents
-    exist only when the screws are on.
+    pocket this vent serves (and a bare board's recess is refused when its run
+    is made). box.SLDPRT's `Vent_Pedestal` is suppressed by the same condition.
+    The screw vents exist only when the screws are on.
     """
     if not enabled(values):
         return []
