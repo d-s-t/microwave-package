@@ -190,13 +190,22 @@ carries whatever the pedestal and chip lid features make from
 `pedestal_depth`, `chip_length`, `chip_side` and `bonding_clearence`.
 Run creation, for the command line and the form alike, pins `pedestal_depth = 0`
 for a bare-board run that asks for no pedestal, so its floor stays flat. A value
-typed or swept for `pedestal_depth` still wins: a bare board may carry a recess
-(`pedestal_shape` 0 or 1) under its solid bottom copper. The HFSS model then gives
-the box back a skin under that copper over the recess (`hfss/vents.py`
-`build_recess_skin`), so the air pocket sits under the board, closed by the ground
-plane. Eigenmode
-runs solve normally, but the chip-field columns come back flagged
-"object 'chip' not found", since there is no chip to measure.
+typed or swept for `pedestal_depth` still wins, but a recess on a bare board is
+refused (see the recess rule below). Eigenmode runs solve normally, but the
+chip-field columns come back flagged "object 'chip' not found", since there is no
+chip to measure.
+
+**The recess rule.** A pedestal recess under the die (`pedestal_depth` > 0) is
+refused when the board's bottom copper stays whole over it: a bare board, or a
+blind pocket (a board at least 0.1 mm thicker than the die). Such a recess is a
+sealed air void under the ground plane, and the model could only be built with a
+skin of box metal under that copper, which the box must not carry: AEDT imports
+the box as SolidWorks made it. A through opening (a board less than 0.1 mm thicker
+than the die) takes the copper out over the recess and is allowed. When any
+combination of a run has a refused recess, the whole run is refused and the form
+shows the reason. The rule is `constraints.check_recess_copper`, decided by
+`cavity.Cavity.cuts_bottom_copper`, the same decision the copper cut makes.
+Refinement and field parts of a run are made from its geometry and are not refused.
 
 **The SolidWorks parts' equation link.** `box.SLDPRT` and `lid_inside.SLDPRT`
 read their dimensions from `base_parts/default.txt` through a link that is

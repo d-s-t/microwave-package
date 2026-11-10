@@ -4,8 +4,9 @@ The web form used to be the only place that pinned pedestal_depth = 0 for a
 bare board; the command line did not, so a CLI bare-board run kept the 0.5 mm
 recess under a whole ground plane and failed HFSS validation ("pcb_copper_bottom
 and box intersect"). The rule now lives in `sweep.pin_bare_board_pedestal`, applied
-by `pipeline.create_run`. A typed pedestal on a bare board is valid: it is a recess
-under the board's solid bottom copper (see hfss/vents.py build_recess_skin).
+by `pipeline.create_run`. A typed pedestal on a bare board is refused when the run is
+made: its recess would lie under solid bottom copper with nothing to hold that copper up
+(tests/test_recess_copper.py). The layout check does not carry that rule.
 
 Run: python -m unittest discover -s tests
 """

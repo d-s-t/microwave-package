@@ -63,7 +63,7 @@ that breaks one is refused before anything is drawn:
   the board edge.
 - The lid must be thick enough for the countersunk head (1.14 mm head plus
   0.3 mm seat), and the thread in the box at least 1.5 x the screw.
-- A bare board (`no_chip`) skips the chip, opening and bonds. It may still carry a pedestal recess (`pedestal_depth` > 0) under its solid bottom copper; the model carries that copper over the recess on a skin of the box, so the air pocket sits under the board.
+- A bare board (`no_chip`) skips the chip, opening and bonds, and its pedestal stays at 0: a recess under its solid bottom copper is refused when the run is made (README, "The recess rule").
 
 ## 2. Simulations that must pass
 

@@ -1217,7 +1217,7 @@ def clear_cavity_area(
     margin = max(stack.copper_thickness, stack.chip_metal_thickness) * 2.0
     # Where the cut starts: a through opening goes below the bottom face, so
     # both layers are in it; a blind pocket stops at the top of its floor.
-    base = (stack.pcb_bottom - margin) if cavity.through else (stack.pcb_top - cavity.depth)
+    base = (stack.pcb_bottom - margin) if cavity.cuts_bottom_copper else (stack.pcb_top - cavity.depth)
     top = stack.pcb_top + margin
     origin, sizes = frame.box(
         -cavity.half_length, -cavity.half_side,
@@ -1229,7 +1229,7 @@ def clear_cavity_area(
     # to consume it is obvious in the tree instead of anonymous.
     tool.name = "cavity_area_cut"
     modeler.subtract(list(targets), ["cavity_area_cut"], keep_originals=False)
-    if cavity.through:
+    if cavity.cuts_bottom_copper:
         log(f"Cleared the die's opening out of {', '.join(targets)}.")
     else:
         log("Cleared the copper above the die's blind pocket floor; "

@@ -424,6 +424,41 @@ def _skip_reason(values: Dict[str, float], use_altium: bool) -> Optional[str]:
     return None
 
 
+def recess_refusal(sweep_params, parameter_defaults=None) -> Optional[str]:
+    """Why a new run is refused, when a combination of it has a pedestal recess
+    under copper that stays whole (see constraints.check_recess_copper), or None.
+
+    Every combination is checked with the layering `Run.create` applies, so the
+    answer is for the geometry that would be built. The whole run is refused, and
+    the message says how many combinations are, and the first few. Children that
+    reproduce a parent's geometry (companion's refinements and field parts) are
+    made by `Run.create` directly, not through here, so they are not refused.
+    """
+    base = _equation_file_values()
+    combos = combinations(sweep_params)
+    refused = []
+    for combo in combos:
+        reason = constraints.check_recess_copper({**base, **(parameter_defaults or {}), **combo})
+        if reason:
+            refused.append((combo, reason))
+    if not refused:
+        return None
+    first = refused[0][1]
+    if len(combos) == 1:
+        return f"Run not created: {first}"
+    named = "; ".join(_combo_label(combo) for combo, _ in refused[:3])
+    more = f" and {len(refused) - 3} more" if len(refused) > 3 else ""
+    return (f"Run not created: {len(refused)} of {len(combos)} combinations are refused. "
+            f"First: {first} Refused: {named}{more}.")
+
+
+def _combo_label(combo: Dict[str, float]) -> str:
+    """A combination's swept values, as the message names it."""
+    if not combo:
+        return "(no swept values)"
+    return ", ".join(f"{name} = {value:g}" for name, value in combo.items())
+
+
 def equation_file_values() -> Dict[str, float]:
     """The equations file's own numbers (what a run layers its values over)."""
     return _equation_file_values()
