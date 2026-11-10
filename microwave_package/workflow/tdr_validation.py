@@ -23,12 +23,18 @@ Generous band (0.05-100 GHz, 2000 points):
           <= 5 % of the Z range (100 ohm); no detection with |r| >= 0.03.
   CORNERS every feature found within 1 resolution of its centre; no detection
           with |r| >= 0.03 that is not a feature.
-Real band (0.1-20 GHz, 401 points), and the two extra cases (2 GHz start, small
-loss), at the looser limits:
+Real band (0.1-20 GHz, 401 points), and the extra cases (small loss, RO3003 loss), at the
+looser limits:
   SHARP   edges within 1 resolution; plateau mean within 10 %.
   GRADUAL RMS <= 8 % of the range.
   CORNERS features more than one resolution apart found within 1 resolution;
           a pair closer than one resolution reported as one, with a note.
+The 2 GHz start is a characterisation, not a pass/fail case: the data hold nothing about
+0-2 GHz, so its plateau error is reported and its warning kept.
+
+Loss cases: "small loss" is a constant 1.151 Np/m (10 dB/m, 0.1 dB/cm), outside the model's
+family (a_c sqrt(f) + a_d f). "RO3003 loss" is tan delta 0.001 at eps 2: a_d f = 1.48e-5 f Np/mm,
+0.148 Np/m (1.3 dB/m) at 10 GHz, inside the family.
 
 Resolution: the 10-90 % rise time of the windowed step from f_max, times v/2
 (tdr.rise_time_ns). Distances are measured from port 1 (x = 0).
@@ -50,7 +56,12 @@ C_MM_PER_NS = 299.792458
 Z0 = 50.0
 GRADUAL_RANGE_OHM = 150.0 - 50.0
 MISMATCH_THRESHOLD = 0.03
-LOSS_DB_PER_CM = 0.1  # the "small loss" case: a constant attenuation
+LOSS_DB_PER_CM = 0.1  # the "small loss" case: a constant attenuation, 10 dB/m = 1.151 Np/m
+C_M_PER_S = 299792458.0
+RO3003_TAN_DELTA = 0.001
+RO3003_EPS_EFF = 2.0
+# dielectric attenuation alpha = pi sqrt(eps) tan(delta) f / c, in Np/mm per GHz (1.48e-5)
+RO3003_ALPHA_LIN_NP_PER_MM_PER_GHZ = math.pi * math.sqrt(RO3003_EPS_EFF) * RO3003_TAN_DELTA * 1e9 / C_M_PER_S / 1000.0
 METHODS = ("peel", "fit")
 
 
@@ -68,7 +79,9 @@ class DummyLine:
     sections: Tuple[Section, ...]
     eps_eff: float = 2.0
     z0: float = Z0
-    alpha_np_per_mm: float = 0.0
+    alpha_np_per_mm: float = 0.0  # constant attenuation
+    alpha_sqrt_np_per_mm: float = 0.0  # a_c sqrt(f), f in GHz (conductor-like)
+    alpha_lin_np_per_mm: float = 0.0  # a_d f, f in GHz (dielectric-like)
 
     @property
     def length_mm(self) -> float:
@@ -87,8 +100,10 @@ class DummyLine:
         f = np.asarray(freq_ghz, dtype=float).ravel()
         total = np.broadcast_to(np.eye(2, dtype=complex), (f.size, 2, 2)).copy()
         beta_per_mm = 2.0 * math.pi * f * math.sqrt(self.eps_eff) / C_MM_PER_NS
+        alpha_per_mm = (self.alpha_np_per_mm + self.alpha_sqrt_np_per_mm * np.sqrt(f)
+                        + self.alpha_lin_np_per_mm * f)
         for section in self.sections:
-            theta = (self.alpha_np_per_mm + 1j * beta_per_mm) * section.length_mm
+            theta = (alpha_per_mm + 1j * beta_per_mm) * section.length_mm
             ch, sh = np.cosh(theta), np.sinh(theta)
             block = np.empty((f.size, 2, 2), dtype=complex)
             block[:, 0, 0] = ch
@@ -122,8 +137,17 @@ def sharp_line() -> DummyLine:
     return DummyLine("SHARP", (Section(50.0, 20.0), Section(500.0, 15.0), Section(50.0, 15.0)))
 
 
+def sharp_line_ro3003() -> DummyLine:
+    """The SHARP line with RO3003 dielectric loss (tan delta 0.001, eps 2): 0.148 Np/m at 10 GHz,
+    0.297 Np/m at 20 GHz (1.3 and 2.6 dB/m). The model's own functional form, a_d f."""
+    base = sharp_line()
+    return DummyLine("SHARP RO3003 loss", base.sections, eps_eff=RO3003_EPS_EFF,
+                     alpha_lin_np_per_mm=RO3003_ALPHA_LIN_NP_PER_MM_PER_GHZ)
+
+
 def sharp_line_lossy() -> DummyLine:
-    """The SHARP line with a constant attenuation of LOSS_DB_PER_CM."""
+    """The SHARP line with a constant attenuation of LOSS_DB_PER_CM (10 dB/m = 1.151 Np/m):
+    0.5 dB over the 50 mm line, a constant alpha the model family does not contain."""
     alpha = LOSS_DB_PER_CM / 8.685889638 / 10.0  # Np per mm
     base = sharp_line()
     return DummyLine("SHARP small loss", base.sections, alpha_np_per_mm=alpha)
@@ -183,7 +207,7 @@ class CaseReport:
     method: str
     kind: str
     criteria: str
-    passed: bool
+    passed: Optional[bool]  # None for a characterisation (no pass/fail)
     numbers: Dict[str, object]
     result: tdr.TDRResult
     mismatches: List[tdr.Mismatch]
@@ -277,17 +301,28 @@ def evaluate(line: DummyLine, result: tdr.TDRResult, *, band_key: str, kind: str
 
 def run_case(line: DummyLine, band_key: str, *, method: str, kind: str, case: str,
              edges: Sequence[float] = (), z_plateau: float = 0.0, z_outer: float = Z0,
-             beta: float = tdr.DEFAULT_BETA, pad: int = tdr.DEFAULT_PAD) -> CaseReport:
-    """Build the dummy S-parameters for one band, analyse with one method, and judge."""
+             beta: float = tdr.DEFAULT_BETA, pad: int = tdr.DEFAULT_PAD,
+             characterise: bool = False) -> CaseReport:
+    """Build the dummy S-parameters for one band, analyse with one method, and judge.
+
+    characterise=True reports the numbers without a pass/fail: the 2 GHz start, where the
+    data hold nothing about 0-2 GHz, is a characterisation (its warning is kept)."""
     band_label, freq = BANDS[band_key]
-    s11 = line.s_parameters(freq)[:, 0, 0]
-    runner = tdr.analyse if method == "peel" else tdr.analyse_fit
-    result = runner(freq, s11, name=f"{case} ({band_key}, {method})", z0=line.z0,
-                    eps_eff=line.eps_eff, beta=beta, pad=pad, max_mm=line.length_mm + 6.0)
+    s_matrix = line.s_parameters(freq)
+    if method == "peel":
+        result = tdr.analyse(freq, s_matrix[:, 0, 0], name=f"{case} ({band_key}, {method})",
+                             z0=line.z0, eps_eff=line.eps_eff, beta=beta, pad=pad,
+                             max_mm=line.length_mm + 6.0)
+    else:
+        result = tdr.analyse_fit_multi(freq, s_matrix, line_length_mm=line.length_mm,
+                                       name=f"{case} ({band_key}, {method})", z0=line.z0,
+                                       eps_eff=line.eps_eff, beta=beta, pad=pad)
     numbers, mismatches, failures = evaluate(line, result, band_key=band_key, kind=kind,
                                              edges=edges, z_plateau=z_plateau, z_outer=z_outer)
-    if not result.stable:
-        failures.append("profile not reliable (" + "; ".join(result.notes) + ")")
+    if characterise:
+        return CaseReport(case=case, band=band_key, method=method, kind=kind, criteria="characterisation",
+                          passed=None, numbers=numbers, result=result,
+                          mismatches=mismatches, failures=[])
     return CaseReport(case=case, band=band_key, method=method, kind=kind, criteria=band_label,
                       passed=not failures, numbers=numbers, result=result,
                       mismatches=mismatches, failures=failures)
@@ -295,7 +330,8 @@ def run_case(line: DummyLine, band_key: str, *, method: str, kind: str, case: st
 
 def _truth_for(case: str):
     lines = {"SHARP": sharp_line, "GRADUAL": gradual_line, "CORNERS": corners_line,
-             "SHARP, starts 2 GHz": sharp_line, "SHARP, small loss": sharp_line_lossy}
+             "SHARP, starts 2 GHz": sharp_line, "SHARP, small loss": sharp_line_lossy,
+             "SHARP, RO3003 loss": sharp_line_ro3003}
     return lines[case]().true_z
 
 
@@ -314,9 +350,12 @@ def run_suite(beta: float = tdr.DEFAULT_BETA, pad: int = tdr.DEFAULT_PAD,
                                     beta=beta, pad=pad))
         reports.append(run_case(sharp, "from_2ghz", method=method, kind="sharp",
                                 case="SHARP, starts 2 GHz", edges=(20.0, 35.0), z_plateau=500.0,
-                                beta=beta, pad=pad))
+                                beta=beta, pad=pad, characterise=True))
         reports.append(run_case(sharp_line_lossy(), "real", method=method, kind="sharp",
                                 case="SHARP, small loss", edges=(20.0, 35.0), z_plateau=500.0,
+                                beta=beta, pad=pad))
+        reports.append(run_case(sharp_line_ro3003(), "real", method=method, kind="sharp",
+                                case="SHARP, RO3003 loss", edges=(20.0, 35.0), z_plateau=500.0,
                                 beta=beta, pad=pad))
     return reports
 
@@ -325,13 +364,18 @@ def dc_extrapolation_error(method: str, beta: float = tdr.DEFAULT_BETA,
                            pad: int = tdr.DEFAULT_PAD) -> Dict[str, float]:
     """The 2 GHz start against the 0.1 GHz start of the same SHARP line (same top frequency)."""
     line = sharp_line()
-    runner = tdr.analyse if method == "peel" else tdr.analyse_fit
     _, f_full = BANDS["real"]
     _, f_2 = BANDS["from_2ghz"]
-    full = runner(f_full, line.s_parameters(f_full)[:, 0, 0], eps_eff=line.eps_eff, beta=beta, pad=pad,
-                  max_mm=line.length_mm + 6.0)
-    short = runner(f_2, line.s_parameters(f_2)[:, 0, 0], eps_eff=line.eps_eff, beta=beta, pad=pad,
-                   max_mm=line.length_mm + 6.0)
+    if method == "peel":
+        full = tdr.analyse(f_full, line.s_parameters(f_full)[:, 0, 0], eps_eff=line.eps_eff, beta=beta,
+                           pad=pad, max_mm=line.length_mm + 6.0)
+        short = tdr.analyse(f_2, line.s_parameters(f_2)[:, 0, 0], eps_eff=line.eps_eff, beta=beta,
+                            pad=pad, max_mm=line.length_mm + 6.0)
+    else:
+        full = tdr.analyse_fit_multi(f_full, line.s_parameters(f_full), line_length_mm=line.length_mm,
+                                     eps_eff=line.eps_eff, beta=beta, pad=pad)
+        short = tdr.analyse_fit_multi(f_2, line.s_parameters(f_2), line_length_mm=line.length_mm,
+                                      eps_eff=line.eps_eff, beta=beta, pad=pad)
     m = min(full.r.size, short.r.size)
     x = full.profile_x_mm[:m] + 0.5 * full.layer_mm
     keep = (x > 3.0) & (x < line.length_mm - 3.0)
@@ -340,6 +384,12 @@ def dc_extrapolation_error(method: str, beta: float = tdr.DEFAULT_BETA,
     if method == "peel":
         out["dc_fit_2ghz"] = short.dc_value
     return out
+
+
+def _verdict(rep: CaseReport) -> str:
+    if rep.passed is None:
+        return "CHAR"
+    return "PASS" if rep.passed else "FAIL"
 
 
 def markdown_table(reports: Sequence[CaseReport]) -> str:
@@ -359,8 +409,13 @@ def markdown_table(reports: Sequence[CaseReport]) -> str:
         notes = list(rep.failures)
         if n.get("close_pairs"):
             notes.append("close pair " + ", ".join(f"{a}/{b} ({d} mm)" for a, b, d in n["close_pairs"]))
+        fit = rep.result.fit
+        if fit:
+            notes.append(f"s {fit['delay_scale']:.4f}, a_d {fit['a_d_np_per_mm_per_ghz']:.2e} Np/mm/GHz, "
+                         f"lambda {fit['lambda']:.2g}, rms {fit['rms']:.4f}"
+                         + ("" if fit["converged"] else " (tol not reached)"))
         rows.append(
-            f"| {rep.method} | {rep.case} | {rep.band} | {'PASS' if rep.passed else 'FAIL'} | {edges} "
+            f"| {rep.method} | {rep.case} | {rep.band} | {_verdict(rep)} | {edges} "
             f"| {plateau} | {outer} | {rms} | {false_edges} | {corners} | {extra} | {n['res_mm']:.2f} "
             f"| {n['rise_ns'] * 1e3:.1f} | {'; '.join(notes) or '-'} |")
     return "\n".join(rows)

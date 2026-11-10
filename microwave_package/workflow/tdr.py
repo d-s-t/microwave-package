@@ -2,78 +2,71 @@
 Time-domain reflectometry (TDR) of a run's S-parameters: where along the
 line the impedance changes, and what it is at each point.
 
-    python -m microwave_package.workflow.tdr <run dir | .s2p | results.csv> --eps-eff 2.0 --out <dir>
+    python -m microwave_package.workflow.tdr <run dir | .s2p | results.csv> --eps-eff 2.0 \
+        --line-length-mm 50 --out <dir>
 
 Read-only. Pure numpy; matplotlib only for the PNG, drawn without pyplot.
 
 Method
 ------
-1. Harmonic grid. S11 (port 1; S22 with ``port=2``) is put on f_k = k*df,
-   k = 0..N, df = the sweep step. A sweep that starts above df, or sits off the
-   grid, is interpolated after a linear phase (the delay estimated from the
-   phase increments of the lowest points, where the extrapolation happens) is
-   removed. The DC value and the bins below the
-   first sweep frequency are extrapolated with a quadratic fit to the lowest
-   ``fit_span_ghz`` of the data (at least 8 points). The DC value is made real:
-   a lossless, reciprocal line into a matched load has a real reflection at DC.
-   ``dc=`` overrides it.
-2. Window. A half-Kaiser window (flat at DC, falling to 1/I0(beta) at f_max).
-   beta trades resolution (rise time) against the ringing of the step response.
-3. Impulse response. The one-sided spectrum is extended Hermitian (so the
-   response is real), zero-padded to M = pad*(2N+2) points (pad 4 to 8) and
-   inverse-transformed. a[n] is the sampled reflection impulse response with
-   sample interval T = 1/(M*df), and sum(a) = S11(DC). Its cumulative sum is the
-   reflected step a scope shows, rho(t); the naive TDR impedance is
-   Z = Z0 (1+rho)/(1-rho). That is right only up to the first strong mismatch,
-   because it ignores the multiple reflections.
-4. Layer peeling (method "peel"). One sample is one round trip through one
-   layer of one-way length dx = v*T/2, v = c/sqrt(eps_eff). With R_k the
-   remaining response (R_0 = sum a[n] z^-n) and r_k its first sample, the
-   reflection at interface k:
-       X = (R_k - r_k) / (1 - r_k R_k)       (power series in z^-1)
-       R_{k+1} = z X                          (shift by one sample)
-       Z_{k+1} = Z_k (1 + r_k) / (1 - r_k),   Z_0 = Z0 (the port)
-   Z_{k+1} is the impedance just beyond interface k, at x = k*dx. This handles
-   the multiple reflections exactly, but it is ill-conditioned: its error grows
-   by about 1e6 over 40 layers (exact input gives an exact profile; 1e-9 input
-   noise gives 3e-3 ohm; 1e-4 makes it unstable). Band-limited windowed data is
-   far from exact, so the peeled profile is only indicative beyond the first
-   few strong steps. `stable` says whether the recursion stayed in |r| < 1.
-5. Regularised fit (method "fit"). N section impedances (cells of half the
-   resolution) are fitted to the UNWINDOWED S11 through the exact ABCD cascade
-   of uniform lossless sections, with a first-difference smoothness penalty on
-   ln Z:  minimise sum |S11_model - S11_data|^2 + lam sum (u_{i+1}-u_i)^2,
-   u = ln(Z/Z0), Levenberg-Marquardt in numpy. lam is the largest value (the
-   smoothest profile) whose RMS residual is within `tol` (0.5 % of |S11|, about
-   -46 dB): the discrepancy principle. It needs no DC extrapolation.
-6. Positions. x = v*t/2 with t the round trip, so the time axis is primary and
-   distance is derived. eps_eff is a parameter; every plot prints it.
-7. Resolution. The 10-90 % rise time of the windowed step is kappa(beta)/f_max
-   (kappa from the window alone; 0.445 for no taper, 0.69 for beta 3), and the
-   distance resolution is v*t_rise/2. Features narrower than that blur together.
+1. Harmonic grid. S11 (port 1; port 2 swaps S11 and S22) is put on f_k = k*df,
+   k = 0..N, df = the sweep step. A sweep that starts above df, or sits off the grid, is
+   interpolated after a linear phase (the delay of the lowest points) is removed. The DC value
+   and the bins below the first sweep frequency are extrapolated with a quadratic fit to the
+   lowest ``fit_span_ghz`` of the data; the DC value is made real.
+2. Window. A half-Kaiser window (flat at DC, falling to 1/I0(beta) at f_max). beta trades the
+   rise time against the ringing of the step response.
+3. Impulse response and naive TDR. The Hermitian, zero-padded inverse transform gives the
+   sampled reflection impulse response a[n] (sum(a) = S11(DC)); its cumulative sum is the reflected
+   step a scope shows, and Z = Z0 (1+rho)/(1-rho) is the naive impedance: right only up to the first
+   strong mismatch.
+4. Layer peel (method "peel"). One sample is one round trip through one layer of one-way length
+   dx = v T/2. With R_k the remaining response and r_k its first sample: X = (R_k - r_k)/(1 - r_k R_k),
+   R_{k+1} = z X, Z_{k+1} = Z_k (1+r_k)/(1-r_k). The recursion is exact on exact input but its error
+   grows by about 1e6 over 40 layers, so it is only indicative on band-limited data.
+5. Regularised fit (method "fit", the main method for a 2-port). The trace is N uniform LOSSY
+   cells, each of about one third of the resolution, between 50 ohm ports, cascaded as ABCD
+   matrices (exact for uniform lines). The unknowns are u_i = ln(Z_i/Z0) per cell, the loss
+   alpha(f) = a_c sqrt(f) + a_d f (non-negative: a = exp(theta)), and a delay scale s = exp(sigma) on
+   the given eps_eff, so that the fitted eps is eps s^2. The data are S11, S21 and S22 (S12 = S21),
+   complex, each block divided by its RMS magnitude so that each counts equally. The objective is the
+   sum of squared residuals plus lam times a penalty on the profile: total variation of ln Z by
+   iteratively reweighted least squares (weights 1/sqrt(d^2 + eps^2), re-evaluated each outer pass), so
+   edges are kept sharp. lam is the largest value of a descending half-decade grid whose RMS residual
+   is within tol (0.5 %, the discrepancy principle). Levenberg-Marquardt with an analytic Jacobian
+   (checked against central differences). The start is the layer peel where it is stable, otherwise
+   50 ohm everywhere. Given a 1-port data set, the same fit uses S11 alone (analyse_fit).
+6. Features. A step is a change of the median ln-impedance across one resolution, reported when
+   |rho| = tanh(|dln Z|/2) >= threshold. An excursion is a narrow region (at most one resolution wide,
+   between two wide levels that agree) that departs from them, reported by its area in ohm mm, the
+   integral of (Z - baseline) dx, when the area is at least the Born area: |S11| = beta A / Z0 reaches
+   the threshold at f_max, so A = Z0 threshold / beta. Excursions are removed before steps are looked
+   for. Features closer than one resolution are merged, with a note.
+7. Positions. x = v t/2 with t the round trip; eps_eff is a parameter, and every plot prints it.
+8. Resolution. The 10-90 % rise time of the windowed step is kappa(beta)/f_max (kappa from the window
+   alone, 0.445 for no taper and 0.69 for beta 3), and the distance resolution is v t_rise/2.
 
 Physics assumptions and limits
 ------------------------------
-* Lossless line. Loss is not compensated: attenuation makes far-end features
-  look weaker and the impedance drift at long delays.
-* Dispersion-free line: eps_eff is one number at every frequency. A CPW's
-  effective permittivity rises slightly with frequency, so distances at high
-  frequency are a little long and the impedance a little off.
-* One real reference impedance Z0 at both ports (the file's R; 50 ohm here).
-* A feature narrower than the resolution is not separated from its neighbours.
-  A short low-impedance section makes a reflection dipole whose band-limited
-  amplitude is far below its true |r|: a 0.3 mm, 35 ohm section (true |r| 0.18
-  at each edge) peels to |r| ~ 0.008 on the 0.05-100 GHz band, below the 0.03
-  threshold (see tdr_validation). Part of the loss is the window: its taper
-  leaves about 0.2 of the weight at f_max for beta 3.
-* Per-sample |r| depends on the sample spacing: the layer peel spreads a step
-  over about 1/(2 f_max T) samples, so a per-sample threshold means different
-  things at different pads and bandwidths. This is a known limit of
-  the threshold rule, not yet corrected.
-* The sweep must cover the features. A sweep that starts at 2 GHz leaves the
-  band below it to extrapolation (method "peel") or unconstrained (method
-  "fit"); the DC-extrapolation error is reported by tdr_validation.
+* The fit is lossy: a dielectric term a_d f (RO3003 tan delta 0.001: 1.48e-5 Np/mm per GHz) and a
+  conductor term a_c sqrt(f). The HFSS models use perfect-E conductors, so a_c should go to zero. The
+  peel is lossless and does not compensate loss.
+* Dispersion: the fit's delay scale absorbs an effective-permittivity offset (a 1 % eps change is a
+  0.5 % delay change), and a dispersion-free line is assumed at every frequency.
+* The whole-2-port fit needs the distance between the two reference planes (line_length_mm): S22 is
+  the trace seen from the far end, so it must be placed. One-port data use max_mm instead.
+* Cells are uniform: a discontinuity between cell boundaries is represented by a cell of intermediate
+  impedance, which at 100 GHz leaves a residual of about 0.01 (the generous-band lossy fit does not
+  reach 0.5 %).
+* A feature narrower than the resolution is reported by its area, not its peak: a corner smoothed by
+  the fit keeps its area but loses its depth, and a feature whose area is below the Born threshold is not
+  reported.
+* A sweep that starts above 1 GHz leaves the band below it unconstrained; the calculator warns (see
+  tdr_validation, which characterises a 2 GHz start rather than judging it).
+* Any profile can be unreliable: the convergence flag and the notes say when a fit has not met its
+  tolerance, and the peel reports only that its recursion stayed in |r| < 1.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -100,11 +93,8 @@ DEFAULT_MAX_MM = 120.0
 DEFAULT_THRESHOLD = 0.03
 DEFAULT_FIT_SPAN_GHZ = 1.0
 DEFAULT_DEVIATION_TOL = 0.02
-DEFAULT_FIT_CELL = 0.5  # fit cell = this x resolution
+DEFAULT_FIT_CELL = 1.0 / 3.0  # fit cell = this x resolution
 LOW_START_GHZ = 1.0  # a sweep starting above this does not reach the band the profile needs
-FIT_TOL = 0.005
-FIT_LAMBDA_GRID = tuple(10.0 ** e for e in range(3, -7, -1))  # decades, descending
-FIT_MAX_POINTS = 300  # even decimation: the line's delays (< ~1 ns) need df < 0.5 GHz
 MIN_FIT_POINTS = 8
 METHODS = ("peel", "fit")
 
@@ -424,98 +414,196 @@ def layer_peel(a, z0: float, n_layers: int) -> LayerPeel:
 
 
 # ---------------------------------------------------------------- regularised fit
+#
+# The fit models the trace as N uniform LOSSY cells of length cell_mm between
+# 50 ohm ports, cascaded as ABCD matrices (exact for uniform lines):
+#     u_i = ln(Z_i / Z0)                  one per cell: the profile
+#     alpha(f) = a_c sqrt(f) + a_d f      loss in Np/mm (f in GHz), a = exp(theta) >= 0
+#     beta(f)  = s 2 pi f sqrt(eps) / c   s = exp(sigma) rescales the GIVEN eps_eff,
+#                                         so the fitted eps is eps * s^2 (it fits v)
+# gamma = alpha + j beta and each cell has electrical length gamma * cell_mm. The
+# HFSS models use perfect-E conductors, so a_c should go to ~0; a_d is the dielectric
+# loss (RO3003, tan delta 0.001: 1.48e-5 Np/mm per GHz, 0.15 Np/m at 10 GHz).
+# Objective: sum_b || w_b (S_b(model) - S_b(data)) ||^2 + lam sum_i omega_i (u_{i+1} - u_i)^2,
+# omega_i = 1 for the L2 penalty, IRLS weights 1/sqrt(d_i^2 + eps^2) for total variation.
+# lam: the largest value of a descending grid whose RMS residual is within tol.
+
+FIT_TOL = 0.005
+FIT_MAX_POINTS = 300  # even decimation: the line's delays (< ~1 ns) need df < 0.5 GHz
+FIT_LAMBDA_GRID = tuple(float(10.0 ** (e / 2.0)) for e in range(4, -10, -1))  # 1e2 .. 3e-5
+LOSS_START_NP_PER_MM = 1e-5  # starting a_c and a_d (Np/mm per sqrt(GHz) and per GHz)
+TV_EPS = 1e-3
+TV_OUTER = 3
+LM_INNER = 12
 
 
-def _forward_blocks(z: np.ndarray, cell_mm: float, freq_ghz: np.ndarray, eps_eff: float):
-    """Per-section transfer matrices (N, F, 2, 2) and sinh(theta) (F,) of one cell."""
-    beta = 2.0 * math.pi * freq_ghz * math.sqrt(eps_eff) / C_MM_PER_NS
-    theta = 1j * beta * cell_mm
-    ch, sh = np.cosh(theta), np.sinh(theta)
-    blocks = np.empty((z.size, freq_ghz.size, 2, 2), dtype=complex)
-    blocks[:, :, 0, 0] = ch
-    blocks[:, :, 1, 1] = ch
-    blocks[:, :, 0, 1] = z[:, None] * sh[None, :]
-    blocks[:, :, 1, 0] = sh[None, :] / z[:, None]
-    return blocks, sh
-
-
-def _s11_from_total(total: np.ndarray, z0: float) -> np.ndarray:
-    a, b, c, d = total[:, 0, 0], total[:, 0, 1], total[:, 1, 0], total[:, 1, 1]
-    return (a + b / z0 - c * z0 - d) / (a + b / z0 + c * z0 + d)
-
-
-def model_s11(u: np.ndarray, cell_mm: float, freq_ghz, eps_eff: float, z0: float) -> np.ndarray:
-    """S11 of len(u) uniform sections (Z_i = z0 exp(u_i)) followed by a matched load."""
-    f = np.asarray(freq_ghz, dtype=float)
-    blocks, _ = _forward_blocks(z0 * np.exp(u), cell_mm, f, eps_eff)
-    total = np.broadcast_to(np.eye(2, dtype=complex), (f.size, 2, 2)).copy()
-    for block in blocks:
-        total = total @ block
-    return _s11_from_total(total, z0)
-
-
-def model_s11_and_jacobian(u: np.ndarray, cell_mm: float, freq_ghz, eps_eff: float, z0: float):
-    """S11 and dS11/du (F x N, complex) from prefix and suffix products of the cascade."""
-    f = np.asarray(freq_ghz, dtype=float)
-    z = z0 * np.exp(u)
-    blocks, sh = _forward_blocks(z, cell_mm, f, eps_eff)
-    n_sec = z.size
-    eye = np.broadcast_to(np.eye(2, dtype=complex), (f.size, 2, 2)).copy()
-    suffix = np.empty((n_sec + 1, f.size, 2, 2), dtype=complex)
-    suffix[n_sec] = eye
-    for i in range(n_sec - 1, -1, -1):
-        suffix[i] = blocks[i] @ suffix[i + 1]
-    total = suffix[0]
-    s11 = _s11_from_total(total, z0)
-    a, b, c, d = total[:, 0, 0], total[:, 0, 1], total[:, 1, 0], total[:, 1, 1]
+def _s_from_total(total: np.ndarray, z0: float):
+    """S11, S21, S22 of a reciprocal cascade (det = 1), and the pieces their derivatives need."""
+    a = total[:, 0, 0]
+    b = total[:, 0, 1]
+    c = total[:, 1, 0]
+    d = total[:, 1, 1]
     den = a + b / z0 + c * z0 + d
-    num = a + b / z0 - c * z0 - d
-    jac = np.empty((f.size, n_sec), dtype=complex)
-    prefix = eye.copy()
-    for i in range(n_sec):
-        dblock = np.zeros((f.size, 2, 2), dtype=complex)
-        dblock[:, 0, 1] = z[i] * sh          # d(Z sinh)/du = Z sinh
-        dblock[:, 1, 0] = -sh / z[i]         # d(sinh/Z)/du = -sinh/Z
-        dtotal = prefix @ dblock @ suffix[i + 1]
-        da, db = dtotal[:, 0, 0], dtotal[:, 0, 1]
-        dc, dd = dtotal[:, 1, 0], dtotal[:, 1, 1]
-        dnum = da + db / z0 - z0 * dc - dd
-        dden = da + db / z0 + z0 * dc + dd
-        jac[:, i] = (dnum * den - num * dden) / den ** 2
-        prefix = prefix @ blocks[i]
-    return s11, jac
+    num11 = a + b / z0 - c * z0 - d
+    num22 = -a + b / z0 - c * z0 + d
+    return {"11": num11 / den, "21": 2.0 / den, "22": num22 / den}, den, num11, num22
 
 
-def _smoothing_gram(n: int) -> np.ndarray:
-    """D^T D for first differences (D u)_i = u_{i+1} - u_i."""
-    d = np.zeros((n - 1, n))
-    idx = np.arange(n - 1)
+def _s_derivatives(d_total: np.ndarray, den: np.ndarray, num11: np.ndarray, num22: np.ndarray,
+                   z0: float):
+    """dS11, dS21, dS22 from the derivative of the cascade matrix (F, 2, 2)."""
+    da = d_total[:, 0, 0]
+    db = d_total[:, 0, 1]
+    dc = d_total[:, 1, 0]
+    dd = d_total[:, 1, 1]
+    dden = da + db / z0 + z0 * dc + dd
+    dnum11 = da + db / z0 - z0 * dc - dd
+    dnum22 = -da + db / z0 - z0 * dc + dd
+    inv = 1.0 / den ** 2
+    return {"11": (dnum11 * den - num11 * dden) * inv,
+            "21": -2.0 * dden * inv,
+            "22": (dnum22 * den - num22 * dden) * inv}
+
+
+class LineModel:
+    """N uniform lossy cells of length cell_mm between 50 ohm ports (see the section note).
+
+    Parameter vector p: [u_0 .. u_{N-1}, theta_c, theta_d, sigma]. loss=False and
+    delay=False drop theta_c/theta_d and sigma from the fit (a_c = a_d = 0, s = 1).
+    """
+
+    def __init__(self, freq_ghz, cell_mm: float, n_cells: int, eps_eff: float,
+                 z0: float = DEFAULT_Z0, *, loss: bool = True, delay: bool = True,
+                 blocks: Sequence[str] = ("11",)):
+        self.f = np.asarray(freq_ghz, dtype=float).ravel()
+        self.cell_mm = float(cell_mm)
+        self.n = int(n_cells)
+        self.eps_eff = float(eps_eff)
+        self.z0 = float(z0)
+        self.loss = bool(loss)
+        self.delay = bool(delay)
+        self.blocks = tuple(blocks)
+        self._beta0 = 2.0 * math.pi * self.f * math.sqrt(self.eps_eff) / C_MM_PER_NS
+        self._sqrt_f = np.sqrt(self.f)
+
+    @property
+    def n_params(self) -> int:
+        return self.n + 3
+
+    def active(self) -> np.ndarray:
+        idx = list(range(self.n))
+        if self.loss:
+            idx += [self.n, self.n + 1]
+        if self.delay:
+            idx += [self.n + 2]
+        return np.asarray(idx, dtype=int)
+
+    def unpack(self, p: np.ndarray):
+        """(a_c, a_d, s) of a parameter vector."""
+        ac = math.exp(p[self.n]) if self.loss else 0.0
+        ad = math.exp(p[self.n + 1]) if self.loss else 0.0
+        s = math.exp(p[self.n + 2]) if self.delay else 1.0
+        return ac, ad, s
+
+    def _constants(self, p: np.ndarray):
+        ac, ad, s = self.unpack(p)
+        beta = s * self._beta0
+        alpha = ac * self._sqrt_f + ad * self.f
+        theta = (alpha + 1j * beta) * self.cell_mm
+        z = self.z0 * np.exp(p[: self.n])
+        d_theta = (ac * self._sqrt_f * self.cell_mm,   # d theta / d theta_c
+                   ad * self.f * self.cell_mm,         # d theta / d theta_d
+                   1j * beta * self.cell_mm)           # d theta / d sigma
+        return z, np.cosh(theta), np.sinh(theta), d_theta
+
+    def _cascade(self, z: np.ndarray, ch: np.ndarray, sh: np.ndarray):
+        n, nf = self.n, self.f.size
+        cells = np.empty((n, nf, 2, 2), dtype=complex)
+        cells[:, :, 0, 0] = ch
+        cells[:, :, 1, 1] = ch
+        cells[:, :, 0, 1] = z[:, None] * sh[None, :]
+        cells[:, :, 1, 0] = sh[None, :] / z[:, None]
+        suffix = np.empty((n + 1, nf, 2, 2), dtype=complex)
+        suffix[n] = np.eye(2)
+        for i in range(n - 1, -1, -1):
+            suffix[i] = cells[i] @ suffix[i + 1]
+        return cells, suffix
+
+    def s_params(self, p: np.ndarray) -> dict:
+        """S11, S21, S22 of the model (dict of complex arrays)."""
+        z, ch, sh, _ = self._constants(p)
+        _, suffix = self._cascade(z, ch, sh)
+        return _s_from_total(suffix[0], self.z0)[0]
+
+    def residual_and_jacobian(self, p: np.ndarray, data: dict, weights: dict, jacobian: bool = True):
+        """Complex weighted residual over the blocks (stacked), and dr/dp (complex)."""
+        n, nf = self.n, self.f.size
+        z, ch, sh, d_theta = self._constants(p)
+        cells, suffix = self._cascade(z, ch, sh)
+        s, den, num11, num22 = _s_from_total(suffix[0], self.z0)
+        r = np.concatenate([weights[b] * (s[b] - data[b]) for b in self.blocks])
+        if not jacobian:
+            return r, None
+        jac = np.zeros((len(self.blocks) * nf, self.n_params), dtype=complex)
+        prefix = np.broadcast_to(np.eye(2, dtype=complex), (nf, 2, 2)).copy()
+        m_theta = np.zeros((nf, 2, 2), dtype=complex)
+        for i in range(n):
+            d_u = np.zeros((nf, 2, 2), dtype=complex)  # d cell / d u_i (z = z0 e^u)
+            d_u[:, 0, 1] = z[i] * sh
+            d_u[:, 1, 0] = -sh / z[i]
+            d_t = np.zeros((nf, 2, 2), dtype=complex)  # d cell / d theta
+            d_t[:, 0, 0] = sh
+            d_t[:, 1, 1] = sh
+            d_t[:, 0, 1] = z[i] * ch
+            d_t[:, 1, 0] = ch / z[i]
+            right = suffix[i + 1]
+            ds = _s_derivatives(prefix @ d_u @ right, den, num11, num22, self.z0)
+            for k, b in enumerate(self.blocks):
+                jac[k * nf:(k + 1) * nf, i] = weights[b] * ds[b]
+            m_theta += prefix @ d_t @ right
+            prefix = prefix @ cells[i]
+        global_cols = []
+        if self.loss:
+            global_cols += [(n, d_theta[0]), (n + 1, d_theta[1])]
+        if self.delay:
+            global_cols += [(n + 2, d_theta[2])]
+        for col, g in global_cols:
+            ds = _s_derivatives(g[:, None, None] * m_theta, den, num11, num22, self.z0)
+            for k, b in enumerate(self.blocks):
+                jac[k * nf:(k + 1) * nf, col] = weights[b] * ds[b]
+        return r, jac
+
+
+def _penalty_gram(n_cells: int, n_params: int, lam: float, omega: np.ndarray) -> np.ndarray:
+    """lam * D^T diag(omega) D with (D u)_i = u_{i+1} - u_i (profile entries only)."""
+    d = np.zeros((n_cells - 1, n_params))
+    idx = np.arange(n_cells - 1)
     d[idx, idx] = -1.0
     d[idx, idx + 1] = 1.0
-    return d.T @ d
+    return lam * (d.T @ (omega[:, None] * d))
 
 
-def _fit_at_lambda(u0: np.ndarray, lam: float, cell_mm, f, s_data, eps_eff, z0,
-                   max_iter: int = 60) -> Tuple[np.ndarray, float]:
-    """Levenberg-Marquardt on ||S(u) - S_data||^2 + lam u^T D^T D u; returns (u, RMS residual)."""
-    n = u0.size
-    gram = _smoothing_gram(n)
-    u = u0.copy()
-    s, jac = model_s11_and_jacobian(u, cell_mm, f, eps_eff, z0)
-    r = s - s_data
-    cost = float(np.sum(np.abs(r) ** 2) + lam * u @ gram @ u)
+def _penalised_lm(model: LineModel, p0: np.ndarray, data: dict, weights: dict,
+                  gram: np.ndarray, max_iter: int):
+    """Levenberg-Marquardt on ||r(p)||^2 + p^T gram p; returns (p, RMS of r)."""
+    act = model.active()
+    gram_a = gram[np.ix_(act, act)]
+    p = p0.copy()
+    r, jac = model.residual_and_jacobian(p, data, weights)
+    cost = float(np.sum(np.abs(r) ** 2) + p @ gram @ p)
     mu = 1e-3
     for _ in range(max_iter):
-        jr = np.vstack([jac.real, jac.imag])
+        jr = np.vstack([jac.real[:, act], jac.imag[:, act]])
         rr = np.concatenate([r.real, r.imag])
-        grad = jr.T @ rr + lam * gram @ u
-        hess = jr.T @ jr + lam * gram
+        grad = jr.T @ rr + gram_a @ p[act]
+        hess = jr.T @ jr + gram_a
         accepted = False
-        for _ in range(30):
-            step = np.linalg.solve(hess + mu * np.eye(n), -grad)
-            u_try = u + step
-            r_try = model_s11(u_try, cell_mm, f, eps_eff, z0) - s_data
-            cost_try = float(np.sum(np.abs(r_try) ** 2) + lam * u_try @ gram @ u_try)
+        for _ in range(25):
+            step = np.linalg.solve(hess + mu * np.eye(act.size), -grad)
+            p_try = p.copy()
+            p_try[act] += step
+            r_try, _ = model.residual_and_jacobian(p_try, data, weights, jacobian=False)
+            cost_try = float(np.sum(np.abs(r_try) ** 2) + p_try @ gram @ p_try)
             if cost_try < cost:
                 accepted = True
                 break
@@ -523,40 +611,46 @@ def _fit_at_lambda(u0: np.ndarray, lam: float, cell_mm, f, s_data, eps_eff, z0,
         if not accepted:
             break
         decrease = cost - cost_try
-        u, cost = u_try, cost_try
+        p, cost = p_try, cost_try
         mu = max(mu / 3.0, 1e-12)
-        s, jac = model_s11_and_jacobian(u, cell_mm, f, eps_eff, z0)
-        r = s - s_data
+        r, jac = model.residual_and_jacobian(p, data, weights)
         if decrease <= 1e-7 * max(cost, 1e-30):
             break
-    return u, float(np.sqrt(np.mean(np.abs(r) ** 2)))
+    return p, float(np.sqrt(np.mean(np.abs(r) ** 2)))
 
 
-def fit_impedance(freq_ghz, reflection, *, z0: float, eps_eff: float, cell_mm: float,
-                  max_mm: float, tol: float = FIT_TOL) -> Tuple[np.ndarray, float, float]:
-    """The smoothest cell impedances whose S11 matches the data to tol (RMS).
+def fit_profile(model: LineModel, data: dict, weights: dict, *, tol: float, p0: np.ndarray,
+                tv: bool = False):
+    """Continuation over lam (descending): the first lam whose RMS residual is within tol.
 
-    Continuation: lam is lowered one decade at a time, each fit starting from the
-    previous solution, and the first lam whose RMS residual is within tol is the
-    largest such lam, i.e. the smoothest acceptable profile. (A bisection over lam
-    jumps between basins: the LM then stalls on a local minimum at small lam.)
-    Returns (Z per cell, achieved RMS residual, lam). Cells are cell_mm long,
-    starting at the port; the line beyond the last cell is matched.
+    Returns (p, RMS, lam, converged). With tv=True each lam runs TV_OUTER IRLS passes,
+    the weights re-evaluated from the current profile at each pass.
     """
-    f = np.asarray(freq_ghz, dtype=float).ravel()
-    s_data = np.asarray(reflection, dtype=complex).ravel()
-    if f.size > FIT_MAX_POINTS:  # evenly decimated, both band edges kept
-        keep = np.unique(np.round(np.linspace(0, f.size - 1, FIT_MAX_POINTS)).astype(int))
-        f, s_data = f[keep], s_data[keep]
-    n = int(math.ceil(max_mm / cell_mm))
-    u = np.zeros(n)
+    p = np.asarray(p0, dtype=float).copy()
     rms = float("nan")
     lam = FIT_LAMBDA_GRID[-1]
-    for lam in FIT_LAMBDA_GRID:  # descending: strongest smoothing first
-        u, rms = _fit_at_lambda(u, lam, cell_mm, f, s_data, eps_eff, z0)
-        if rms <= tol:
-            break
-    return z0 * np.exp(u), rms, lam
+    # a trial step that overflows has a non-finite cost, so it is rejected by _penalised_lm
+    with np.errstate(over="ignore", invalid="ignore", divide="ignore"):
+        for lam in FIT_LAMBDA_GRID:
+            for _ in range(TV_OUTER if tv else 1):
+                if tv:
+                    du = np.diff(p[: model.n])
+                    omega = 1.0 / np.sqrt(du * du + TV_EPS ** 2)
+                else:
+                    omega = np.ones(model.n - 1)
+                gram = _penalty_gram(model.n, model.n_params, lam, omega)
+                p, rms = _penalised_lm(model, p, data, weights, gram, LM_INNER)
+            if rms <= tol:
+                return p, rms, lam, True
+    return p, rms, lam, False
+
+
+def _decimate(freq: np.ndarray, s: np.ndarray):
+    """Evenly decimated to FIT_MAX_POINTS (both band edges kept)."""
+    if freq.size <= FIT_MAX_POINTS:
+        return freq, s
+    keep = np.unique(np.round(np.linspace(0, freq.size - 1, FIT_MAX_POINTS)).astype(int))
+    return freq[keep], s[keep]
 
 
 # ---------------------------------------------------------------- results
@@ -596,6 +690,7 @@ class TDRResult:
     z_peel: np.ndarray   # impedance just beyond interface k
     stable: bool
     notes: List[str] = field(default_factory=list)
+    fit: dict = field(default_factory=dict)
 
     @property
     def velocity_mm_per_ns(self) -> float:
@@ -663,33 +758,77 @@ def analyse(freq_ghz, reflection, *, name: str = "", z0: float = DEFAULT_Z0,
     )
 
 
-def analyse_fit(freq_ghz, reflection, *, name: str = "", z0: float = DEFAULT_Z0,
-                eps_eff: float = DEFAULT_EPS_EFF, beta: float = DEFAULT_BETA,
-                pad: int = DEFAULT_PAD, dc: Optional[float] = None,
-                fit_span_ghz: float = DEFAULT_FIT_SPAN_GHZ, max_mm: float = DEFAULT_MAX_MM,
-                port: int = 1, cell_fraction: float = DEFAULT_FIT_CELL,
-                tol: float = FIT_TOL) -> TDRResult:
-    """The regularised profile (method "fit"), with the same naive TDR and resolution.
+def analyse_fit_multi(freq_ghz, s_matrix, *, line_length_mm: float, name: str = "",
+                      z0: float = DEFAULT_Z0, eps_eff: float = DEFAULT_EPS_EFF,
+                      beta: float = DEFAULT_BETA, pad: int = DEFAULT_PAD, dc: Optional[float] = None,
+                      fit_span_ghz: float = DEFAULT_FIT_SPAN_GHZ, port: int = 1,
+                      cell_fraction: float = DEFAULT_FIT_CELL, tol: float = FIT_TOL,
+                      loss: bool = True, delay: bool = True,
+                      blocks: Sequence[str] = ("11", "21", "22"), penalty: str = "tv",
+                      start: str = "peel") -> TDRResult:
+    """The regularised profile from the whole 2-port: S11, S21 and S22 in one fit.
 
-    Its cells are cell_fraction x resolution long; r_k is the fitted step at
-    each cell boundary, so the reflections are the cell-to-cell steps.
+    line_length_mm is the distance between the two reference planes: the model's far
+    port sits there, so S22 sees the trace from the right end. Each block is divided by
+    its own RMS magnitude, so each counts equally in the residual, and tol is relative
+    to that scale. port=2 analyses the same line from the other end (S11 and S22
+    swapped, S12 = S21), so a mismatch at x from port 1 appears at L - x from port 2.
+
+    penalty "tv" (default) is the edge-preserving total variation of ln Z (IRLS);
+    "l2" is the first-difference L2 penalty. start "peel" begins from the layer peel
+    where that is stable, otherwise from 50 ohm everywhere.
     """
     freq = np.asarray(freq_ghz, dtype=float).ravel()
+    s = np.asarray(s_matrix, dtype=complex).reshape(-1, 2, 2)
+    if port == 2:
+        s = s[:, ::-1, ::-1]
+    reflection = s[:, 0, 0]
     spec, a, sample_ns, v, rise, resolution = _prepare(
         freq, reflection, eps_eff=eps_eff, beta=beta, pad=pad, dc=dc, fit_span_ghz=fit_span_ghz)
-    n_naive = min(int(math.floor(max_mm / (v * sample_ns / 2.0) + 1e-9)), a.size - 1)
+    n_naive = min(int(math.floor((line_length_mm + 6.0) / (v * sample_ns / 2.0) + 1e-9)), a.size - 1)
     naive_t = np.arange(n_naive) * sample_ns
     naive_x = np.arange(n_naive) * v * sample_ns / 2.0
     rho = np.cumsum(a)[:n_naive]
     with np.errstate(divide="ignore", invalid="ignore"):
         z_naive = np.where(np.abs(rho) < 1.0, z0 * (1.0 + rho) / (1.0 - rho), np.nan)
-    cell_mm = max(cell_fraction * resolution, 1e-3)
-    z_cells, rms, lam = fit_impedance(freq, reflection, z0=z0, eps_eff=eps_eff,
-                                      cell_mm=cell_mm, max_mm=max_mm, tol=tol)
+
+    n_cells = max(1, int(round(line_length_mm / (cell_fraction * resolution))))
+    cell_mm = line_length_mm / n_cells
+    keep = np.arange(freq.size)
+    if freq.size > FIT_MAX_POINTS:
+        keep = np.unique(np.round(np.linspace(0, freq.size - 1, FIT_MAX_POINTS)).astype(int))
+    f_fit = freq[keep]
+    full = {"11": s[:, 0, 0], "21": s[:, 1, 0], "22": s[:, 1, 1]}
+    data = {b: full[b][keep] for b in blocks}
+    weights = {b: 1.0 / math.sqrt(float(np.mean(np.abs(data[b]) ** 2))) for b in blocks}
+    model = LineModel(f_fit, cell_mm, n_cells, eps_eff, z0, loss=loss, delay=delay, blocks=blocks)
+
+    u0 = np.zeros(n_cells)
+    start_note = "start 50 ohm"
+    if start == "peel":
+        peel = analyse(freq, reflection, eps_eff=eps_eff, beta=beta, pad=pad, dc=dc,
+                       fit_span_ghz=fit_span_ghz, max_mm=line_length_mm + 6.0, z0=z0)
+        if peel.stable and peel.r.size > 1:
+            x_peel = peel.profile_x_mm + 0.5 * peel.layer_mm
+            x_cells = (np.arange(n_cells) + 0.5) * cell_mm
+            z_start = np.clip(np.interp(x_cells, x_peel, peel.z_peel), 0.2 * z0, 20.0 * z0)
+            u0 = np.log(z_start / z0)
+            start_note = "start from the layer peel"
+    p0 = np.zeros(model.n_params)
+    p0[:n_cells] = u0
+    p0[n_cells] = math.log(LOSS_START_NP_PER_MM)
+    p0[n_cells + 1] = math.log(LOSS_START_NP_PER_MM)
+    p, rms, lam, converged = fit_profile(model, data, weights, tol=tol, p0=p0,
+                                         tv=(penalty == "tv"))
+    ac, ad, scale = model.unpack(p)
+    z_cells = z0 * np.exp(p[:n_cells])
     z_prev = np.concatenate(([z0], z_cells[:-1]))
     r = (z_cells - z_prev) / (z_cells + z_prev)
-    n = z_cells.size
     fit_sample_ns = 2.0 * cell_mm / v
+    loss_db_m_10 = (ac * math.sqrt(10.0) + ad * 10.0) * 1000.0 * 8.685889638
+    fit = {"a_c_np_per_mm": ac, "a_d_np_per_mm_per_ghz": ad, "loss_db_per_m_at_10ghz": loss_db_m_10,
+           "delay_scale": scale, "eps_fit": eps_eff * scale ** 2, "rms": rms, "lambda": lam,
+           "converged": converged, "blocks": list(blocks), "penalty": penalty, "start": start_note}
     notes = []
     if spec.n_extrapolated:
         notes.append(f"{spec.n_extrapolated} bin(s) below the first sweep point extrapolated "
@@ -697,8 +836,11 @@ def analyse_fit(freq_ghz, reflection, *, name: str = "", z0: float = DEFAULT_Z0,
     if float(freq.min()) > LOW_START_GHZ:
         notes.append(f"sweep starts at {float(freq.min()):g} GHz: nothing constrains the profile below it, "
                      f"so the profile is indicative only (tdr_validation: a 2 GHz start fails)")
-    notes.append(f"fit: {n} cells of {cell_mm:.3f} mm, RMS residual {rms:.4f} (tol {tol:g}), "
-                 f"lambda {lam:.3g}" + ("" if rms <= tol else " -- tolerance NOT reached"))
+    notes.append(f"fit {'+'.join(blocks)} ({penalty}, {start_note}): {n_cells} cells of {cell_mm:.3f} mm "
+                 f"over {line_length_mm:g} mm, RMS residual {rms:.4f} (tol {tol:g}), lambda {lam:.3g}"
+                 + ("" if converged else " -- tolerance NOT reached"))
+    notes.append(f"loss a_d {ad:.3g} Np/mm per GHz ({loss_db_m_10:.3g} dB/m at 10 GHz), "
+                 f"eps_fit {eps_eff * scale ** 2:.3f} (given {eps_eff:g})")
     return TDRResult(
         name=name, port=port, method="regularised fit", z0=z0, eps_eff=eps_eff, beta=beta,
         pad=pad, df_ghz=spec.df_ghz, f_min_ghz=float(freq.min()), f_max_ghz=spec.f_max_ghz,
@@ -706,21 +848,49 @@ def analyse_fit(freq_ghz, reflection, *, name: str = "", z0: float = DEFAULT_Z0,
         n_extrapolated=spec.n_extrapolated, delay_removed_ns=spec.delay_ns,
         sample_ns=sample_ns, rise_time_ns=rise, resolution_mm=resolution,
         naive_t_ns=naive_t, naive_x_mm=naive_x, rho_step=rho, z_naive=z_naive,
-        layer_mm=cell_mm, profile_t_ns=np.arange(n) * fit_sample_ns,
-        profile_x_mm=np.arange(n) * cell_mm, r=r, z_peel=z_cells,
-        stable=bool(rms <= tol), notes=notes,
+        layer_mm=cell_mm, profile_t_ns=np.arange(n_cells) * fit_sample_ns,
+        profile_x_mm=np.arange(n_cells) * cell_mm, r=r, z_peel=z_cells,
+        stable=bool(converged), notes=notes, fit=fit,
     )
+
+
+def analyse_fit(freq_ghz, reflection, *, name: str = "", z0: float = DEFAULT_Z0,
+                eps_eff: float = DEFAULT_EPS_EFF, beta: float = DEFAULT_BETA,
+                pad: int = DEFAULT_PAD, dc: Optional[float] = None,
+                fit_span_ghz: float = DEFAULT_FIT_SPAN_GHZ, max_mm: float = DEFAULT_MAX_MM,
+                port: int = 1, cell_fraction: float = DEFAULT_FIT_CELL,
+                tol: float = FIT_TOL, loss: bool = True, delay: bool = True,
+                penalty: str = "tv", start: str = "peel") -> TDRResult:
+    """One-port regularised fit (S11 only, or the port's reflection as given): the same
+    model and fit as `analyse_fit_multi` with the one block. The far end is not a
+    reference plane here, so the cells cover max_mm."""
+    freq = np.asarray(freq_ghz, dtype=float).ravel()
+    s_one = np.zeros((freq.size, 2, 2), dtype=complex)
+    s_one[:, 0, 0] = np.asarray(reflection, dtype=complex).ravel()
+    result = analyse_fit_multi(freq, s_one, line_length_mm=max_mm, name=name, z0=z0, eps_eff=eps_eff,
+                               beta=beta, pad=pad, dc=dc, fit_span_ghz=fit_span_ghz, port=1,
+                               cell_fraction=cell_fraction, tol=tol, loss=loss, delay=delay,
+                               blocks=("11",), penalty=penalty, start=start)
+    result.port = port
+    return result
 
 
 def analyse_sparameters(sp: SParameters, *, port: int = 1, method: str = "peel",
                         **kwargs) -> TDRResult:
-    """Port 1 uses S11; port 2 uses S22 (distance then runs from port 2)."""
+    """Port 1 measures from S11 (or the whole matrix for the multi-port fit); port 2 from S22.
+
+    method "peel" is the layer peel of the port's reflection; method "fit" is the
+    regularised fit: the whole 2-port when line_length_mm is given, else S11/S22 only.
+    """
     if port not in (1, 2):
         raise ValueError("port must be 1 or 2")
     if method not in METHODS:
         raise ValueError(f"method must be one of {METHODS}")
-    column = 0 if port == 1 else 1
     name = kwargs.pop("name", sp.source)
+    if method == "fit" and kwargs.get("line_length_mm") is not None:
+        return analyse_fit_multi(sp.freq_ghz, sp.s, port=port, name=name, z0=sp.z0, **kwargs)
+    kwargs.pop("line_length_mm", None)
+    column = 0 if port == 1 else 1
     runner = analyse if method == "peel" else analyse_fit
     return runner(sp.freq_ghz, sp.s[:, column, column], z0=sp.z0, port=port, name=name, **kwargs)
 
@@ -730,11 +900,19 @@ def analyse_sparameters(sp: SParameters, *, port: int = 1, method: str = "peel",
 
 @dataclass(frozen=True)
 class Mismatch:
+    """A step (a level change that holds across one resolution) or an excursion (a narrow
+    feature, at most one resolution wide, that departs from the levels on both sides, which
+    agree). An excursion is reported by its area (ohm mm) and peak: a feature narrower than the
+    resolution is not dropped by a per-sample threshold."""
+
+    kind: str                 # "step" or "excursion"
     position_mm: float
     z_before_ohm: float
     z_after_ohm: float
-    reflection: float
-    z_extreme_ohm: float
+    reflection: float         # |rho| equivalent: of the step, or of the largest departure of an excursion
+    area_ohm_mm: float = float("nan")   # excursion: integral of (Z - baseline) dx
+    peak_ohm: float = float("nan")      # excursion: the extreme of (Z - baseline), signed
+    width_mm: float = 0.0
     note: str = ""
 
 
@@ -744,66 +922,173 @@ class FirstDeviation:
     z_ohm: float
 
 
+def _window_medians(v: np.ndarray, w: int):
+    """(left, right): the median of v over the w cells before and after each boundary k.
+
+    A median, not a mean: a feature narrower than half a window does not move it. The port
+    (ln Z0 = 0) lies before cell 0, so the left window is padded with port cells.
+    """
+    n = v.size
+    left = np.zeros(n)
+    right = np.zeros(n)
+    for k in range(n):
+        before = v[max(0, k - w):k]
+        left[k] = float(np.median(np.concatenate((np.zeros(max(0, w - k)), before))))
+        right[k] = float(np.median(v[k:min(n, k + w)]))
+    return left, right
+
+
+def _sub_departures(dev: np.ndarray, eps: float) -> int:
+    """How many separate runs of cells depart from the baseline by at least eps (ln)."""
+    on = np.abs(dev) >= eps
+    return int(np.sum(on & ~np.concatenate(([False], on[:-1]))))
+
+
+def _narrow_excursions(v: np.ndarray, z: np.ndarray, z0: float, jump_thr: float, w: int):
+    """Regions at most w cells wide, between two wide levels that agree, that depart from them.
+
+    A wide level is a run of more than w cells between cell-to-cell jumps of at least jump_thr.
+    The port (ln Z0 = 0, Z0 ohm) is a wide level before cell 0. Everything between two consecutive
+    wide levels is one region, so a compound dip (two features, a short return to the baseline
+    between them) is one excursion. Returns the regions with their departure from the baseline.
+    """
+    n = v.size
+    v_prev = np.concatenate(([0.0], v[:-1]))
+    brk = np.flatnonzero(np.abs(v - v_prev) >= jump_thr)
+    starts = np.unique(np.concatenate(([0], brk)))
+    ends = np.append(starts[1:], n)
+    segs = [(int(a), int(b), float(np.mean(v[a:b])), float(np.mean(z[a:b])))
+            for a, b in zip(starts, ends)]
+    wide = [-1] + [i for i, seg in enumerate(segs) if seg[1] - seg[0] > w]
+    out = []
+    for p, q in zip(wide[:-1], wide[1:]):
+        if p != -1 and q - p < 2:
+            continue  # two wide levels with nothing between them: a step
+        if p == -1:
+            lv, zv, edge_left = 0.0, z0, 0
+        else:
+            edge_left, lv, zv = segs[p][1], segs[p][2], segs[p][3]
+        if q >= len(segs):
+            continue  # no wide level on the far side
+        edge_right, lr, zr = segs[q][0], segs[q][2], segs[q][3]
+        if edge_right <= edge_left or edge_right - edge_left > w:
+            continue
+        if abs(lv - lr) >= jump_thr:
+            continue  # the levels on the two sides disagree: a step, not an excursion
+        base = 0.5 * (lv + lr)
+        dev = v[edge_left:edge_right] - base
+        if float(np.max(np.abs(dev))) < jump_thr:
+            continue  # no departure from the baseline
+        out.append({"a": edge_left, "b": edge_right, "zp": zv, "zn": zr,
+                    "zb": 0.5 * (zv + zr), "dev_max": float(np.max(np.abs(dev))),
+                    "sub": _sub_departures(dev, 0.5 * jump_thr)})
+    return out
+
+
 def find_mismatches(result: TDRResult, threshold: float = DEFAULT_THRESHOLD,
                     deviation_tol: float = DEFAULT_DEVIATION_TOL):
-    """(mismatches, first_deviation) from the profile.
+    """(features, first_deviation) from the profile.
 
-    A mismatch is a run of consecutive interfaces with |r| >= threshold. Its
-    position is the |r|-weighted centre of the run. Two features whose centres
-    are closer than one resolution are reported as one, with a note. The first
-    deviation is the first interface whose impedance differs from Z0 by more
-    than deviation_tol (relative).
+    Thresholds are reflection-equivalent. A step is a change of the median ln-impedance across one
+    resolution, dv = ln(Z_after / Z_before), reported when |rho| = tanh(|dv| / 2) >= threshold. An
+    excursion is a narrow region (see _narrow_excursions) whose area, the integral of (Z - baseline)
+    dx, is at least the Born area: |S11| = beta A / Z0 reaches the threshold at f_max, so
+    A = Z0 threshold / beta. Excursions are taken out of the profile before the steps are looked
+    for, so a dip cannot pose as a step at its own edge. Features closer than one resolution are
+    merged, with a note. The first deviation is the first cell whose impedance differs from Z0 by
+    more than deviation_tol (relative).
     """
     n = result.r.size
-    mag = np.abs(result.r)
+    if n == 0:
+        return [], None
+    h = result.layer_mm
     x = result.profile_x_mm[:n]
-    z_before = result.z_before_peel
-    z_after = result.z_peel
-    above = mag >= threshold
-    groups: List[Tuple[int, int]] = []
-    i = 0
-    while i < n:
-        if above[i]:
-            j = i
-            while j < n and above[j]:
-                j += 1
-            groups.append((i, j))
-            i = j
-        else:
-            i += 1
+    xc = x + 0.5 * h
+    z = result.z_peel[:n]
+    z0 = result.z0
+    v = np.log(z / z0)
+    jump_thr = 2.0 * math.atanh(min(threshold, 0.999))
+    w = max(1, int(round(result.resolution_mm / h)))
+    beta_fmax = 2.0 * math.pi * result.f_max_ghz * math.sqrt(result.eps_eff) / C_MM_PER_NS
+    area_thr = z0 * threshold / beta_fmax
+
+    excursions = _narrow_excursions(v, z, z0, jump_thr, w)
+    v_clean = v.copy()
+    z_clean = z.copy()
+    for e in excursions:
+        v_clean[e["a"]:e["b"]] = np.log(e["zb"] / z0)
+        z_clean[e["a"]:e["b"]] = e["zb"]
+
     found: List[Mismatch] = []
-    for start, stop in groups:
-        w = mag[start:stop]
-        position = float(np.sum(x[start:stop] * w) / np.sum(w))
-        zb = float(z_before[start])
-        za = float(z_after[stop - 1])
-        excursion = z_after[start:stop]
-        z_extreme = float(excursion[np.argmax(np.abs(excursion - zb))])
-        found.append(Mismatch(position, zb, za, float(np.max(w)), z_extreme))
 
+    # Steps, on the profile with the excursions taken out.
+    left, right = _window_medians(v_clean, w)
+    delta = right - left
+    sign = np.sign(delta)
+    big = np.abs(delta) >= jump_thr
+    k = 0
+    while k < n:
+        if not big[k]:
+            k += 1
+            continue
+        j = k
+        while j < n and big[j] and sign[j] == sign[k]:
+            j += 1
+        top = float(np.max(np.abs(delta[k:j])))
+        flat = np.flatnonzero(np.abs(delta[k:j]) >= top * (1.0 - 1e-9)) + k
+        kstar = int(round(float(np.mean(flat))))
+        wl = slice(max(0, kstar - w), kstar)
+        wr = slice(kstar, min(n, kstar + w))
+        z_before = float(np.median(z_clean[wl])) if kstar > 0 else z0
+        z_after = float(np.median(z_clean[wr]))
+        found.append(Mismatch("step", float(kstar * h), z_before, z_after,
+                              float(math.tanh(top / 2.0))))
+        k = j
+
+    # Excursions, by area.
+    for e in excursions:
+        a, b = e["a"], e["b"]
+        dz = z[a:b] - e["zb"]
+        area = float(np.sum(dz) * h)
+        if abs(area) < area_thr:
+            continue
+        idx = int(np.argmax(np.abs(dz)))
+        weights = np.abs(dz)
+        centre = float(np.sum(xc[a:b] * weights) / np.sum(weights))
+        note = ""
+        if e["sub"] >= 2:
+            note = (f"{e['sub']} features closer than the resolution ({result.resolution_mm:.2f} mm): "
+                    f"reported as one")
+        found.append(Mismatch("excursion", centre, e["zp"], e["zn"],
+                              float(math.tanh(e["dev_max"] / 2.0)),
+                              area_ohm_mm=area, peak_ohm=float(dz[idx]), width_mm=(b - a) * h, note=note))
+
+    found.sort(key=lambda m: m.position_mm)
     merged: List[Mismatch] = []
-    for mismatch in found:
-        if merged and abs(mismatch.position_mm - merged[-1].position_mm) < result.resolution_mm:
-            previous = merged[-1]
-            separation = abs(mismatch.position_mm - previous.position_mm)
-            dominant = max((previous, mismatch), key=lambda m: abs(m.z_extreme_ohm - previous.z_before_ohm))
+    for m in found:
+        if merged and abs(m.position_mm - merged[-1].position_mm) < result.resolution_mm:
+            p = merged[-1]
+            separation = abs(m.position_mm - p.position_mm)
+            note = (f"two features {separation:.2f} mm apart, closer than the resolution "
+                    f"({result.resolution_mm:.2f} mm): reported as one")
+            both_excursions = p.kind == "excursion" and m.kind == "excursion"
+            area = (p.area_ohm_mm + m.area_ohm_mm) if both_excursions else float("nan")
+            dominant = m if abs(np.nan_to_num(m.peak_ohm)) > abs(np.nan_to_num(p.peak_ohm)) else p
             merged[-1] = Mismatch(
-                position_mm=0.5 * (previous.position_mm + mismatch.position_mm),
-                z_before_ohm=previous.z_before_ohm,
-                z_after_ohm=mismatch.z_after_ohm,
-                reflection=max(previous.reflection, mismatch.reflection),
-                z_extreme_ohm=dominant.z_extreme_ohm,
-                note=(f"two features {separation:.2f} mm apart, closer than the resolution "
-                      f"({result.resolution_mm:.2f} mm): reported as one"),
-            )
+                kind=p.kind if p.kind == m.kind else "step",
+                position_mm=0.5 * (p.position_mm + m.position_mm),
+                z_before_ohm=p.z_before_ohm, z_after_ohm=m.z_after_ohm,
+                reflection=max(p.reflection, m.reflection),
+                area_ohm_mm=area, peak_ohm=dominant.peak_ohm,
+                width_mm=p.width_mm + m.width_mm, note=note)
         else:
-            merged.append(mismatch)
+            merged.append(m)
 
-    deviating = np.abs(z_after - result.z0) > deviation_tol * result.z0
+    deviating = np.abs(z - z0) > deviation_tol * z0
     first = None
     if np.any(deviating):
         idx = int(np.argmax(deviating))
-        first = FirstDeviation(float(x[idx]), float(z_after[idx]))
+        first = FirstDeviation(float(x[idx]), float(z[idx]))
     return merged, first
 
 
@@ -844,8 +1129,12 @@ def summary_text(result: TDRResult, mismatches: Sequence[Mismatch],
         f"mismatches with |r| >= {threshold:g}: {len(mismatches)}",
     ]
     for m in mismatches:
-        lines.append(f"  x = {m.position_mm:7.2f} mm   Z {m.z_before_ohm:6.1f} -> {m.z_after_ohm:6.1f} ohm"
-                     f"   |r| = {m.reflection:.3f}   extreme Z {m.z_extreme_ohm:6.1f}"
+        if m.kind == "excursion":
+            body = (f"excursion, width {m.width_mm:.2f} mm, area {m.area_ohm_mm:+.2f} ohm mm, "
+                    f"peak {m.peak_ohm:+.1f} ohm, from {m.z_before_ohm:.1f} ohm")
+        else:
+            body = f"step {m.z_before_ohm:6.1f} -> {m.z_after_ohm:6.1f} ohm"
+        lines.append(f"  x = {m.position_mm:7.2f} mm   {body}   |rho| = {m.reflection:.3f}"
                      + (f"   [{m.note}]" if m.note else ""))
     return "\n".join(lines)
 
@@ -906,19 +1195,22 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         description="TDR of a run's broad S-parameters: impedance along the line and its mismatches.")
     parser.add_argument("path", help="a run folder, a combo folder, a .s2p or a results.csv")
     parser.add_argument("--eps-eff", type=float, default=DEFAULT_EPS_EFF,
-                        help="effective permittivity of the line (default 2.0, CPW on RO3003)")
+                        help="effective permittivity given as the start of the fit (default 2.0, CPW on RO3003)")
     parser.add_argument("--out", required=True, help="folder for the profile CSVs and plots")
     parser.add_argument("--port", type=int, choices=(1, 2), default=1,
                         help="which port the distance runs from (1: S11, 2: S22)")
     parser.add_argument("--method", choices=("peel", "fit", "both"), default="both",
                         help="layer peel, regularised fit, or both (default both)")
+    parser.add_argument("--line-length-mm", type=float, default=None,
+                        help="distance between the two reference planes: the fit then uses S11, S21 and S22 "
+                             "(without it, the fit uses S11 only over --max-mm)")
     parser.add_argument("--beta", type=float, default=DEFAULT_BETA, help="Kaiser window beta")
     parser.add_argument("--pad", type=int, default=DEFAULT_PAD, help="zero-padding factor (4 to 8)")
     parser.add_argument("--dc", type=float, default=None, help="DC value of S11 (default: fitted)")
     parser.add_argument("--fit-span-ghz", type=float, default=DEFAULT_FIT_SPAN_GHZ,
                         help="span of the lowest data used to extrapolate DC")
     parser.add_argument("--max-mm", type=float, default=DEFAULT_MAX_MM, help="longest distance reported")
-    parser.add_argument("--threshold", type=float, default=DEFAULT_THRESHOLD, help="|r| for a mismatch")
+    parser.add_argument("--threshold", type=float, default=DEFAULT_THRESHOLD, help="|rho| for a feature")
     args = parser.parse_args(argv)
 
     out = Path(args.out)
@@ -926,16 +1218,20 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     methods = ("peel", "fit") if args.method == "both" else (args.method,)
     for label, sp in load_inputs(args.path):
         for method in methods:
-            kwargs = dict(eps_eff=args.eps_eff, beta=args.beta, pad=args.pad, max_mm=args.max_mm,
-                          name=label)
             if method == "peel":
-                kwargs.update(dc=args.dc, fit_span_ghz=args.fit_span_ghz)
-            result = analyse_sparameters(sp, port=args.port, method=method, **kwargs)
+                kwargs = dict(eps_eff=args.eps_eff, beta=args.beta, pad=args.pad, max_mm=args.max_mm,
+                              dc=args.dc, fit_span_ghz=args.fit_span_ghz)
+            elif args.line_length_mm is not None:
+                kwargs = dict(eps_eff=args.eps_eff, beta=args.beta, pad=args.pad,
+                              line_length_mm=args.line_length_mm)
+            else:
+                kwargs = dict(eps_eff=args.eps_eff, beta=args.beta, pad=args.pad, max_mm=args.max_mm)
+            result = analyse_sparameters(sp, port=args.port, method=method, name=label, **kwargs)
             stem = f"{_cli_output_name(label)}_{method}"
             write_profile_csv(result, out / f"{stem}_profile.csv")
             plot_profile(result, out / f"{stem}_tdr.png", threshold=args.threshold)
-            mismatches, first = find_mismatches(result, threshold=args.threshold)
-            text = summary_text(result, mismatches, first, args.threshold)
+            features, first = find_mismatches(result, threshold=args.threshold)
+            text = summary_text(result, features, first, args.threshold)
             (out / f"{stem}_summary.txt").write_text(text + "\n", encoding="utf-8")
             print(text)
             print()
