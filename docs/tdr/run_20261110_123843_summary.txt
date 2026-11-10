@@ -1,0 +1,33 @@
+Run 20261110_123843 (models/default, 0.1-20 GHz, 401 points), read-only.
+Command: python -m microwave_package.workflow.tdr <Setup_1_Sweep_1.s2p> --eps-eff 2.0 --line-length-mm 50 --method both
+
+Setup_1_Sweep_1: port 1, method layer peel, 401 points 0.1-19.9995 GHz (df 49.75 MHz)
+eps_eff = 2.000, v = 211.99 mm/ns, Z0 = 50 ohm, profile step = 0.330 mm
+DC: +0.0000 (fit); delay removed 198.1 ps
+10-90 % rise time 34.7 ps from f_max = 20.00 GHz, beta = 3: distance resolution 3.68 mm at eps_eff = 2.00; features shorter than this blur together
+layer peel: recursion stable; notes: 3 bin(s) below the first sweep point (incl. DC) extrapolated
+first deviation from Z0: 0.00 mm, Z = 48.6 ohm
+mismatches with |r| >= 0.03: 7
+  x =    2.15 mm   step   48.6 ->   58.3 ohm   |rho| = 0.112   [two features 3.63 mm apart, closer than the resolution (3.68 mm): reported as one]
+  x =   11.89 mm   step   57.5 ->   61.6 ohm   |rho| = 0.034
+  x =   16.85 mm   step   61.6 ->   53.0 ohm   |rho| = 0.075
+  x =   24.12 mm   step   53.9 ->   61.9 ohm   |rho| = 0.069
+  x =   29.08 mm   step   62.1 ->   57.3 ohm   |rho| = 0.039
+  x =   36.68 mm   step   57.0 ->   47.5 ohm   |rho| = 0.090
+  x =   41.63 mm   step   47.5 ->   58.1 ohm   |rho| = 0.100
+
+Setup_1_Sweep_1: port 1, method regularised fit, 401 points 0.1-19.9995 GHz (df 49.75 MHz)
+eps_eff = 2.000, v = 211.99 mm/ns, Z0 = 50 ohm, profile step = 1.220 mm
+DC: +0.0000 (fit); delay removed 198.1 ps
+10-90 % rise time 34.7 ps from f_max = 20.00 GHz, beta = 3: distance resolution 3.68 mm at eps_eff = 2.00; features shorter than this blur together
+regularised fit: NOT stable (cut short or not converged); notes: 3 bin(s) below the first sweep point extrapolated (naive step only; the fit uses the data as measured); fit 11+21+22 (tv, start from the layer peel): 41 cells of 1.220 mm over 50 mm, RMS residual 0.1299 (tol 0.005), lambda 3.16e-05 -- tolerance NOT reached; loss a_d 2.96e-05 Np/mm per GHz (2.57 dB/m at 10 GHz), eps_fit 1.027 (given 2)
+first deviation from Z0: 0.00 mm, Z = 39.5 ohm
+mismatches with |r| >= 0.03: 8
+  x =    4.57 mm   step   39.5 ->   39.6 ohm   |rho| = 0.487   [two features 3.05 mm apart, closer than the resolution (3.68 mm): reported as one]
+  x =   10.98 mm   step   39.6 ->   46.3 ohm   |rho| = 0.191   [two features 2.44 mm apart, closer than the resolution (3.68 mm): reported as one]
+  x =   15.85 mm   step   46.3 ->   70.3 ohm   |rho| = 0.205
+  x =   21.95 mm   step   71.5 ->   63.1 ohm   |rho| = 0.062
+  x =   32.32 mm   step   62.3 ->   88.5 ohm   |rho| = 0.198   [two features 3.66 mm apart, closer than the resolution (3.68 mm): reported as one]
+  x =   37.80 mm   step   88.5 ->   43.7 ohm   |rho| = 0.339
+  x =   42.68 mm   step   36.8 ->   57.0 ohm   |rho| = 0.216
+  x =   48.17 mm   step   73.9 ->   39.4 ohm   |rho| = 0.400   [two features 1.22 mm apart, closer than the resolution (3.68 mm): reported as one]
