@@ -191,23 +191,27 @@ carries whatever the pedestal and chip lid features make from
 Run creation, for the command line and the form alike, pins `pedestal_depth = 0`
 for a bare-board run that asks for no pedestal, so its floor stays flat. A value
 typed or swept for `pedestal_depth` still wins, but a recess on a bare board is
-refused (see the recess rule below). Eigenmode runs solve normally, but the
+refused (see "The bottom copper and the die's opening" below). Eigenmode runs solve normally, but the
 chip-field columns come back flagged "object 'chip' not found", since there is no
 chip to measure.
 
-**The recess rule.** A pedestal recess under the die (`pedestal_depth` > 0) is
-refused when the board's bottom copper stays whole over it: a bare board, or a
-blind pocket (a board at least 0.1 mm thicker than the die). Such a recess is a
-sealed air void under the ground plane, and the model could only be built with a
-skin of box metal under that copper, which the box must not carry: AEDT imports
-the box as SolidWorks made it. A through opening (a board less than 0.1 mm thicker
-than the die) takes the copper out over the recess and is allowed. When any
-combination of a run has a refused recess, the whole run is refused and the form
-shows the reason. The rule is `constraints.check_recess_copper`, decided by
-`cavity.Cavity.cuts_bottom_copper`, the same decision the copper cut makes.
-`vents_on` with a pedestal recess under a through opening is refused the same way
-(`constraints.check_pedestal_vent`). Refinement and field parts are made from the run's geometry, so
-they are refused in the same cases. These are known limits, C1 and C2 in `VENTING.md`.
+**The bottom copper and the die's opening.** Under the die's opening the board's bottom
+copper has a hole the size of the opening, blind or through, so no copper lies over the
+die's pedestal recess (`pedestal_depth`). The model cuts the copper to match
+(`copper_geometry.clear_cavity_area`, decided by `cavity.Cavity.cuts_bottom_copper`). Two
+recesses cannot be closed that way, and are refused when the run is made, for every
+combination (`constraints.check_recess_copper`): a recess on a bare board, whose bottom
+copper is whole, and a recess wider than the opening, which would leave copper over air at
+its edge. The box is never given a skin of metal: AEDT imports it as SolidWorks made it.
+Vents are refused in every run, since simulations stay vent-free (`constraints.check_vents`).
+A refinement or field image is refused in the same cases when its parent cannot be rebuilt
+(`companion.py`). It is also refused when the parent is a blind run made from 2026-11-09
+14:00 whose model had its bottom copper whole under the die: that run has to be made again.
+The Altium generator cuts the same hole since its fix of 2026-11-10 (PR #133). Blind runs drawn
+before that fix have the back plane whole under the die in their `copper.txt` and `.PcbDoc`, and so
+do the outputs made from them (the Gerber and drill previews, the fabrication drawing). Their model
+is cut to the rule, but their refinements are refused when made from 2026-11-09 14:00
+(`companion.py`), so make a new run for them.
 
 **The SolidWorks parts' equation link.** `box.SLDPRT` and `lid_inside.SLDPRT`
 read their dimensions from `base_parts/default.txt` through a link that is
