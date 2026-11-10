@@ -567,63 +567,67 @@ def check_cavity_corners(values: Dict[str, float], wall_gap: float = PCB_WALL_GA
     return None
 
 
-# --- a recess under copper that stays whole -----------------------------
+# --- the recess under the die, and the vents ---------------------------------
 #
-# A pedestal recess is cut into the box floor under the die (pedestal_depth > 0,
-# square or circle). Where the board's bottom copper lies over that recess
-# unchanged -- a blind pocket leaves its back plane whole, and a bare board has no
-# opening at all -- the recess is a sealed air void under a ground plane. Electrically
-# it changes nothing (bare-board runs with and without one differed by <= 0.09 dB),
-# and the model can only be built with a skin of box metal under the copper, which
-# the box must not carry: AEDT imports the box as it is. So such a run is refused.
-# A through opening takes the copper out over the recess and is allowed.
+# The board's bottom copper has a hole the size of the die's opening, blind or
+# through (`cavity.Cavity.cuts_bottom_copper`, `copper_geometry.clear_cavity_area`),
+# so a pedestal recess under the die lies under that hole and no copper is drawn
+# over it. Two recesses cannot be closed that way and are refused: one on a bare
+# board, whose bottom copper is whole (a sealed air void under the ground plane),
+# and one wider than the hole, which would leave copper over air at its edge. AEDT
+# imports the box unchanged, so neither can be closed with a skin of box metal.
+# Vents are refused in every run: simulations stay vent-free (VENTING.md).
+
+VENTS_REFUSAL = ("Vents are cut after manufacturing and simulations stay vent-free: "
+                 "untick vents_on")
+
 
 def check_recess_copper(values: Dict[str, float]) -> Optional[str]:
-    """Why a pedestal recess under the die cannot be built on this board, or None.
+    """Why a pedestal recess under the die cannot be built on this combination, or None.
 
     The rule is the copper cut's own decision (`cavity.Cavity.cuts_bottom_copper`),
     not a copy of the thickness comparison. Run where a run is created, for every
-    combination (see `run_manager.geometry_refusal`); the layout check does not carry it.
+    combination (`run_manager.geometry_refusal`), and checked against a parent's own
+    values for a refinement or field image (`companion`).
     """
     from . import cavity as cavity_plan
 
     depth = values.get("pedestal_depth", 0.0)
-    if depth <= 0 or cavity_plan.plan(values).cuts_bottom_copper:
+    if depth <= 0:
         return None
-    if parameter_meta.is_bare_board(values):
-        return (f"pedestal_depth {_fmt(depth)} mm on a bare board (no_chip): a bare board has no die "
-                f"opening, so its whole bottom copper lies over the recess as a sealed air void under "
-                f"the ground plane -- set pedestal_depth to 0 (a thicker board does not help without an "
-                f"opening)")
-    pcb = values.get("pcb_width", 0.381)
-    die = values.get("chip_width", 0.381)
-    return (f"pedestal_depth {_fmt(depth)} mm under a {_fmt(die)} mm die in a {_fmt(pcb)} mm board: the "
-            f"die's opening stays blind, so the bottom copper lies whole over the recess as a sealed air "
-            f"void under the ground plane -- set pedestal_depth to 0, or use a board less than "
-            f"{_fmt(cavity_plan.MIN_FLOOR)} mm thicker than the die so the opening goes through")
+    opening = cavity_plan.plan(values)
+    if opening.cuts_bottom_copper:
+        return _recess_wider_than_hole(values, opening)
+    return (f"pedestal_depth {_fmt(depth)} mm on a bare board (no_chip): a bare board has no die "
+            f"opening, so its whole bottom copper lies over the recess as a sealed air void under "
+            f"the ground plane -- set pedestal_depth to 0 (a thicker board does not help without an "
+            f"opening)")
 
 
-def check_pedestal_vent(values: Dict[str, float]) -> Optional[str]:
-    """Why vents with a pedestal recess cannot be built here, or None.
+def _recess_wider_than_hole(values: Dict[str, float], opening) -> Optional[str]:
+    """A recess under a die must lie inside the hole in the copper, or copper overhangs it."""
+    from . import pedestal
 
-    The pedestal vent is a groove in the box floor under the recess. Under a through
-    opening the bottom copper lies over that groove outside the die's opening, and with
-    no skin of box metal under it the copper straddles the groove's walls, which AEDT
-    refuses ("pcb_copper_bottom and box intersect", see hfss/vents.py). A blind pocket
-    or a bare board is refused by `check_recess_copper` first, so only the through
-    opening is decided here. Vents are cut after manufacturing, and the simulations
-    stay vent-free.
+    width = pedestal.recess_size(values)
+    hole = 2.0 * min(opening.half_length, opening.half_side)
+    if width <= hole + 1e-9:
+        return None
+    name = "pedestal_diameter" if pedestal.shape(values) == pedestal.CIRCLE else "pedestal_size"
+    return (f"{name} {_fmt(width)} mm is wider than the die's opening ({_fmt(hole)} mm): the bottom "
+            f"copper has a hole only as big as the opening, so copper would lie over the edge of the "
+            f"recess with air under it -- reduce {name}, or widen the opening with cavity_clearance")
+
+
+def check_vents(values: Dict[str, float]) -> Optional[str]:
+    """Why a combination with vents cannot be built, or None.
+
+    Vents are cut in the box after manufacturing, and the simulations stay vent-free:
+    the model cuts no groove and adds no skin, and AEDT refuses a groove under the
+    bottom copper. So a combination with `vents_on` set is refused, whatever its copper.
     """
-    from . import cavity as cavity_plan, venting
-
-    if not any(vent.name == "pedestal" for vent in venting.plan(values)):
-        return None
-    if not cavity_plan.plan(values).cuts_bottom_copper:
-        return None
-    return ("vents_on = 1 with a pedestal recess under a through opening: the pedestal groove lies "
-            "under the bottom copper, and the model builder no longer closes it (AEDT imports the box "
-            "unchanged), so this run cannot be built here. Vents are cut after manufacturing and "
-            "simulations stay vent-free: untick vents_on, or set pedestal_depth to 0")
+    if float(values.get(parameter_meta.VENTS_PARAM, 0.0)) > 0.5:
+        return VENTS_REFUSAL
+    return None
 
 
 def check_layout(values: Dict[str, float], mat_pcb: Optional[str] = None,

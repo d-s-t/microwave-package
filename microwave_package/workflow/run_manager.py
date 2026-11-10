@@ -424,24 +424,26 @@ def _skip_reason(values: Dict[str, float], use_altium: bool) -> Optional[str]:
     return None
 
 
-def geometry_refusal(sweep_params, parameter_defaults=None) -> Optional[str]:
+def geometry_refusal(sweep_params, parameter_defaults=None, use_altium: bool = True) -> Optional[str]:
     """Why a new run is refused, when a combination of it cannot be built with the
     current model builder, or None.
 
-    Two cases: a pedestal recess under copper that stays whole (see
-    constraints.check_recess_copper), and vents_on with a pedestal recess under a
-    through opening (see constraints.check_pedestal_vent). Every combination is checked
-    with the layering `Run.create` applies, so the answer is for the geometry that would
-    be built. The whole run is refused, and the message says how many combinations are,
-    and the first few. Refinement and field parts are checked by companion, against
-    their parent's own values, not here.
+    Two cases: vents, which every run is refused (see constraints.check_vents), and,
+    when Altium draws the copper, a pedestal recess the copper cannot close (see
+    constraints.check_recess_copper). Every combination is checked with the layering
+    `Run.create` applies, so the answer is for the geometry that would be built. The
+    whole run is refused, and the message says how many combinations are, and the first
+    few. Refinement and field parts are checked by companion, against their parent's own
+    values, not here.
     """
     base = _equation_file_values()
     combos = combinations(sweep_params)
     refused = []
     for combo in combos:
         values = {**base, **(parameter_defaults or {}), **combo}
-        reason = constraints.check_recess_copper(values) or constraints.check_pedestal_vent(values)
+        reason = constraints.check_vents(values)
+        if reason is None and use_altium:
+            reason = constraints.check_recess_copper(values)
         if reason:
             refused.append((combo, reason))
     if not refused:

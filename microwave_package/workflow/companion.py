@@ -33,7 +33,7 @@ from ansys_analyze_common import queue_common
 from ..hfss import registry
 from ..hfss.driven import DRIVEN_MODAL
 from ..hfss.eigenmode import EIGENMODE
-from ..design import constraints
+from ..design import cavity as cavity_plan, constraints, copper_geometry as cg, equations as eq
 from ..design.sweep import SweepParameter
 from .run_manager import Run, equation_file_values
 
@@ -133,39 +133,83 @@ def refinable_combos(run: Run) -> List[str]:
 
 
 # A refinement or a field-image part is made from its parent's geometry, and the
-# current model builder rebuilds it. Where the parent has a recess under copper that
-# stays whole, or vents with a pedestal recess under a through opening, the builder
-# would need a skin of box metal that it no longer gives (AEDT imports the box
-# unchanged). Such a part cannot be rebuilt here, so it is refused before it is made.
-RECESS_CHILD_REFUSAL = (
-    "This run's geometry has a recess under whole copper, and the model builder no longer "
-    "closes it (AEDT imports the box unchanged), so a refinement or field image of it cannot "
-    "be rebuilt here. To rebuild it, use a worktree at the commit before this change: start a "
-    "second web app from that worktree on PORT=5001 and refine through it.")
+# current model builder rebuilds it, so a parent geometry the builder can no longer
+# close is refused before the part is made. AEDT imports the box unchanged and the
+# box gets no skin, so these cannot be rebuilt here:
+#   * vents: a run made before vents were refused (constraints.check_vents);
+#   * a recess the copper cannot close: on a bare board, or wider than the die's
+#     opening (constraints.check_recess_copper), when Altium draws the copper;
+#   * a blind opening built with its bottom copper whole under the die
+#     (_built_with_whole_plane).
 VENT_CHILD_REFUSAL = (
-    "This run has vents_on = 1 with a pedestal recess under a through opening: the pedestal "
-    "groove lies under the bottom copper, and the model builder no longer closes it (AEDT "
-    "imports the box unchanged), so a refinement or field image of it cannot be rebuilt here. "
-    "Vents are cut after manufacturing and simulations stay vent-free. To rebuild it, use a "
-    "worktree at the commit before this change: start a second web app from that worktree on "
-    "PORT=5001 and refine through it.")
+    "This run has vents_on = 1. Vents are cut after manufacturing and simulations stay "
+    "vent-free: the model cuts no groove in the box and gives it no skin, so a refinement or "
+    "field image of it cannot be rebuilt here. Make a new run without vents.")
+RECESS_CHILD_REFUSAL = (
+    "This run has a pedestal recess the model builder can no longer close: a recess on a bare "
+    "board, or one wider than the die's opening, so copper would lie over its edge with air under "
+    "it. AEDT imports the box unchanged, so a refinement or field image of it cannot be rebuilt "
+    "here. Make a new run.")
+WHOLE_PLANE_CHILD_REFUSAL = (
+    "This run was built with bottom copper under the die, which is not the design (the bottom "
+    "copper has a matching hole under the chip). Make a new run.")
+# The blind runs whose model had their bottom copper whole under the die were made
+# from commit 08246ba on (2026-11-09 14:05, +0200); the first is 14:35. Runs made
+# before it were modelled with the hole (the whole-stack cut), so they are not refused.
+WHOLE_PLANE_SINCE = "2026-11-09T14:00:00"
+
+
+def _snapshot_numbers(parent: Run, combo_id: str) -> Dict[str, float]:
+    """The numbers in a combination's own dimensions.txt: what its model was built from."""
+    try:
+        return eq.get_numeric_parameters(
+            eq.read_file(os.path.join(parent.combo_path(combo_id), "dimensions.txt")))
+    except OSError:
+        return {}
+
+
+def _built_with_whole_plane(parent: Run, combo_id: str, values: Dict[str, float]) -> bool:
+    """Whether this combination was built with its bottom copper whole under the die.
+
+    That is a blind opening whose board copper still covers the opening's centre, in a
+    model built while the builder kept the back plane whole: made from WHOLE_PLANE_SINCE
+    on, and before the builder marked its hole (copper_geometry.mark_bottom_hole). A
+    through opening's copper has its hole in the board, and a bare board has no opening.
+    """
+    opening = cavity_plan.plan(values)
+    if opening.is_empty or opening.through:
+        return False
+    folder = parent.combo_path(combo_id)
+    if os.path.isfile(os.path.join(folder, cg.HOLE_MARK)):
+        return False
+    if (parent.created_at or "") < WHOLE_PLANE_SINCE:
+        return False
+    copper_path = os.path.join(folder, "copper.txt")
+    if not os.path.isfile(copper_path):
+        return False
+    board = cg.read_file(copper_path).get("package")
+    return board is not None and cg.bottom_copper_covers(board, 0.0, 0.0)
 
 
 def _refuse_unbuildable_geometry(parent: Run, combo_ids: List[str]) -> None:
     """Raise ValueError when a part of `parent` for `combo_ids` cannot be rebuilt here.
 
-    Each combination is checked with the parent's own values, the layering `Run.create`
-    applies. Without Altium there is no copper to close, so nothing is refused.
+    Each combination is checked with the parent's own values: its layered values, with
+    the numbers of its own dimensions.txt on top, which is what its model was built from.
     """
-    if not parent.analysis_settings.get("use_altium", True):
-        return
     base = equation_file_values()
+    use_altium = parent.analysis_settings.get("use_altium", True)
     for combo_id in combo_ids:
         values = {**base, **parent.parameter_defaults, **parent.state["combos"][combo_id]["params"]}
+        values.update(_snapshot_numbers(parent, combo_id))
+        if constraints.check_vents(values):
+            raise ValueError(VENT_CHILD_REFUSAL)
+        if not use_altium:
+            continue    # no copper is drawn without Altium, so nothing is sealed or cut
         if constraints.check_recess_copper(values):
             raise ValueError(RECESS_CHILD_REFUSAL)
-        if constraints.check_pedestal_vent(values):
-            raise ValueError(VENT_CHILD_REFUSAL)
+        if _built_with_whole_plane(parent, combo_id, values):
+            raise ValueError(WHOLE_PLANE_CHILD_REFUSAL)
 
 
 def create_refinement(parent: Run, ranges_text: str, combo_ids: List[str],

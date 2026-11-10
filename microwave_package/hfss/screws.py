@@ -31,7 +31,7 @@ from ..design import screws as screw_plan
 logger = logging.getLogger("microwave_package")
 
 # Lets a cutting tool stand proud of the face it cuts through, so the cut
-# does not leave a skin of zero thickness on that face.
+# does not leave a film of zero thickness on that face.
 OVERSHOOT = 0.05
 
 

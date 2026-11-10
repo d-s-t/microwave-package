@@ -985,18 +985,18 @@ def build_layout(hfss, combo_dir: str, dimensions_txt_content: str,
             thickness=stack.copper_thickness, prefix="pcb", log=log,
         )
         remember_sheets(made, stack.copper_thickness, copper)
-        # The generator already keeps the copper out of a through opening,
-        # so this cuts nothing there. A blind pocket keeps its back plane
-        # whole under the die, and this cuts only the top layer above the
-        # pocket's floor (see copper_geometry.clear_cavity_area). It is here
-        # for the copper.txt an older generator wrote, where it is the
-        # difference between a model and a model with a ground plane across
-        # its own cutout.
+        # The bottom copper gets a hole the size of the opening, blind or through
+        # (see copper_geometry.clear_cavity_area). The Altium generator cuts the same
+        # hole since 2026-11-10; this cut also removes the back plane that a copper.txt
+        # drawn before then has whole under a blind pocket, and the ground plane an
+        # older generator drew across its own cutout.
         cg.clear_cavity_area(
             hfss.modeler, frame, stack, opening,
             targets=[name for names in made.values() for name in names],
             log=log,
         )
+        if not opening.is_empty:
+            cg.mark_bottom_hole(combo_dir)
         # The vias are solid posts standing in the undrilled board -- the
         # material override lets the metal win where they overlap. See
         # `copper_geometry._via_post` for why they are not drilled.

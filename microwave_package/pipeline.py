@@ -551,15 +551,14 @@ def create_run(sweep_params, analysis_settings: dict, parameter_defaults=None) -
         complaint = registry.get(solution_type).validate(port_counts)
         if complaint:
             raise ValueError(complaint)
-    # A pedestal recess under bottom copper that stays whole is a sealed void, and vents
-    # with a pedestal recess under a through opening cannot be closed either. The whole
-    # run is refused here, before anything is made (constraints.check_recess_copper and
-    # check_pedestal_vent). Gated on Altium, as the via grid is: without copper nothing
-    # is sealed.
-    if analysis_settings.get("use_altium", True):
-        reason = run_manager.geometry_refusal(sweep_params, parameter_defaults)
-        if reason:
-            raise ValueError(reason)
+    # The whole run is refused here, before anything is made, when a combination cannot be
+    # built: vents in every run (constraints.check_vents), and a pedestal recess the copper
+    # cannot close (constraints.check_recess_copper). The recess check is gated on Altium, as
+    # the via grid is: without copper nothing is sealed.
+    reason = run_manager.geometry_refusal(
+        sweep_params, parameter_defaults, use_altium=analysis_settings.get("use_altium", True))
+    if reason:
+        raise ValueError(reason)
     if both:
         return companion.create_pair(sweep_params, analysis_settings, parameter_defaults)[1]
     return Run.create(sweep_params, analysis_settings, parameter_defaults)

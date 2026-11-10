@@ -31,8 +31,10 @@ across it; the 5880/TMM defaults are not what matters here, the shapes are).
 `base_parts/parameters_visual/vent_width.svg` and `vent_depth.svg`.
 
 * **Pedestal vent:** a groove in the top of the box floor, along z through the
-  middle of the recess (x = 0), through the wall, out of both side faces.
-  Created only when `pedestal_depth` > 0 and the board is not a bare board (`no_chip` = 0): a bare board has no die and no opening in its bottom copper, so a recess there is not a vent. A recess under copper that stays whole (a bare board, or a blind pocket) is refused when its run is made (README, "The recess rule"), so in practice the pedestal vent lies under a through opening only. It gets no skin ("No skin in AEDT" below).
+  middle of the recess (x = 0), through the wall, out of both side faces. Designed for
+  `pedestal_depth` > 0 on a board that is not a bare board (`no_chip` = 0). It is not
+  simulated: a run with `vents_on` = 1 is refused when it is made (README, "The bottom
+  copper and the die's opening"). The model cuts no groove and gives the box no skin.
 * **Screw vents:** from each tapped hole, along z to the nearest side face
   (3.5 mm and the wall away). Created only when `screws_on` = 1.
 
@@ -105,29 +107,13 @@ is compared on the 97-point coarse sweep only.
 So the vents are electrically invisible within the model's mesh noise: no new mode, no new band of
 loss, and the existing resonances move by under 0.1 %.
 
-How the vented model is built, for whoever reruns it (all in `hfss/vents.py` and the importer):
-the box body comes out of SolidWorks named after its last feature (`Vent_Screws`), so the importer
-renames it to `box`; and the model draws the bottom copper 35 um down into the floor, so a groove
-under it would leave the copper half over air (HFSS: "pcb_copper_bottom and box intersect"). Over a
-screw groove the importer gives the box back a skin two copper thicknesses deep under the copper, from
-just inside the keep-out circle to the wall. The skin is model bookkeeping, not part of the real part,
-whose grooves are open to the board's underside.
-
-**No skin in AEDT.** The model builder gives the box no skin: AEDT imports it as SolidWorks made it.
-Two cases that a skin used to close are known limits, refused early (decided 2026-11-10):
-
-- **C1, a recess under copper that stays whole** (a blind pocket, or a bare board with a recess). A
-  run with one is refused when it is created. A refinement or field image of an older run with one is
-  refused too, because its geometry cannot be rebuilt here.
-- **C2, `vents_on` with a pedestal recess under a through opening.** The pedestal groove lies under the
-  bottom copper with nothing under it, which is the case the "intersect" refusal above was recorded for
-  (commit 9cfa20d, 2026-10-11). A run with one is refused when it is created, and so is a refinement or
-  field image of an older run with one. Vents are cut after manufacturing, and simulations stay
-  vent-free.
-
-To rebuild a refused refinement or field image, use the old code: check out the commit before the skin
-removal in a separate worktree, start a second web app from that worktree on `PORT=5001`, and refine
-through that app.
+**Why vents are not simulated.** A groove under the bottom copper needs a skin of box metal
+under that copper, because the model draws the copper 35 um down into the floor, so the
+copper would lie half over air (HFSS: "pcb_copper_bottom and box intersect"). The model
+builder gives the box no skin and cuts no groove from it: AEDT imports the box as SolidWorks
+made it. So a run with vents is refused when it is made, and so is a refinement or field
+image of an older run with vents (`constraints.check_vents`). Vents are cut in the box after
+manufacturing, and simulations stay vent-free.
 
 **Pending, needs SolidWorks:** the `no_chip` term in `Vent_Pedestal`'s suppression is
 in `add_vents.py` and `design/venting.py` but the committed `box.SLDPRT` still has the

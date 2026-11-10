@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import logging
 import math
+import os
 import time
 from dataclasses import dataclass, field, replace
 from typing import Callable, Dict, List, Optional, Sequence, Tuple
@@ -1186,54 +1187,69 @@ def clear_cavity_area(
 ) -> None:
     """Cut the die's opening out of the board's copper.
 
-    The generator already keeps copper out of the opening -- the trace
-    stops either side of it, and a through opening's ground planes are
-    drawn round it -- so on a board built by the current generator this
-    cuts nothing. It stays because it costs one boolean and it is the only
-    thing standing between a copper.txt written by an older generator and a
-    model with a ground plane spanning the hole in its own board. A stray
-    conductor across the cavity is exactly the sort of thing that moves a
-    mode, and it would not look wrong in a tree.
+    Under every opening, blind or through, the bottom copper has a hole the size
+    of the opening, so no copper lies over the die's recess (README, "The bottom
+    copper and the die's opening"). The Altium generator cuts that hole itself
+    (`base_parts/altium/GenerateFromParams.pas`, since 2026-11-10). A copper.txt
+    drawn before then still has the back plane whole under a blind pocket; this cut
+    removes it, so the model matches the design for those boards too. It also stands
+    between a copper.txt written by an older generator and a model with a ground
+    plane spanning its own cutout.
 
-    A through opening is cut the full stack, a copper thickness past each
-    face, so it takes the top and bottom layers together.
-
-    A blind pocket is cut from its floor up only. The tool starts at the
-    top of the laminate floor (`pcb_top - depth`) and reaches past the top
-    face: the top layer inside the pocket is cleared, and the bottom plane
-    is left whole, as the Altium generator leaves it under a blind pocket
-    (`base_parts/altium/GenerateFromParams.pas`, the back plane beside
-    `CavThrough`). A blind pocket does not take the far face.
-
-    In plane it is the opening exactly, with no added
-    margin: the opening already stands `cavity_clearance` clear of the
-    die's own copper, so there is no coincident face here to work around
-    -- which is what the margin that used to be here was for, back when
-    this cut was made at the die's own edge.
+    The cut spans the full stack, two copper thicknesses past each face, so it
+    takes the top and bottom layers together. It touches copper only: the laminate
+    floor under a blind pocket is substrate and stays (`build_substrates`). In plane
+    it is the opening exactly, with no added margin: the opening already stands
+    `cavity_clearance` clear of the die's own copper.
     """
     if not targets or cavity.is_empty:
         return
 
     margin = max(stack.copper_thickness, stack.chip_metal_thickness) * 2.0
-    # Where the cut starts: a through opening goes below the bottom face, so
-    # both layers are in it; a blind pocket stops at the top of its floor.
-    base = (stack.pcb_bottom - margin) if cavity.cuts_bottom_copper else (stack.pcb_top - cavity.depth)
-    top = stack.pcb_top + margin
     origin, sizes = frame.box(
         -cavity.half_length, -cavity.half_side,
         cavity.half_length, cavity.half_side,
-        base, top - base,
+        stack.pcb_bottom - margin,
+        (stack.pcb_top - stack.pcb_bottom) + 2 * margin,
     )
     tool = modeler.create_box(origin=origin, sizes=sizes)
     # Named rather than left as NewObject_*, so an operation that fails
     # to consume it is obvious in the tree instead of anonymous.
     tool.name = "cavity_area_cut"
     modeler.subtract(list(targets), ["cavity_area_cut"], keep_originals=False)
-    if cavity.cuts_bottom_copper:
-        log(f"Cleared the die's opening out of {', '.join(targets)}.")
-    else:
-        log("Cleared the copper above the die's blind pocket floor; "
-            "the back plane under it is left whole.")
+    log(f"Cleared the die's opening out of {', '.join(targets)}.")
+
+
+# Written beside a combination's model once its bottom copper is cut under the
+# opening (`mark_bottom_hole`). companion reads it: a model without it may still
+# have copper whole under a die, so its refinement cannot be rebuilt here.
+HOLE_MARK = "bottom_copper_hole.txt"
+
+
+def mark_bottom_hole(combo_dir: str) -> None:
+    """Record, beside the model, that its bottom copper is cut under the opening."""
+    with open(os.path.join(combo_dir, HOLE_MARK), "w", encoding="utf-8") as handle:
+        handle.write("The bottom copper is cut under the die's opening "
+                     "(copper_geometry.clear_cavity_area).\n")
+
+
+def bottom_copper_covers(copper: BoardCopper, u: float, v: float) -> bool:
+    """Whether a bottom-layer region of this board covers the point (u, v), in board
+    coordinates. copper.txt is relative to the board's centre, so (0, 0) is the die's
+    centre."""
+    return any(region.layer == BOTTOM and _inside(u, v, region.points)
+               for region in copper.regions)
+
+
+def _inside(u: float, v: float, points) -> bool:
+    """Even-odd ray cast: whether (u, v) lies inside the polygon `points`."""
+    inside = False
+    count = len(points)
+    for i in range(count):
+        (x1, y1), (x2, y2) = points[i], points[(i + 1) % count]
+        if (y1 > v) != (y2 > v) and u < x1 + (v - y1) * (x2 - x1) / (y2 - y1):
+            inside = not inside
+    return inside
 
 
 def copper_reaching_corners(copper: BoardCopper, half_length: float, half_side: float,

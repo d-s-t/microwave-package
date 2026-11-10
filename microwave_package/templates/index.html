@@ -348,10 +348,9 @@
 
   {% if has_vents_param %}
   <h4>Vent grooves</h4>
-  <p class="muted">Tick to cut the narrow grooves that let the air trapped under the die (the pedestal
-    recess) and in the screw bores out of the box's side (<code>vents_on = 1</code>). They lie below
-    the board's ground plane and are far below cutoff, so they should not move S21 or the modes. Their
-    size is in the &ldquo;Vent grooves&rdquo; group above.</p>
+  <p class="muted">Vents are cut in the box after manufacturing, so the simulations stay vent-free: a
+    run with the grooves ticked is refused. The grooves (<code>vents_on = 1</code>) let the air
+    trapped under the die (the pedestal recess) and in the screw bores out of the box's side.</p>
   <label><input type="checkbox" name="vents_on" value="1"
     {% if vents_ticked %}checked{% endif %}> Vent grooves</label>
   {% endif %}
