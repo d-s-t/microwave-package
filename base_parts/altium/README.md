@@ -297,9 +297,11 @@ ground plane, trace and back plane all ran straight across the hole.
 
 Everything that used to cross it now stops at it — the centre conductor picks up
 again on the far side, both coplanar planes step out around it, and the back
-plane is split into four pieces where the cut goes through. (Four, not one with a
-hole in it: `ExportCopper` reads `GetMainContour`, so a region's interior holes
-do not survive the export.)
+plane is split into four pieces around the opening, through or blind alike. The
+rule, from the project owner on 2026-11-10: a chip on the PCB has a matching hole
+in the bottom copper. Under a blind pocket only that copper goes; the laminate
+floor the pocket leaves stays. (Four, not one with a hole in it: `ExportCopper`
+reads `GetMainContour`, so a region's interior holes do not survive the export.)
 
 The opening is **larger than the die by `cavity_clearance` on every side** — a
 die and a milled pocket of equal size do not assemble. Depth gets no matching

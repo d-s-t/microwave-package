@@ -573,10 +573,16 @@ End;
 
 { The plane on the far face of the board.
 
-  A single rectangle where the die's opening is blind -- the pocket
-  takes metal off the TOP of the board and the floor underneath is still
-  there -- and four rectangles around the opening where it goes right
-  through, because there the far face is missing too.
+  Where the die has an opening, through or blind, the bottom copper has a
+  matching hole under it: the same outline as the opening, so four
+  rectangles go round it. A blind pocket takes only the copper -- the
+  laminate floor the pocket leaves underneath is not touched. The rule is
+  the project owner's, decided 2026-11-10: when there is a chip on the
+  PCB there must be a matching hole in the copper of the bottom.
+
+  With no opening (CavHalfL = 0, the bare board) the plane is one whole
+  rectangle. BuildBoard does not call this for the die, which carries
+  metal on one face only.
 
   Four rectangles rather than one with a hole in it, for the same reason
   the coplanar planes bite the opening out of their own outline: a
@@ -1681,13 +1687,13 @@ End;
   ChipCopperInset, so the die's own copper does not reach the edge --
   see ChipCopperInset's comment for why.
 
-  CavHalfL/CavHalfS are the die's opening, and CavThrough says whether
-  it goes right through -- which decides only whether the plane on the
-  far face has to go round it. Both zero on the die itself. }
+  CavHalfL/CavHalfS are the die's opening, through or blind alike: the
+  plane on the far face goes round it either way (see AddBackPlane).
+  Both zero on the die itself and on a bare board. }
 Procedure BuildBoard(Board : IPCB_Board; HalfL, HalfS, CopperHalfL, CopperHalfS,
                      Trace, Gap, TraceHalfL, FillHalfL,
                      LaunchX, VoidR, SlotHalf, LandHalf,
-                     CavHalfL, CavHalfS : Double; CavThrough : Boolean;
+                     CavHalfL, CavHalfS : Double;
                      WantBackPlane : Boolean);
 Var
     GndInner : Double;
@@ -1755,17 +1761,13 @@ Begin
       put a conductor between the die and the board that the real part
       does not have, right where the fields are strongest.
 
-      A through cutout takes the far face with it, so the plane there
-      has to go round the opening. A blind pocket does not: it is milled
-      from the top and the floor underneath is still board, so the plane
-      stays whole -- which is also what makes that floor worth leaving. }
+      Wherever the board has an opening, blind or through, the plane on
+      the far face goes round it: a chip on the PCB has a matching hole in
+      the bottom copper (the project owner's rule, 2026-11-10). With no
+      opening CavHalfL is 0, and AddBackPlane draws the whole plane, so
+      the bare board takes this same call. }
     If WantBackPlane Then
-    Begin
-        If CavThrough Then
-            AddBackPlane(Board, CopperHalfL, CopperHalfS, CavHalfL, CavHalfS)
-        Else
-            AddBackPlane(Board, CopperHalfL, CopperHalfS, 0.0, 0.0);
-    End;
+        AddBackPlane(Board, CopperHalfL, CopperHalfS, CavHalfL, CavHalfS);
 End;
 
 { Count what is actually on the board, in memory, before it is saved.
@@ -1984,7 +1986,7 @@ Begin
                    ParamOf(P, 'smp_land_half', 2.65),
                    { the die's opening, which the trace and both planes
                      have to keep out of }
-                   CavHalfL, CavHalfS, CavThrough,
+                   CavHalfL, CavHalfS,
                    True);
         Say('package_body=ok');
     Except
@@ -2216,7 +2218,7 @@ Begin
                          its ground planes stay plain rectangles }
                        0.0, 0.0, 0.0, 0.0,
                        { and no opening: the die is what goes IN one }
-                       0.0, 0.0, False,
+                       0.0, 0.0,
                        False);
             Say('chip_body=ok');
         Except
