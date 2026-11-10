@@ -39,7 +39,7 @@ class TestMakeVariantParent(unittest.TestCase):
         with open(FIXTURE, encoding="utf-8") as f:
             self.tv0_text = f.read()
         self.tv0 = self._parent("run_tv0", self.tv0_text, 1.2)  # TV0: the 1.2 mm channel
-        self.pocket = self._parent("run_tv0b", self.tv0_text, 2.7)  # TV0b: the 2.7 mm pocket
+        self.pocket = self._parent("run_tv0b", self.tv0_text, 2.65)  # TV0b: the 2.65 mm pocket
         self.copper = {}
         for name in ("TV1", "TV3"):
             folder = os.path.join(self.work, "variants", name)
@@ -83,7 +83,7 @@ class TestMakeVariantParent(unittest.TestCase):
         self.assertEqual(run.config["label"], "TV3: matched stack and wave")
         for key in ("part_of", "part_role", "refines_run_id"):
             self.assertNotIn(key, run.config)
-        self.assertEqual(run.config["parameter_defaults"]["route_width"], 2.7, "the parent's pocket is kept")
+        self.assertEqual(run.config["parameter_defaults"]["route_width"], 2.65, "the parent's pocket is kept")
         combo = run.state["combos"]["default"]
         self.assertEqual(combo["step_status"], "done")
         self.assertEqual(combo["altium_status"], "done")
@@ -101,17 +101,23 @@ class TestMakeVariantParent(unittest.TestCase):
         self.assertEqual(run.state["combos"]["default"]["step_status"], "done")
 
     def test_a_wider_pocket_is_written_and_the_lid_is_left_for_the_pipeline_to_rebuild(self):
-        run_dir = mvp.make_parent(self.tv0, self.copper["TV3"], self.runs, "TV3 at 2.7", route_width=2.7)
+        run_dir = mvp.make_parent(self.tv0, self.copper["TV3"], self.runs, "TV3 at 2.65", route_width=2.65)
         models = os.path.join(run_dir, "models", "default")
         self.assertFalse(os.path.isfile(os.path.join(models, mvp.STEP_FILES["lid_inside"])))
         with open(os.path.join(models, "dimensions.txt"), encoding="utf-8") as f:
-            self.assertIn('"route_width"= 2.7', f.read())
+            self.assertIn('"route_width"= 2.65', f.read())
         with open(os.path.join(run_dir, "run_config.json"), encoding="utf-8") as f:
-            self.assertEqual(json.load(f)["parameter_defaults"]["route_width"], 2.7)
+            self.assertEqual(json.load(f)["parameter_defaults"]["route_width"], 2.65)
         with open(os.path.join(run_dir, "state.json"), encoding="utf-8") as f:
             combo = json.load(f)["combos"]["default"]
         self.assertEqual(combo["step_status"], "pending")
         self.assertEqual(combo["step_paths"], {})
+
+    def test_the_channel_comes_from_the_parent_run(self):
+        narrow = self._parent("run_tv0b_narrow", self.tv0_text, 2.5)
+        with self.assertRaises(mvp.VariantRefused):
+            mvp.make_parent(narrow, self.copper["TV3"], self.runs, "TV3 on a 2.5 mm parent")
+        self.assertEqual(os.listdir(self.runs), [])
 
     def test_a_pocket_too_narrow_for_the_copper_is_refused(self):
         with self.assertRaises(mvp.VariantRefused):
@@ -120,7 +126,7 @@ class TestMakeVariantParent(unittest.TestCase):
 
     def test_a_parent_that_differs_outside_the_section_is_not_the_reference(self):
         changed = self.tv0_text.replace("pad|top|14.4|-2|0.5|0.5|90", "pad|top|14.4|-2|0.6|0.5|90")
-        other = self._parent("run_other", changed, 2.7)
+        other = self._parent("run_other", changed, 2.65)
         with self.assertRaises(mvp.VariantRefused) as ctx:
             mvp.make_parent(other, self.copper["TV3"], self.runs, "TV3 on a different board")
         self.assertIn("differential reference", str(ctx.exception))

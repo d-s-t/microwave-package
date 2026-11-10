@@ -833,13 +833,12 @@ def tv2_taper() -> Route:
 
 
 # ----------------------------------------------------------------- the routed family (TV3..TV5)
-# The 12 mm pocket is not buildable (the SMP window check). The routed family lives in the
-# 2.7 mm relief channel (route_width 2.7, route_clearence 0.3): the copper edge must stay
-# POCKET_MARGIN inside the wall, which leaves a centre line within about +-0.9 mm of the axis.
+# The routed family lives in the relief channel of its parent run (TV0b: route_width 2.65 mm, route_clearence
+# 0.3). The channel is not assumed here: the generator reads route_width from the parent's dimensions.txt
+# and checks each variant's CPW footprint against it. The 12 mm and 2.7 mm channels both failed the layout
+# check (the SMP window check accepts up to 2.69 mm).
 # Every corner is a stack or a bump: a route that starts and ends on the axis has an even
 # number of 90 degree corners, so a stack of three cannot close; a bump of four corners can.
-POCKET_WIDTH = 2.7
-POCKET_HALF = POCKET_WIDTH / 2.0
 POCKET_MARGIN = 0.15  # the CPW footprint (trace and both gaps) stays this far inside the lid's wall
 BUMP_H = 0.8  # a stack's bump height on the centre line
 BUMP_W = 0.8  # a stack's top width: four corners within 2.4 mm
@@ -1016,14 +1015,35 @@ def corner_prediction(width: float = TRACE_W, gap: float = GAP) -> dict:
     }
 
 
+def route_width_of_parent(copper_path: str) -> float:
+    """The lid's route_width of the run that owns this copper.txt (its models/<combo>/dimensions.txt)."""
+    from . import equations
+
+    dims = os.path.join(os.path.dirname(os.path.abspath(copper_path)), "dimensions.txt")
+    if not os.path.isfile(dims):
+        raise ValueError(f"{copper_path}: no dimensions.txt beside it, so the parent's channel is unknown")
+    with open(dims, encoding="utf-8") as f:
+        values = equations.get_numeric_parameters(f.read())
+    if "route_width" not in values:
+        raise ValueError(f"{dims}: no route_width")
+    return float(values["route_width"])
+
+
 def _main(argv: Optional[Sequence[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="Write the TV1..TV5 copper.txt variants from TV0's.")
     parser.add_argument("--straight", required=True, help="TV0's copper.txt: the base for TV1 and TV2")
-    parser.add_argument("--pocket", help="the 2.7 mm pocket parent's copper.txt: the base for TV3 to TV5 "
-                                         "(default: --straight). It must agree with --straight outside the section.")
+    parser.add_argument("--pocket", help="the pocket parent's copper.txt (TV0b): the base for TV3 to TV5. Its "
+                                         "dimensions.txt gives the channel. It must agree with --straight outside "
+                                         "the section.")
     parser.add_argument("--out", required=True, help="folder for <TVn>/copper.txt and variant.json")
     parser.add_argument("--only", nargs="*", help="variant names (default: all)")
     args = parser.parse_args(argv)
+    try:
+        straight_width = route_width_of_parent(args.straight)
+        pocket_width = route_width_of_parent(args.pocket) if args.pocket else None
+    except ValueError as exc:
+        print(f"test_lines: {exc}", file=sys.stderr)
+        return 2
     with open(args.straight, encoding="utf-8") as f:
         straight = f.read()
     pocket = straight
@@ -1038,17 +1058,30 @@ def _main(argv: Optional[Sequence[str]] = None) -> int:
         if args.only and name not in args.only:
             continue
         route = make()
-        base = straight if name in ("TV1", "TV2") else pocket
+        needs_pocket = name not in ("TV1", "TV2")
+        if needs_pocket and pocket_width is None:
+            print(f"test_lines: {name} needs the pocket parent (--pocket): its channel is the parent's route_width, "
+                  "and TV0's channel is too narrow for it", file=sys.stderr)
+            return 2
+        channel = pocket_width if needs_pocket else straight_width
+        clearance = channel / 2.0 - route.footprint_extent()
+        if clearance < POCKET_MARGIN - 1e-9:
+            print(f"test_lines: {name}: the CPW footprint clears the {channel:g} mm channel's wall by "
+                  f"{clearance:.3f} mm, under the {POCKET_MARGIN} mm rule", file=sys.stderr)
+            return 2
+        base = pocket if needs_pocket else straight
         folder = os.path.join(args.out, name)
         text, report = write_variant(base, route, os.path.join(folder, "copper.txt"))
         if name in ("TV1", "TV2"):
             parent_label = "TV0"
         elif args.pocket:
-            parent_label = "TV0b (route_width 2.7)"
+            parent_label = f"TV0b (route_width {pocket_width:g} from its dimensions.txt)"
         else:
-            parent_label = "TV0 copy (TV0b pending: copper written from TV0)"
-        meta = {"name": name, "parent": parent_label,
+            parent_label = "TV0b"
+        meta = {"name": name, "parent": parent_label, "channel_route_width_mm": channel,
+                "wall_clearance_mm": clearance,
                 "length_mm": route.length, "lateral_extent_mm": route.lateral_extent(),
+                "footprint_extent_mm": route.footprint_extent(),
                 "vertices": [list(p) for p in route.vertices], "widths": list(route.widths),
                 "joints": list(route.joints), "groups": [list(g) for g in route.groups],
                 "sections": section_truth(route), "features": features(route),

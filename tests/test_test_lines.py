@@ -15,6 +15,7 @@ from microwave_package.design import test_lines as tl
 
 FIXTURE = os.path.join(os.path.dirname(__file__), "fixtures", "test_lines", "tv0_copper.txt")
 TV0_TRACK = "track|top|-13.5|0|13.5|0|0.48"
+TV0B_CHANNEL = 2.65  # TV0b's route_width, from its own dimensions.txt (the generator reads it at run time)
 
 
 def _tv0_text() -> str:
@@ -109,14 +110,14 @@ class TestRoutes(unittest.TestCase):
                         2 * tl.RESOLUTION_MM)
 
     def test_the_routed_lines_leave_the_straight_lid_channel_and_fit_the_pocket(self):
-        """TV3 to TV5 are outside TV0's 1.2 mm channel, so they need the 2.7 mm pocket. Their copper edge
+        """TV3 to TV5 are outside TV0's 1.2 mm channel, so they need the 2.65 mm pocket. Their copper edge
         footprint (trace and both gaps) must stay POCKET_MARGIN inside the pocket's wall."""
         self.assertLessEqual(tl.tv1_step().lateral_extent(), tl.LID_CHANNEL / 2.0)
         self.assertLessEqual(tl.tv2_taper().lateral_extent(), tl.LID_CHANNEL / 2.0)
         for make in (tl.tv3_matched, tl.tv4_unmatched, tl.tv5_combined):
             route = make()
             self.assertGreater(route.lateral_extent(), tl.LID_CHANNEL / 2.0, route.name)
-            self.assertLessEqual(route.footprint_extent(), tl.POCKET_HALF - tl.POCKET_MARGIN, route.name)
+            self.assertLessEqual(route.footprint_extent(), TV0B_CHANNEL / 2.0 - tl.POCKET_MARGIN, route.name)
 
     def test_the_taper_is_smooth_and_the_step_is_eight_millimetres(self):
         taper = tl.tv2_taper()
@@ -243,15 +244,60 @@ class TestCopper(unittest.TestCase):
         # one cylinder per via, and two rounded ends per track (TV0 shows the same 2 for its one track)
         self.assertEqual(len(modeler.cylinders) - 2 * len(board.tracks), len(board.vias))
 
+    def _parent_copper(self, folder, name, text, route_width):
+        """A parent run folder: its copper.txt and its dimensions.txt, which give the channel the generator reads."""
+        run = os.path.join(folder, name)
+        os.makedirs(run, exist_ok=True)
+        with open(os.path.join(run, "copper.txt"), "w", encoding="utf-8") as f:
+            f.write(text)
+        with open(os.path.join(run, "dimensions.txt"), "w", encoding="utf-8") as f:
+            f.write(f'"route_width"= {route_width:g}\n"route_clearence"= 0.3\n')
+        return os.path.join(run, "copper.txt")
+
+    def test_the_pocket_channel_is_read_from_the_parent_and_checked(self):
+        folder = tempfile.mkdtemp(prefix="test_lines_channel_")
+        self.addCleanup(shutil.rmtree, folder, True)
+        straight = self._parent_copper(folder, "tv0", self.base, 1.2)
+        pocket = self._parent_copper(folder, "tv0b", self.base, TV0B_CHANNEL)
+        import contextlib
+        import io
+        import json as _json
+
+        out = os.path.join(folder, "out")
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(tl._main(["--straight", straight, "--pocket", pocket, "--out", out,
+                                       "--only", "TV3"]), 0)
+        with open(os.path.join(out, "TV3", "variant.json"), encoding="utf-8") as f:
+            meta = _json.load(f)
+        self.assertEqual(meta["channel_route_width_mm"], TV0B_CHANNEL, "the channel is the parent's, not assumed")
+        self.assertGreater(meta["wall_clearance_mm"], tl.POCKET_MARGIN)
+        # the same variant on a narrower parent is refused: the channel comes from the parent
+        narrow = self._parent_copper(folder, "tv0b_narrow", self.base, 2.5)
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
+            code = tl._main(["--straight", straight, "--pocket", narrow, "--out", out, "--only", "TV3"])
+        self.assertEqual(code, 2)
+        self.assertIn("wall", err.getvalue())
+
+    def test_a_routed_variant_needs_the_pocket_parent(self):
+        folder = tempfile.mkdtemp(prefix="test_lines_needs_")
+        self.addCleanup(shutil.rmtree, folder, True)
+        straight = self._parent_copper(folder, "tv0", self.base, 1.2)
+        import contextlib
+        import io
+
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
+            code = tl._main(["--straight", straight, "--out", os.path.join(folder, "out"), "--only", "TV3"])
+        self.assertEqual(code, 2)
+        self.assertIn("needs the pocket parent", err.getvalue())
+
     def test_the_pocket_parent_must_agree_with_tv0_outside_the_section(self):
         folder = tempfile.mkdtemp(prefix="test_lines_parent_")
         self.addCleanup(shutil.rmtree, folder, True)
-        straight = os.path.join(folder, "tv0.txt")
-        pocket = os.path.join(folder, "tv0b.txt")
-        with open(straight, "w", encoding="utf-8") as f:
-            f.write(self.base)
-        with open(pocket, "w", encoding="utf-8") as f:
-            f.write(self.base.replace("pad|top|14.4|-2|0.5|0.5|90", "pad|top|14.4|-2|0.6|0.5|90"))
+        straight = self._parent_copper(folder, "tv0", self.base, 1.2)
+        changed = self.base.replace("pad|top|14.4|-2|0.5|0.5|90", "pad|top|14.4|-2|0.6|0.5|90")
+        pocket = self._parent_copper(folder, "tv0b", changed, TV0B_CHANNEL)
         import contextlib
         import io
 
@@ -270,9 +316,7 @@ class TestCopper(unittest.TestCase):
     def test_the_command_line_writes_the_variant_folders(self):
         folder = tempfile.mkdtemp(prefix="test_lines_")
         self.addCleanup(shutil.rmtree, folder, True)
-        src = os.path.join(folder, "copper.txt")
-        with open(src, "w", encoding="utf-8") as f:
-            f.write(self.base)
+        src = self._parent_copper(folder, "tv0", self.base, 1.2)
         import contextlib
         import io
 

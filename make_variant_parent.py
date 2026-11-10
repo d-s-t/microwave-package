@@ -5,7 +5,8 @@ refined and solved like any run, without rebuilding the box and the lid.
     python make_variant_parent.py <parent run folder> <variant copper.txt> --label "TV3: ..." [--route-width W]
 
 The parent is a finished bare-board run whose copper is the straight reference: TV0 for TV1 and TV2,
-and TV0b (the same board with route_width 2.7) for TV3 to TV5. The script checks that the variant and
+and TV0b (the same board at its own route_width, 2.65 mm) for TV3 to TV5. The channel always comes from the
+parent run's dimensions.txt. The script checks that the variant and
 the parent agree outside the test section, so the parent is the variant's differential reference.
 
 What it writes (a new folder under the runs root, never over an existing one):
@@ -96,7 +97,7 @@ def make_parent(source_run: str, copper_path: str, runs_root: str, label: str,
     if test_lines.section_free_lines(variant_text) != test_lines.section_free_lines(parent_text):
         raise VariantRefused(
             "the parent's copper differs from the variant's outside the test section, so the parent is not "
-            "its differential reference (TV1 and TV2 need TV0; TV3 to TV5 need TV0b, the same board at route_width 2.7)."
+            "its differential reference (TV1 and TV2 need TV0; TV3 to TV5 need TV0b, the same board at its own route_width)."
         )
     reach = signal_reach(copper_path) + test_lines.GAP  # the CPW footprint: trace, both gaps
     half_channel = width / 2.0
@@ -191,7 +192,7 @@ def make_parent(source_run: str, copper_path: str, runs_root: str, label: str,
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="Make a standalone run from a finished TV0 run and a variant copper.txt.")
-    parser.add_argument("parent", help="the parent run folder: TV0, or TV0b for the 2.7 mm pocket")
+    parser.add_argument("parent", help="the parent run folder: TV0, or TV0b for the pocket (its route_width sets the channel)")
     parser.add_argument("copper", help="the variant's copper.txt")
     parser.add_argument("--label", required=True, help="the run's label, as the web app shows it")
     parser.add_argument("--route-width", type=float, help="widen the lid's relief channel to this width (mm)")
