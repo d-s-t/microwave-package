@@ -1,0 +1,7 @@
+"pcb_length"= 50.0	' length of the board in the direction of the feedline
+"pcb_side"= 25   	' length of the board across the feedline
+"pcb_width"= 0.508	' thickness of the PCB (508 um)
+"pcb_corner_radius"= 1.0	' radius of the four vertical corners of the PCB, in mm
+"chip_length"= 6.3	' length of the chip in the direction of the feedline
+"chip_side"= 6.3	' length of the chip across the feedline
+"floor_width" = IIF ( "screws_on" > 0.5 , 1.0 , 2.0 ) ' an expression, not a number: not read
