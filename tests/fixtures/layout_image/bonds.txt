@@ -1,0 +1,7 @@
+# wire bonds, millimetres, relative to the board centre
+# kind|pcb_x|pcb_y|chip_x|chip_y
+signal|-3.5|-0.12|-2.85|-0.05
+signal|-3.5|0.12|-2.85|0.05
+signal|3.5|-0.12|2.85|-0.05
+signal|3.5|0.12|2.85|0.05
+ground|-3.5|0.58791|-2.85|0.58791
