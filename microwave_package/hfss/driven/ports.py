@@ -143,7 +143,7 @@ CONNECTOR_MODES = [
      "help": "Every connector body (pin, shell, bead) becomes vacuum and no "
              "termination is made. Launch-type planes only."},
     {"value": CONNECTORS_DIELECTRIC, "label": "Non-conductive (ignored)",
-     "help": "Every connector body becomes the bead's dielectric (SMP_LCP), "
+     "help": "Every connector body becomes Teflon (eps 2.1), "
              "so nothing conducts there, and no termination is made. "
              "Launch-type planes only."},
 ]
@@ -252,12 +252,8 @@ def _measurement_port_name(index: str) -> str:
 
 def _neutralise_connectors(hfss, mode: str, log) -> None:
     """Take every `connector_*` body out of the measurement: vacuum, or the
-    bead's non-conductive material. No termination is made."""
-    from ..model_builder import CONNECTOR_DIELECTRIC_MATERIAL, _ensure_connector_dielectric_material
-
-    material = "vacuum" if mode == CONNECTORS_VACUUM else CONNECTOR_DIELECTRIC_MATERIAL
-    if mode == CONNECTORS_DIELECTRIC:
-        _ensure_connector_dielectric_material(hfss, log)
+    a Teflon dielectric. No termination is made."""
+    material = "vacuum" if mode == CONNECTORS_VACUUM else "Teflon (tm)"
     names = [n for n in hfss.modeler.object_names if n.startswith("connector_")]
     if not names:
         raise PortPlacementError("No connector_* bodies in the model to change to " + material + ".")
