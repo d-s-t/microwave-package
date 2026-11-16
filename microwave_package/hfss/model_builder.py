@@ -1757,6 +1757,13 @@ def validate_saved_model(project_path: str, solution_type: str,
             return (f"reopened, {os.path.basename(project_path)} has an empty '{vacuum}' -- "
                     "a boolean in its history failed on replay. There is no air to solve in.")
         overlaps = dielectric_overlaps(hfss)
+        # A launch run that ignores its connectors (launch_connectors vacuum or
+        # dielectric) makes the pin and shell non-conductive bodies that share
+        # the vacuum's volume on purpose: the connector is meant to be what
+        # fills it, and the vacuum under it is the same or a harmless overlap.
+        overlaps = [o for o in overlaps if not (
+            (o[0] == vacuum and o[1].startswith("connector_"))
+            or (o[1] == vacuum and o[0].startswith("connector_")))]
         if overlaps:
             return ("dielectric bodies overlap, which HFSS resolves silently with material "
                     "override on: " + ", ".join(
