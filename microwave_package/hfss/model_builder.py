@@ -1062,14 +1062,17 @@ def build_layout(hfss, combo_dir: str, dimensions_txt_content: str,
     # the launch is represented rather than left as bare copper. They
     # rest on the board's actual top surface -- the copper, not the bare
     # substrate underneath it (stack.pcb_top).
-    place_connectors(
-        hfss, frame,
-        board_top=stack.pcb_copper_top,
-        half_length=pcb_length / 2.0,
-        port_space=v.get("port_space", 1.5),
-        count=v.get("port_count", 2),
-        log=log,
-    )
+    if CONNECTOR_NEUTRAL_MATERIAL == "removed":
+        log("Connectors are not added to the model (launch_connectors = removed).")
+    else:
+        place_connectors(
+            hfss, frame,
+            board_top=stack.pcb_copper_top,
+            half_length=pcb_length / 2.0,
+            port_space=v.get("port_space", 1.5),
+            count=v.get("port_count", 2),
+            log=log,
+        )
 
     # The wires come from the same layout file Altium placed the pads
     # from, so each one lands on its pad -- on the copper, again, not the
@@ -1672,10 +1675,7 @@ def build_model(
                 sheets=layout.sheets if layout else None,
             )
             if CONNECTOR_NEUTRAL_MATERIAL == "removed":
-                _gone = [n for n in hfss.modeler.object_names if n.startswith("connector_")]
-                hfss.modeler.delete(_gone)
-                objects_dict = {k: o for k, o in objects_dict.items() if o.name not in _gone}
-                log(f"Connector bodies removed: {', '.join(_gone)}.")
+                pass
             elif CONNECTOR_NEUTRAL_MATERIAL:
                 # After the material rules, which give pin and shell their metal.
                 for _name in [n for n in hfss.modeler.object_names if n.startswith("connector_")]:
