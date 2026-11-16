@@ -1669,6 +1669,15 @@ def build_model(
                 hfss, analysis_settings["materials"], log=log,
                 sheets=layout.sheets if layout else None,
             )
+            if CONNECTOR_NEUTRAL_MATERIAL:
+                # After the material rules, which give pin and shell their metal.
+                for _name in [n for n in hfss.modeler.object_names if n.startswith("connector_")]:
+                    try:
+                        hfss.modeler[_name].material_name = CONNECTOR_NEUTRAL_MATERIAL
+                        hfss.modeler[_name].solve_inside = True
+                    except Exception as exc:
+                        log(f"WARNING: {_name} could not be set to {CONNECTOR_NEUTRAL_MATERIAL} ({exc}).")
+                log(f"All connector bodies are {CONNECTOR_NEUTRAL_MATERIAL} (connectors ignored).")
             carve_vacuum(hfss, objects_dict, log=log)
             object_names = {key: obj.name for key, obj in objects_dict.items()}
 
