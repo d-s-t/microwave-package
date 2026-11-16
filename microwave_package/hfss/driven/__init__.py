@@ -115,6 +115,10 @@ FIELDS: List[Dict[str, Any]] = [
         "name": "reference_plane", "label": "Reference plane", "kind": "select",
         "default": ports.DEFAULT_REFERENCE_PLANE, "options": ports.REFERENCE_PLANES,
     },
+    {
+        "name": "launch_connectors", "label": "Connectors (lumped planes)", "kind": "select",
+        "default": ports.CONNECTORS_KEPT, "options": ports.CONNECTOR_MODES,
+    },
 ]
 
 RESULT_FIELDS: Dict[str, str] = {
