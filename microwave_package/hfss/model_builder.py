@@ -1387,7 +1387,7 @@ def carve_vacuum(hfss, objects_dict, log=logger.info) -> None:
     for obj in hfss.modeler.solid_objects:
         if obj.name.lower() == "vacuum":
             continue
-        ignored_connector = (CONNECTOR_NEUTRAL_MATERIAL and obj.name.startswith("connector_")
+        ignored_connector = (CONNECTOR_NEUTRAL_MATERIAL not in (None, "removed") and obj.name.startswith("connector_")
                              and not obj.name.endswith("_dielectric"))
         (tools if getattr(obj, "solve_inside", True) and not ignored_connector else metal).append(obj.name)
     if not tools:
@@ -1660,7 +1660,7 @@ def build_model(
             _mode = analysis_settings.get("launch_connectors") or "kept"
             if analysis_settings.get("reference_plane") == "connector":
                 _mode = "kept"
-            CONNECTOR_NEUTRAL_MATERIAL = {"vacuum": "vacuum", "dielectric": "Teflon (tm)"}.get(_mode)
+            CONNECTOR_NEUTRAL_MATERIAL = {"vacuum": "vacuum", "dielectric": "Teflon (tm)", "removed": "removed"}.get(_mode)
             layout = build_layout(
                 hfss, combo_dir, dimensions_txt_content, lid_inside_names,
                 include_wirebonds=analysis_settings["materials"].get("include_wirebonds", True),
@@ -1671,7 +1671,12 @@ def build_model(
                 hfss, analysis_settings["materials"], log=log,
                 sheets=layout.sheets if layout else None,
             )
-            if CONNECTOR_NEUTRAL_MATERIAL:
+            if CONNECTOR_NEUTRAL_MATERIAL == "removed":
+                _gone = [n for n in hfss.modeler.object_names if n.startswith("connector_")]
+                hfss.modeler.delete(_gone)
+                objects_dict = {k: o for k, o in objects_dict.items() if o.name not in _gone}
+                log(f"Connector bodies removed: {', '.join(_gone)}.")
+            elif CONNECTOR_NEUTRAL_MATERIAL:
                 # After the material rules, which give pin and shell their metal.
                 for _name in [n for n in hfss.modeler.object_names if n.startswith("connector_")]:
                     try:

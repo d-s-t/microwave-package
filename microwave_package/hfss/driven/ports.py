@@ -135,6 +135,7 @@ DEFAULT_REFERENCE_PLANE = REFERENCE_PLANE_CONNECTOR
 # line runs on past the lumped port to a board edge with nothing behind it.
 CONNECTORS_KEPT = "kept"
 CONNECTORS_VACUUM = "vacuum"
+CONNECTORS_REMOVED = "removed"
 CONNECTORS_DIELECTRIC = "dielectric"
 CONNECTOR_MODES = [
     {"value": CONNECTORS_KEPT, "label": "Kept, terminated",
@@ -142,6 +143,9 @@ CONNECTOR_MODES = [
     {"value": CONNECTORS_VACUUM, "label": "Vacuum (ignored)",
      "help": "Every connector body (pin, shell, bead) becomes vacuum and no "
              "termination is made. Launch-type planes only."},
+    {"value": CONNECTORS_REMOVED, "label": "Removed (ignored)",
+     "help": "Every connector body is deleted before the air region is cut, so the "
+             "air fills where they were, and no termination is made. Launch-type planes only."},
     {"value": CONNECTORS_DIELECTRIC, "label": "Non-conductive (ignored)",
      "help": "Every connector body becomes Teflon (eps 2.1), "
              "so nothing conducts there, and no termination is made. "
@@ -254,7 +258,7 @@ def _neutralise_connectors(hfss, mode: str, log) -> None:
     """Nothing to build: the connector bodies already took their material
     when they were placed (model_builder.CONNECTOR_NEUTRAL_MATERIAL). Only
     the termination is skipped."""
-    if not [n for n in hfss.modeler.object_names if n.startswith("connector_")]:
+    if mode != CONNECTORS_REMOVED and not [n for n in hfss.modeler.object_names if n.startswith("connector_")]:
         raise PortPlacementError("No connector_* bodies in the model to ignore.")
     log(f"Connectors ignored ({mode}); no connector termination is made.")
 
