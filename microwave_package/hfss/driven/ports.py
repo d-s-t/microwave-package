@@ -265,12 +265,6 @@ def _neutralise_connectors(hfss, mode: str, log) -> None:
         obj = hfss.modeler[name]
         obj.material_name = material
         obj.solve_inside = True
-    # The model's vacuum overlaps the pin and shell (only the bead was ever
-    # carved out of it, because brass is not solved inside). Carve them all
-    # out so no two solved bodies share volume.
-    vacuum = next((n for n in hfss.modeler.object_names if n.lower() == "vacuum"), None)
-    if vacuum is not None:
-        hfss.modeler.subtract(vacuum, names, keep_originals=True)
     log(f"Connector bodies changed to {material}: {', '.join(names)}. No connector termination is made.")
 
 
