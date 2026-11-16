@@ -1390,8 +1390,7 @@ def carve_vacuum(hfss, objects_dict, log=logger.info) -> None:
     for obj in hfss.modeler.solid_objects:
         if obj.name.lower() == "vacuum":
             continue
-        ignored_connector = (CONNECTOR_NEUTRAL_MATERIAL not in (None, "removed") and obj.name.startswith("connector_")
-                             and not obj.name.endswith("_dielectric"))
+        ignored_connector = (CONNECTOR_NEUTRAL_MATERIAL not in (None, "removed") and obj.name.startswith("connector_"))
         (tools if getattr(obj, "solve_inside", True) and not ignored_connector else metal).append(obj.name)
     if not tools:
         return
@@ -1798,8 +1797,7 @@ def validate_saved_model(project_path: str, solution_type: str,
         # left out of the vacuum carve on purpose (Parasolid cannot cut them), so they
         # share the vacuum's volume; the override resolves it and it is reported in the run notes.
         overlaps = [o for o in overlaps if not (
-            vacuum in (o[0], o[1]) and any(n.startswith("connector_") and not n.endswith("_dielectric")
-                                           for n in (o[0], o[1])))]
+            vacuum in (o[0], o[1]) and any(n.startswith("connector_") for n in (o[0], o[1])))]
         if overlaps:
             return ("dielectric bodies overlap, which HFSS resolves silently with material "
                     "override on: " + ", ".join(
