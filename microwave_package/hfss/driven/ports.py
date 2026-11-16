@@ -251,17 +251,12 @@ def _measurement_port_name(index: str) -> str:
 
 
 def _neutralise_connectors(hfss, mode: str, log) -> None:
-    """Take every `connector_*` body out of the measurement: vacuum, or the
-    a Teflon dielectric. No termination is made."""
-    material = "vacuum" if mode == CONNECTORS_VACUUM else "Teflon (tm)"
-    names = [n for n in hfss.modeler.object_names if n.startswith("connector_")]
-    if not names:
-        raise PortPlacementError("No connector_* bodies in the model to change to " + material + ".")
-    for name in names:
-        obj = hfss.modeler[name]
-        obj.material_name = material
-        obj.solve_inside = True
-    log(f"Connector bodies changed to {material}: {', '.join(names)}. No connector termination is made.")
+    """Nothing to build: the connector bodies already took their material
+    when they were placed (model_builder.CONNECTOR_NEUTRAL_MATERIAL). Only
+    the termination is skipped."""
+    if not [n for n in hfss.modeler.object_names if n.startswith("connector_")]:
+        raise PortPlacementError("No connector_* bodies in the model to ignore.")
+    log(f"Connectors ignored ({mode}); no connector termination is made.")
 
 
 def _termination_name(index: str) -> str:

@@ -489,6 +489,13 @@ def _classify_connector_bodies(hfss, names: List[str]):
     return outer, centre, diel
 
 
+# Set by build_model for a launch-type run that ignores its connectors
+# (launch_connectors vacuum / dielectric): every connector body gets this
+# material when it is placed, so the vacuum carve sees them as ordinary
+# dielectrics and the later history replay stays sound.
+CONNECTOR_NEUTRAL_MATERIAL: Optional[str] = None
+
+
 def place_connectors(hfss, frame, board_top: float, half_length: float,
                      port_space: float, count: int, log=logger.info) -> List[str]:
     """Import the split SMP connector model once per port and set it on its launch.
@@ -606,6 +613,15 @@ def place_connectors(hfss, frame, board_top: float, half_length: float,
                     f"WARNING: {dielectric} could not be set to "
                     f"{CONNECTOR_DIELECTRIC_MATERIAL} ({exc}); it stays on the modeller default."
                 )
+
+        if CONNECTOR_NEUTRAL_MATERIAL:
+            for body in list(conductor_bodies) + ([dielectric] if dielectric else []):
+                try:
+                    hfss.modeler[body].material_name = CONNECTOR_NEUTRAL_MATERIAL
+                    hfss.modeler[body].solve_inside = True
+                except Exception as exc:
+                    log(f"WARNING: {body} could not be set to {CONNECTOR_NEUTRAL_MATERIAL} ({exc}).")
+            log(f"Connector bodies of {prefix} set to {CONNECTOR_NEUTRAL_MATERIAL} (connectors ignored).")
 
         placed.extend(bodies)
 
@@ -1638,6 +1654,11 @@ def build_model(
             # frame. Must happen BEFORE materials are assigned, or the new
             # bodies exist without any. lid_inside is placed and the vacuum
             # fill built in here too -- see build_layout's docstring.
+            global CONNECTOR_NEUTRAL_MATERIAL
+            _mode = analysis_settings.get("launch_connectors") or "kept"
+            if analysis_settings.get("reference_plane") == "connector":
+                _mode = "kept"
+            CONNECTOR_NEUTRAL_MATERIAL = {"vacuum": "vacuum", "dielectric": "Teflon (tm)"}.get(_mode)
             layout = build_layout(
                 hfss, combo_dir, dimensions_txt_content, lid_inside_names,
                 include_wirebonds=analysis_settings["materials"].get("include_wirebonds", True),
@@ -1757,13 +1778,6 @@ def validate_saved_model(project_path: str, solution_type: str,
             return (f"reopened, {os.path.basename(project_path)} has an empty '{vacuum}' -- "
                     "a boolean in its history failed on replay. There is no air to solve in.")
         overlaps = dielectric_overlaps(hfss)
-        # A launch run that ignores its connectors (launch_connectors vacuum or
-        # dielectric) makes the pin and shell non-conductive bodies that share
-        # the vacuum's volume on purpose: the connector is meant to be what
-        # fills it, and the vacuum under it is the same or a harmless overlap.
-        overlaps = [o for o in overlaps if not (
-            (o[0] == vacuum and o[1].startswith("connector_"))
-            or (o[1] == vacuum and o[0].startswith("connector_")))]
         if overlaps:
             return ("dielectric bodies overlap, which HFSS resolves silently with material "
                     "override on: " + ", ".join(
