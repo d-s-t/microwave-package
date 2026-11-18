@@ -30,6 +30,12 @@ FIELDS: List[Dict[str, Any]] = [
                 "the first real mode rather than on top of it.",
     },
     {
+        "name": "eigen_min_ghz", "label": "Lowest frequency to look at (GHz, 0 = estimate)",
+        "kind": "float", "default": 0.0,
+        "help": "The eigenmode solve finds the first modes at or above this. 0 picks a start "
+                "from the PCB size and the safety factor above.",
+    },
+    {
         "name": "connector_termination_ohm", "label": "Connector termination (ohm, 0 = off)",
         "kind": "float", "default": 0.0,
         "help": "Terminates each SMP connector in this resistance across its air bore, "

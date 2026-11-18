@@ -569,17 +569,21 @@ def _part_view(owner_id: str, part: dict) -> dict:
     refined solve whose sweep did not converge says so on its row."""
     eigen = part["kind"] == "eigen"
     field = part["kind"] == "field"
-    windows = "" if eigen or field else _fine_windows_text(part.get("windows", ""))
+    terminated = part["kind"] == "eigenmodes"
+    windows = "" if eigen or field or terminated else _fine_windows_text(part.get("windows", ""))
     refined_word, eigen_word, tone = _PART_WORDS.get(part["state"], _PART_WORDS["starting"])
     if eigen:
         label, word = "eigenmodes", eigen_word
+    elif terminated:
+        label, word = "terminated eigenmodes", eigen_word
     elif field:
         label, word = f"field image at {part['frequency_ghz']} GHz", _field_word(part["state"])
     else:
         label = f"refined solve: {windows}" if windows else "refined solve"
         word = refined_word
     solver = _part_solver(part)
-    anchor = "settings" if eigen else "field-images" if field else "refine"
+    anchor = ("settings" if eigen else "field-images" if field
+              else "eigenmodes" if terminated else "refine")
     return {
         "run_id": part["run_id"],
         "kind": part["kind"],
@@ -1172,6 +1176,7 @@ def run_status(run_id):
         views=plotting.VIEWS,
         refine=_refine_panel(run),
         field_panel=_field_panel(run),
+        eigen_panel=_eigen_panel(run),
         rows=_combo_rows(shown),
         phases=_phase_meta(),
         is_running=_is_running(run_id) or bool(elsewhere),
@@ -1282,6 +1287,39 @@ def _refine_panel(run) -> Optional[dict]:
     }
 
 
+def _eigen_panel(run) -> Optional[dict]:
+    """What the run page's "Eigenmodes of this model" section needs, or None for a run
+    that is not a driven one. Lists the eigenmode parts made from it with their modes
+    (frequency and Q, read from each part's own results); opens while one is going."""
+    if registry.solution_type_of(run.analysis_settings) != "DrivenModal":
+        return None
+    settings = run.analysis_settings
+    parts, opened = [], False
+    for child in companion.eigenmode_parts(run):
+        record = run_manager.part_record(child.run_id, child.config, child.state)
+        view = _part_view(run.run_id, record)
+        opened = opened or record["state"] not in run_manager.DONE_PART_STATES
+        modes = []
+        for combo_id in child.state.get("combos", {}):
+            for index, (freq, q) in enumerate(companion.modes_of(child, combo_id), start=1):
+                modes.append({"combo_id": combo_id, "mode": index, "freq_ghz": freq, "q": q})
+        parts.append({
+            "run_id": child.run_id, "word": view["word"], "tone": view["tone"],
+            "complete": view["complete"], "running": _is_running(child.run_id),
+            "error": child.state.get("error"), "combos": list(child.state["combos"]),
+            "modes_asked": child.analysis_settings.get("modes"),
+            "min_ghz": child.analysis_settings.get("eigen_min_ghz"), "modes": modes,
+        })
+    return {
+        "combos": companion.refinable_combos(run),
+        "parts": parts,
+        "open": opened,
+        "max_modes": companion.MAX_EIGEN_MODES,
+        "default_min": settings.get("f_start_ghz") or 0,
+        "impedance": settings.get("port_impedance_ohm") or 50.0,
+    }
+
+
 def _field_panel(run) -> Optional[dict]:
     """What the run page's field images section needs, or None when the run has
     nothing to draw from: it must be a driven run. Also lists the field image
@@ -1355,6 +1393,21 @@ def field_images_run(run_id):
         return redirect(url_for("run_status", run_id=run_id, error=str(complaint)) + "#field-images")
     _start_pipeline_thread(child)
     return redirect(url_for("run_status", run_id=run_id) + "#field-images")
+
+
+@app.route("/runs/<run_id>/eigenmodes", methods=["POST"])
+def eigenmodes_run(run_id):
+    """Start an eigenmode part: the same model as this driven run, solved for its modes
+    with the ports' load put back as terminations."""
+    run = Run.load(run_id)
+    try:
+        child = companion.create_eigenmode_part(
+            run, request.form.getlist("combo"), request.form.get("modes", companion.MAX_EIGEN_MODES),
+            request.form.get("min_ghz"))
+    except ValueError as complaint:
+        return redirect(url_for("run_status", run_id=run_id, error=str(complaint)) + "#eigenmodes")
+    _start_pipeline_thread(child)
+    return redirect(url_for("run_status", run_id=run_id) + "#eigenmodes")
 
 
 @app.route("/runs/<run_id>/field-images/<filename>")

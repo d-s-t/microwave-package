@@ -11,6 +11,11 @@ each bead open at its top (`_bore_section` without its cap) and puts an
 impedance boundary on that top face. A TEM wave in the bore then sees a load
 of that many ohms, so the modes are found with the connectors terminated. A
 boundary is not a port, so nothing here is reported as one.
+
+`eigen_terminate_ports` (set by the eigenmode child of a driven run, see
+workflow/companion.create_eigenmode_part) also puts the driven run's lumped
+ports back as lumped RLC boundaries of `port_impedance_ohm` on the same sheets
+(driven/ports.terminate_lumped_plane).
 """
 from __future__ import annotations
 
@@ -35,6 +40,12 @@ def place_terminations(hfss, layout, analysis_settings: Dict[str, Any], log=logg
             f"connector_termination_ohm is {ohm:g}. A connector's termination is a passive "
             "load, so the setting is 0 (off) or a positive resistance."
         )
+    if analysis_settings.get("eigen_terminate_ports") and layout is not None:
+        # The lumped planes of the driven model this run was made from: their
+        # 50 ohm becomes a lumped RLC on the same sheet. Done before the connector
+        # bores, so a run with both has both.
+        from ..driven import ports as driven_ports
+        driven_ports.terminate_lumped_plane(hfss, layout, analysis_settings, log=log)
     if ohm == 0:
         return []
     if layout is None:

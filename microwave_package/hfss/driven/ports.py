@@ -529,9 +529,59 @@ def _radial_integration_line(face, inner: float, outer: float) -> tuple:
     return start, stop
 
 
+RLC_PREFIX = "term_"
+
+
+def _attach_lumped(hfss, sheet: str, start, stop, ohm: float, name: str, as_rlc: bool,
+                   where: str) -> None:
+    """Put the excitation on one lumped sheet: a lumped port, or -- for an Eigenmode
+    run, which has no ports -- a lumped RLC of `ohm` ohms along the same integration
+    line, which is the same load the port renormalises to."""
+    try:
+        if as_rlc:
+            made = hfss.assign_lumped_rlc_to_sheet(
+                assignment=sheet, start_direction=[list(start), list(stop)],
+                name=RLC_PREFIX + name, rlc_type="Parallel", resistance=ohm,
+            )
+        else:
+            made = hfss.lumped_port(
+                assignment=sheet, integration_line=[start, stop], impedance=ohm,
+                name=name, renormalize=True,
+            )
+    except Exception as exc:
+        raise PortPlacementError(f"Could not create {where}: {exc}") from exc
+    if not made:
+        raise PortPlacementError(f"HFSS refused {where}.")
+
+
+def terminate_lumped_plane(hfss, layout, analysis_settings: Dict[str, Any], log=logger.info) -> List[str]:
+    """For an Eigenmode run: the driven run's 50 ohm at each of its lumped planes.
+
+    An eigenmode solve has no ports, so each lumped port of the driven model
+    becomes a lumped RLC (resistance only) on the same sheet and integration
+    line. Returns the boundary names. The connector plane has no lumped sheets
+    (its termination is the bore boundary, eigenmode/terminations.py).
+    """
+    plane = analysis_settings.get("reference_plane", DEFAULT_REFERENCE_PLANE)
+    impedance = float(analysis_settings.get("port_impedance_ohm", 50.0))
+    if layout is None:
+        raise PortPlacementError("An eigenmode termination needs the layout to put its sheets on.")
+    if plane == REFERENCE_PLANE_LAUNCH:
+        names = _launch_lumped_ports(hfss, layout, impedance, log=log, as_rlc=True)
+    elif plane == REFERENCE_PLANE_BONDS:
+        names = _bond_finger_ports(hfss, layout, impedance, log=log, as_rlc=True)
+    elif plane == REFERENCE_PLANE_CHIP:
+        names = _chip_ports(hfss, layout, impedance, log=log, as_rlc=True)
+    else:
+        return []
+    log(f"Eigenmode terminations ({plane} plane): lumped RLC {impedance:g} ohm at "
+        f"{', '.join(names)}, in place of the driven run's lumped ports.")
+    return [RLC_PREFIX + n for n in names]
+
+
 # --- the launch reference plane ---------------------------------------
 
-def _launch_lumped_ports(hfss, layout, impedance: float, log) -> List[str]:
+def _launch_lumped_ports(hfss, layout, impedance: float, log, as_rlc: bool = False) -> List[str]:
     """A lumped port under the trace at each end of the CPW.
 
     Placed just inboard of the launch, through the substrate. See
@@ -544,7 +594,7 @@ def _launch_lumped_ports(hfss, layout, impedance: float, log) -> List[str]:
     inner_edge = smp.launch_inner_edge(half_length, port_space)
     return _lumped_ports(
         hfss, layout, impedance, inner_edge,
-        layout.stack.pcb_bottom, layout.stack.pcb_top, log=log,
+        layout.stack.pcb_bottom, layout.stack.pcb_top, log=log, as_rlc=as_rlc,
     )
 
 
@@ -564,17 +614,17 @@ def _signal_bond_ends(layout) -> tuple:
     return abs(signal[0].pcb_x), abs(signal[0].chip_x)
 
 
-def _bond_finger_ports(hfss, layout, impedance: float, log) -> List[str]:
+def _bond_finger_ports(hfss, layout, impedance: float, log, as_rlc: bool = False) -> List[str]:
     """Lumped ports on the PCB's CPW, just outboard of the bond fingers."""
     pcb_x, _ = _signal_bond_ends(layout)
     pad = layout.values.get("bond_pad_length", 0.3)
     return _lumped_ports(
         hfss, layout, impedance, pcb_x + pad / 2.0 + PAD_SETBACK,
-        layout.stack.pcb_bottom, layout.stack.pcb_top, log=log,
+        layout.stack.pcb_bottom, layout.stack.pcb_top, log=log, as_rlc=as_rlc,
     )
 
 
-def _chip_ports(hfss, layout, impedance: float, log) -> List[str]:
+def _chip_ports(hfss, layout, impedance: float, log, as_rlc: bool = False) -> List[str]:
     """Gap ports across the die's CPW, just inboard of where the bonds land.
 
     The die has no backing ground -- its underside is not a conductor --
@@ -598,7 +648,7 @@ def _chip_ports(hfss, layout, impedance: float, log) -> List[str]:
     _, chip_x = _signal_bond_ends(layout)
     pad = layout.values.get("bond_pad_length", 0.3)
     return _gap_ports(
-        hfss, layout, impedance, chip_x - pad / 2.0 - PAD_SETBACK, reach, log=log,
+        hfss, layout, impedance, chip_x - pad / 2.0 - PAD_SETBACK, reach, log=log, as_rlc=as_rlc,
     )
 
 
@@ -607,7 +657,7 @@ GAP_SIDES = ("a", "b")
 
 
 def _gap_ports(hfss, layout, impedance: float, inner_edge: float,
-               ground_offset: float, log) -> List[str]:
+               ground_offset: float, log, as_rlc: bool = False) -> List[str]:
     """Two gap ports per end across a CPW's gaps; returns the two ends' names.
 
     A sheet lies flat in the die's top plane, from the trace's edge to the
@@ -658,20 +708,8 @@ def _gap_ports(hfss, layout, impedance: float, inner_edge: float,
                 raise PortPlacementError(f"Could not create the gap port sheet for {name}.")
             start = frame.point(sign * inner_edge, ground_edge, height)
             stop = frame.point(sign * inner_edge, trace_edge, height)
-            try:
-                port = hfss.lumped_port(
-                    assignment=sheet.name,
-                    integration_line=[start, stop],
-                    impedance=2.0 * impedance,
-                    name=name,
-                    renormalize=True,
-                )
-            except Exception as exc:
-                raise PortPlacementError(
-                    f"Could not create a gap port on {sheet.name} at u={sign * inner_edge:.3f} mm: {exc}"
-                ) from exc
-            if not port:
-                raise PortPlacementError(f"HFSS refused a gap port on {sheet.name}.")
+            _attach_lumped(hfss, sheet.name, start, stop, 2.0 * impedance, name, as_rlc,
+                           where=f"a gap port on {sheet.name} at u={sign * inner_edge:.3f} mm")
         log(
             f"Gap ports {end}_a / {end}_b at u={sign * inner_edge:.3f} mm: {gap:.3f} mm "
             f"across each gap of the die's CPW, trace to ground, each {2.0 * impedance:g} ohm "
@@ -682,7 +720,7 @@ def _gap_ports(hfss, layout, impedance: float, inner_edge: float,
 
 
 def _lumped_ports(hfss, layout, impedance: float, inner_edge: float,
-                  bottom: float, top: float, log) -> List[str]:
+                  bottom: float, top: float, log, as_rlc: bool = False) -> List[str]:
     """A lumped port under the trace at each end of the CPW.
 
     The sheet stands in the transverse plane at +-`inner_edge` along the
@@ -724,20 +762,8 @@ def _lumped_ports(hfss, layout, impedance: float, inner_edge: float,
         # every port's positive terminal is the signal line.
         start = frame.point(sign * inner_edge, 0.0, bottom)
         stop = frame.point(sign * inner_edge, 0.0, top)
-        try:
-            port = hfss.lumped_port(
-                assignment=sheet.name,
-                integration_line=[start, stop],
-                impedance=impedance,
-                name=port_name,
-                renormalize=True,
-            )
-        except Exception as exc:
-            raise PortPlacementError(
-                f"Could not create a lumped port on {sheet.name} at u={sign * inner_edge:.3f} mm: {exc}"
-            ) from exc
-        if not port:
-            raise PortPlacementError(f"HFSS refused a lumped port on {sheet.name}.")
+        _attach_lumped(hfss, sheet.name, start, stop, impedance, port_name, as_rlc,
+                       where=f"a lumped port on {sheet.name} at u={sign * inner_edge:.3f} mm")
         log(
             f"Lumped port {port_name} at u={sign * inner_edge:.3f} mm: "
             f"{trace_width:.3f} mm across the trace, {height:.3f} mm "

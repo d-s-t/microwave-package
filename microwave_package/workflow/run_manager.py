@@ -223,6 +223,10 @@ def part_kind(config: dict) -> str:
     """What a hidden part is: "eigen" for a driven run's eigenmode run,
     "refinement" for a refined solve, "field" for a field-image part, and
     "part" for anything else."""
+    # An eigenmode part of a driven run (companion.create_eigenmode_part): terminated
+    # like the driven run, and not the hidden pair below.
+    if config.get("eigen_of"):
+        return "eigenmodes"
     if config.get("part_role") == "eigen" or config.get("driven_run_id"):
         return "eigen"
     # A field-image part is named by its frequency: it has no range to refine.
