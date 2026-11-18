@@ -116,14 +116,14 @@
 
 <h1>Comparing {{ entries|length }} run{{ "" if entries|length == 1 else "s" }}</h1>
 {% if entries %}
-<p class="muted lede">Oldest first -- each run keeps its letter, marker and colour everywhere on this page.
+<p class="muted lede">Oldest first unless you drag a row of the table below to reorder -- the order sets the letters, markers, colours and the order of the legend and the table.
   <a href="{{ change_url }}">Change which runs</a></p>
 
 <table class="key">
 <thead><tr><th>Run</th><th>Solved</th><th>Swept</th><th>Results</th></tr></thead>
 <tbody>
 {% for e in entries %}
-<tr>
+<tr draggable="true" data-run-row="{{ e.run_id }}" title="Drag to reorder">
   <td>{{ tag(e) }} <a href="{{ e.url }}">{{ e.own_title }}</a>
     <span class="run-id">{{ e.run_id }}{% if e.started_text and e.own_title != e.started_text %} · started {{ e.started_text }}{% endif %}</span><br>
     <input type="text" class="alias" data-run="{{ e.run_id }}" maxlength="120" value="{{ e.title if e.renamed else '' }}"
@@ -314,6 +314,11 @@
   var runsParam = {{ runs_param | tojson }};
   var savedId = {{ (saved.id if saved else "") | tojson }};
   var savedOptions = {{ saved_options | tojson }};
+  // a reorder reloads the page; the options it had come back through here
+  try {
+    var kept = sessionStorage.getItem("compare-keep");
+    if (kept) { savedOptions = JSON.parse(kept); sessionStorage.removeItem("compare-keep"); }
+  } catch (e) { /* no storage: the page opens on its defaults */ }
   var entries = {{ entries | tojson }};
   var byId = {};
   entries.forEach(function (e) { byId[e.run_id] = e; });
@@ -395,11 +400,11 @@
         [].slice.call(baseSelect.options).forEach(function (o) { if (byId[o.value]) { o.textContent = byId[o.value].name; } });
       }
     }
-    if (csv) { csv.href = "{{ url_for('compare_results_csv') }}?" + aliasParams(new URLSearchParams({ runs: runsParam })); }
+    if (csv) { csv.href = "{{ url_for('compare_results_csv') }}?" + aliasParams(new URLSearchParams({ runs: runsParam, order: runsParam })); }
   }
 
   function renderPlot(state) {
-    var params = new URLSearchParams({ runs: runsParam, theme: window.themeIsDark() ? "dark" : "light" });
+    var params = new URLSearchParams({ runs: runsParam, order: runsParam, theme: window.themeIsDark() ? "dark" : "light" });
     aliasParams(params);
     zoom.setKey([x ? x.value : "", y ? y.value : "", kind ? kind.value : ""].join("|"));
     if (x && y) { params.set("x", x.value); params.set("y", y.value); }
@@ -543,6 +548,31 @@
   aliasBoxes.forEach(function (box) {
     box.addEventListener("change", function () { applyNames(); render(); });
   });
+  // --- drag a run's row to reorder -------------------------------------
+  var keyBody = document.querySelector("table.key tbody"), dragged = null;
+  if (keyBody) {
+    keyBody.addEventListener("dragstart", function (event) {
+      dragged = event.target.closest("tr");
+      if (event.dataTransfer) { event.dataTransfer.effectAllowed = "move"; event.dataTransfer.setData("text/plain", ""); }
+    });
+    keyBody.addEventListener("dragover", function (event) { if (dragged) { event.preventDefault(); } });
+    keyBody.addEventListener("drop", function (event) {
+      event.preventDefault();
+      var target = event.target.closest("tr");
+      if (!dragged || !target || target === dragged) { return; }
+      var rows = [].slice.call(keyBody.querySelectorAll("tr"));
+      keyBody.insertBefore(dragged, rows.indexOf(dragged) < rows.indexOf(target) ? target.nextSibling : target);
+      reorder();
+    });
+  }
+  function reorder() {
+    var order = [].slice.call(keyBody.querySelectorAll("tr")).map(function (row) { return row.dataset.runRow; });
+    try { sessionStorage.setItem("compare-keep", JSON.stringify(currentOptions())); } catch (e) { /* default view */ }
+    var params = aliasParams(new URLSearchParams({ runs: order.join(","), order: order.join(",") }));
+    if (savedId) { params.set("saved", savedId); }
+    location.href = "{{ url_for('compare_runs') }}?" + params.toString();
+  }
+
   var resetZoom = document.getElementById("reset-zoom");
   if (resetZoom) { resetZoom.addEventListener("click", function () { zoom.reset(); renderPlot(filterState()); }); }
 

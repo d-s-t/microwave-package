@@ -61,6 +61,18 @@ class SavedComparesTests(RunsOnDisk):
         self.assertEqual(self.client.post(f"/compare/saved/{saved_id}/delete").status_code, 404)
         self.assertEqual(self.client.post("/compare/saved", json={"name": ""}).status_code, 400)
 
+    def test_the_order_sets_the_letters_and_is_saved(self):
+        self.wire_bond_pair()
+        with webapp.app.test_request_context(
+                f"/compare?runs={WITH_BONDS},{WITHOUT_BONDS}&order={WITHOUT_BONDS},{WITH_BONDS}"):
+            entries, _ = webapp._compared_runs(webapp.request.args)
+        self.assertEqual([(e.run_id, e.letter) for e in entries],
+                         [(WITHOUT_BONDS, "A"), (WITH_BONDS, "B")])
+        saved_id = self.client.post("/compare/saved", json={
+            "name": "flipped", "runs": [WITHOUT_BONDS, WITH_BONDS]}).get_json()["id"]
+        page = self.client.get(f"/compare?saved={saved_id}").get_data(as_text=True)
+        self.assertLess(page.index(f'data-run-row="{WITHOUT_BONDS}"'), page.index(f'data-run-row="{WITH_BONDS}"'))
+
 
 if __name__ == "__main__":
     unittest.main()

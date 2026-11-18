@@ -2088,7 +2088,11 @@ def _compared_runs(args):
     """The runs a comparison URL asks for, ready to compare -- and what to
     say about any that could not be."""
     notes, runs = [], []
-    for run_id in _requested_run_ids(args):
+    # oldest first unless `order=id,id,...` (the page's drag and drop) says otherwise
+    ids = _requested_run_ids(args)
+    wanted = [r for r in args.get("order", "").split(",") if r in ids]
+    ids = list(dict.fromkeys(wanted + ids))
+    for run_id in ids:
         try:
             runs.append(Run.load(run_id))
         except (OSError, ValueError):
@@ -2115,6 +2119,7 @@ def _saved_args(args):
     from werkzeug.datastructures import MultiDict
     merged = MultiDict(args)
     merged.setlist("runs", [",".join(saved["runs"])])
+    merged["order"] = ",".join(saved["runs"])
     for run_id, name in saved["names"].items():
         merged["n_" + run_id] = name
     return merged, saved
