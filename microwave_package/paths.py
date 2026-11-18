@@ -105,6 +105,11 @@ PARAMETER_DRAWINGS_DIR = BASE_PARTS_DIR / "parameters_visual"
 # one; nothing inside a run folder records where it lives.
 RUNS_ROOT = Path(os.environ.get("MICROWAVE_RUNS_PATH") or (PROJECT_ROOT / "runs"))
 
+# Saved comparisons (the runs, the plot options and the per-comparison run
+# names), one JSON file each. Beside the runs rather than inside a run
+# folder: a comparison belongs to no single run.
+SAVED_COMPARES_DIR = Path(os.environ.get("MICROWAVE_COMPARES_PATH") or (PROJECT_ROOT / "saved_compares"))
+
 # Third-party JS/WASM for the in-browser STEP viewer (three.js and
 # occt-import-js). Not committed -- populated by `fetch_vendor.py`, and
 # the web UI just hides the "3D view" button when it is absent.

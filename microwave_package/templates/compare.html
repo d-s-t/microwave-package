@@ -76,6 +76,16 @@
   .point-pick[hidden]{display:none}
   .point-pick a.button{padding:.3rem .7rem;font-size:.85em}
 </style>
+<script src="{{ url_for('static', filename='plot_zoom.js') }}"></script>
+<style>
+  .alias{font:inherit;width:15rem;max-width:100%;margin-top:.25rem;padding:.15rem .4rem;
+    background:var(--surface);color:var(--fg);border:1px solid var(--border);border-radius:4px}
+  .saved-box{margin:.8rem 0;padding:.6rem .8rem;border:1px solid var(--border);border-radius:6px}
+  .saved-box ul{list-style:none;margin:.4rem 0;padding:0}
+  .saved-box li{margin:.15rem 0}
+  .saved-box input[type=text]{font:inherit;padding:.15rem .4rem;background:var(--surface);color:var(--fg);
+    border:1px solid var(--border);border-radius:4px}
+</style>
 </head>
 <body>
 {% include "_theme.html" %}
@@ -101,7 +111,7 @@
 </svg>
 {%- endmacro %}
 {% macro tag(e) -%}
-<span class="run-tag" title="{{ e.name }}">{{ marker(e.slot) }}{{ e.letter }}</span>
+<span class="run-tag" title="{{ e.name }}" data-run="{{ e.run_id }}">{{ marker(e.slot) }}{{ e.letter }}</span>
 {%- endmacro %}
 
 <h1>Comparing {{ entries|length }} run{{ "" if entries|length == 1 else "s" }}</h1>
@@ -114,8 +124,10 @@
 <tbody>
 {% for e in entries %}
 <tr>
-  <td>{{ tag(e) }} <a href="{{ e.url }}">{{ e.title }}</a>
-    <span class="run-id">{{ e.run_id }}{% if e.started_text and e.title != e.started_text %} · started {{ e.started_text }}{% endif %}</span></td>
+  <td>{{ tag(e) }} <a href="{{ e.url }}">{{ e.own_title }}</a>
+    <span class="run-id">{{ e.run_id }}{% if e.started_text and e.own_title != e.started_text %} · started {{ e.started_text }}{% endif %}</span><br>
+    <input type="text" class="alias" data-run="{{ e.run_id }}" maxlength="120" value="{{ e.title if e.renamed else '' }}"
+      placeholder="name in this comparison" title="What this comparison calls the run -- in the plot, the table and the CSV. The run itself keeps its name."></td>
   <td>{{ e.solution_type }}</td>
   <td>{{ e.swept_text or "—" }}</td>
   <td>{% if e.rows %}{{ e.rows }} row{{ "" if e.rows == 1 else "s" }}{% if e.combos > 1 %} from {{ e.combos }} combinations{% endif %}
@@ -128,6 +140,26 @@
 <p>There is nothing to compare yet -- <a href="{{ url_for('index') }}#runs">tick two or more runs on the run list</a>
   and press Compare.</p>
 {% endif %}
+
+<div class="saved-box" id="saved-box">
+  <strong>Saved comparisons</strong>
+  {% if saved_list %}
+  <ul>
+  {% for c in saved_list %}
+    <li data-id="{{ c.id }}"><a href="{{ url_for('compare_runs', saved=c.id) }}"{% if saved and saved.id == c.id %} aria-current="true"{% endif %}>{{ c.name }}</a>
+      <span class="muted small">{{ c.runs|length }} run{{ "" if c.runs|length == 1 else "s" }}</span>
+      <button type="button" class="mini" data-rename="{{ c.id }}" data-name="{{ c.name }}">rename</button>
+      <button type="button" class="mini" data-delete="{{ c.id }}" data-name="{{ c.name }}">delete</button></li>
+  {% endfor %}
+  </ul>
+  {% else %}<p class="muted small">None yet.</p>{% endif %}
+  {% if entries %}
+  <label>Save this comparison as <input type="text" id="save-name" maxlength="120" value="{{ saved.name if saved else '' }}"></label>
+  {% if saved %}<button type="button" class="mini" id="save-update">update “{{ saved.name }}”</button>{% endif %}
+  <button type="button" class="mini" id="save-new">save as new</button>
+  <span class="muted small" id="save-msg"></span>
+  {% endif %}
+</div>
 
 {% for note in notes %}
 <div class="note-box">{{ note }}</div>
@@ -190,9 +222,9 @@
       {% for value in group['values'] %}
       {% if group.column == run_id_column %}
       {% set e = entries_by_id[value.key] %}
-      <label class="chip" title="{{ e.name }}"><input type="checkbox" checked
+      <label class="chip" title="{{ e.name }}" data-run="{{ e.run_id }}"><input type="checkbox" checked
              data-column="{{ group.column }}" value="{{ value.key }}">{{ tag(e) }}
-        <span class="chip-title">{{ e.title }}</span></label>
+        <span class="chip-title" data-title-of="{{ e.run_id }}">{{ e.title }}</span></label>
       {% else %}
       <label class="chip"><input type="checkbox" checked
              data-column="{{ group.column }}" value="{{ value.key }}">{{ value.label }}</label>
@@ -263,6 +295,7 @@
   </select>
   {% endif %}
   <button type="button" id="swap-axes" title="Swap the X and Y axes">&#8646; swap</button>
+  <button type="button" id="reset-zoom" title="Forget the zoom (double-clicking the figure does the same)">reset zoom</button>
 </div>
 {% endif %}
 <iframe id="plot-frame" title="The compared runs' results"></iframe>
@@ -270,7 +303,7 @@
   <span id="point-pick-text"></span>
   <a class="button" id="point-pick-link" target="_blank" rel="noopener">Open it in its run</a>
 </p>
-<p><a class="button" href="{{ url_for('compare_results_csv', runs=runs_param) }}">Download the combined CSV</a>
+<p><a class="button" id="csv-link" href="{{ url_for('compare_results_csv', runs=runs_param) }}">Download the combined CSV</a>
    <span class="muted">-- click a point to find it in its own run</span></p>
 {% endif %}
 
@@ -279,6 +312,8 @@
   var frame = document.getElementById("plot-frame");
   if (!frame) { return; }
   var runsParam = {{ runs_param | tojson }};
+  var savedId = {{ (saved.id if saved else "") | tojson }};
+  var savedOptions = {{ saved_options | tojson }};
   var entries = {{ entries | tojson }};
   var byId = {};
   entries.forEach(function (e) { byId[e.run_id] = e; });
@@ -325,8 +360,48 @@
   var kind = document.getElementById("plot-kind");
   var base = "{{ url_for('compare_plot') }}";
 
+  var zoom = PlotZoom(frame);
+
+  // What this comparison calls each run: `n_<run id>` in every URL.
+  var aliasBoxes = [].slice.call(document.querySelectorAll("input.alias"));
+  function aliasParams(params) {
+    aliasBoxes.forEach(function (box) {
+      var text = box.value.trim();
+      if (text) { params.set("n_" + box.dataset.run, text); }
+    });
+    return params;
+  }
+  function aliases() {
+    var result = {};
+    aliasBoxes.forEach(function (box) { if (box.value.trim()) { result[box.dataset.run] = box.value.trim(); } });
+    return result;
+  }
+  var csv = document.getElementById("csv-link");
+  function applyNames() {
+    var names = aliases();
+    entries.forEach(function (e) {
+      e.name = e.letter + " · " + (names[e.run_id] || e.own_title);
+      [].slice.call(document.querySelectorAll('[data-run="' + e.run_id + '"]')).forEach(function (node) {
+        if (node.matches(".run-tag, .chip")) { node.title = e.name; }
+      });
+      [].slice.call(document.querySelectorAll('[data-title-of="' + e.run_id + '"]')).forEach(function (node) {
+        node.textContent = names[e.run_id] || e.own_title;
+      });
+    });
+    if (data) {
+      data.runs.forEach(function (r) { if (byId[r.id]) { r.name = byId[r.id].name; } });
+      var baseSelect = document.getElementById("sbs-base");
+      if (baseSelect) {
+        [].slice.call(baseSelect.options).forEach(function (o) { if (byId[o.value]) { o.textContent = byId[o.value].name; } });
+      }
+    }
+    if (csv) { csv.href = "{{ url_for('compare_results_csv') }}?" + aliasParams(new URLSearchParams({ runs: runsParam })); }
+  }
+
   function renderPlot(state) {
     var params = new URLSearchParams({ runs: runsParam, theme: window.themeIsDark() ? "dark" : "light" });
+    aliasParams(params);
+    zoom.setKey([x ? x.value : "", y ? y.value : "", kind ? kind.value : ""].join("|"));
     if (x && y) { params.set("x", x.value); params.set("y", y.value); }
     // A Smith chart takes its port instead of the axes, which go grey.
     var smithPort = kind ? kind.value : "";
@@ -465,6 +540,70 @@
     renderTable(state);
   }
 
+  aliasBoxes.forEach(function (box) {
+    box.addEventListener("change", function () { applyNames(); render(); });
+  });
+  var resetZoom = document.getElementById("reset-zoom");
+  if (resetZoom) { resetZoom.addEventListener("click", function () { zoom.reset(); renderPlot(filterState()); }); }
+
+  // --- saved comparisons ----------------------------------------------
+  function currentOptions() {
+    var options = {};
+    if (x) { options.x = x.value; }
+    if (y) { options.y = y.value; }
+    if (colour) { options.color = colour.value; }
+    if (kind) { options.kind = kind.value; }
+    options.filters = filterState();
+    return options;
+  }
+  function post(url, body) {
+    return fetch(url, { method: "POST", headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify(body || {}) })
+      .then(function (r) { return r.json().then(function (j) { if (!r.ok) { throw new Error(j.error || r.status); } return j; }); });
+  }
+  var saveName = document.getElementById("save-name"), saveMsg = document.getElementById("save-msg");
+  function save(id) {
+    post("{{ url_for('compare_saved_create') }}", {
+      id: id || null, name: saveName.value, runs: runsParam.split(","), names: aliases(), options: currentOptions(),
+    }).then(function (saved) { location.href = "{{ url_for('compare_runs') }}?saved=" + saved.id; })
+      .catch(function (error) { saveMsg.textContent = error.message; });
+  }
+  var saveNew = document.getElementById("save-new"), saveUpdate = document.getElementById("save-update");
+  if (saveNew) { saveNew.addEventListener("click", function () { save(null); }); }
+  if (saveUpdate) { saveUpdate.addEventListener("click", function () { save(savedId); }); }
+  var savedBox = document.getElementById("saved-box");
+  if (savedBox) {
+    savedBox.addEventListener("click", function (event) {
+      var rename = event.target.dataset && event.target.dataset.rename;
+      var del = event.target.dataset && event.target.dataset.delete;
+      if (rename) {
+        var name = prompt("New name for this saved comparison:", event.target.dataset.name);
+        if (name && name.trim()) {
+          post("/compare/saved/" + rename + "/rename", { name: name }).then(function () { location.reload(); })
+            .catch(function (error) { alert(error.message); });
+        }
+      } else if (del && confirm("Delete the saved comparison “" + event.target.dataset.name + "”? Its runs are not touched.")) {
+        post("/compare/saved/" + del + "/delete").then(function () {
+          if (del === savedId) { location.href = "{{ url_for('compare_runs') }}"; } else { location.reload(); }
+        }).catch(function (error) { alert(error.message); });
+      }
+    });
+  }
+
+  // a saved comparison opens on the axes, view and filter it was saved with
+  (function () {
+    function set(select, value) {
+      if (select && value !== undefined && [].some.call(select.options, function (o) { return o.value === value; })) {
+        select.value = value;
+      }
+    }
+    set(x, savedOptions.x); set(y, savedOptions.y); set(colour, savedOptions.color); set(kind, savedOptions.kind);
+    var filters = savedOptions.filters || {};
+    Object.keys(filters).forEach(function (column) {
+      boxes(column).forEach(function (b) { b.checked = filters[column].indexOf(b.value) !== -1; });
+    });
+  })();
+
   if (panel) {
     panel.addEventListener("change", function (event) {
       if (event.target.matches("input[type=checkbox]")) { render(); }
@@ -500,6 +639,7 @@
     if (control) { control.addEventListener("change", function () { renderTable(filterState()); }); }
   });
   window.addEventListener("themechange", function () { renderPlot(filterState()); });
+  applyNames();
   render();
 
   // --- a clicked point --------------------------------------------------
