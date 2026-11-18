@@ -1177,6 +1177,32 @@ def _bridge_touching_feet(modeler, bond_list, frame: Frame, pcb_top: float,
     return bridges
 
 
+def _copper_inside_opening(modeler, frame: Frame, stack: Stack, cavity: Cavity,
+                           targets: Sequence[str], steps: int = 9) -> bool:
+    """True when any of `targets` has metal at a point inside the opening.
+
+    A grid of points, just inside the opening's edges, at mid-thickness of the top
+    and the bottom copper layers.
+    """
+    heights = (stack.pcb_top + stack.copper_thickness / 2.0,
+               stack.pcb_bottom - stack.copper_thickness / 2.0)
+    shrink = 0.9
+    wanted = set(targets)
+    for h in heights:
+        for i in range(steps):
+            for j in range(steps):
+                u = cavity.half_length * shrink * (2.0 * i / (steps - 1) - 1.0)
+                v = cavity.half_side * shrink * (2.0 * j / (steps - 1) - 1.0)
+                point, _ = frame.box(u, v, u, v, h, 0.0)
+                try:
+                    names = modeler.get_bodynames_from_position(point)
+                except Exception:  # noqa: BLE001 -- unknown: cut, as before
+                    return True
+                if wanted.intersection(names):
+                    return True
+    return False
+
+
 def clear_cavity_area(
     modeler,
     frame: Frame,
@@ -1203,6 +1229,15 @@ def clear_cavity_area(
     `cavity_clearance` clear of the die's own copper.
     """
     if not targets or cavity.is_empty:
+        return
+
+    # A copper.txt that already has the opening cut (the Altium generator since
+    # 2026-11-10) has no copper left inside it, and the cut would then be a boolean
+    # whose tool only touches the copper's own hole edges. Parasolid turns the
+    # copper into an invalid ("Unclassified") body on that, so the cut is made only
+    # where some target has copper inside the opening.
+    if not _copper_inside_opening(modeler, frame, stack, cavity, targets):
+        log("The die's opening is already clear of copper: no cut made.")
         return
 
     margin = max(stack.copper_thickness, stack.chip_metal_thickness) * 2.0

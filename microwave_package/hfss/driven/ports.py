@@ -129,6 +129,29 @@ REFERENCE_PLANES = [
 
 DEFAULT_REFERENCE_PLANE = REFERENCE_PLANE_CONNECTOR
 
+# What the connectors are for the planes that terminate them (every plane
+# but `connector`). "kept" is the real connector with a matched port in its
+# bore; the other two take the connector out of the measurement, so the
+# line runs on past the lumped port to a board edge with nothing behind it.
+CONNECTORS_KEPT = "kept"
+CONNECTORS_VACUUM = "vacuum"
+CONNECTORS_REMOVED = "removed"
+CONNECTORS_DIELECTRIC = "dielectric"
+CONNECTOR_MODES = [
+    {"value": CONNECTORS_KEPT, "label": "Kept, terminated",
+     "help": "The real connectors, each with a matched port in its bore."},
+    {"value": CONNECTORS_VACUUM, "label": "Vacuum (ignored)",
+     "help": "Every connector body (pin, shell, bead) becomes vacuum and no "
+             "termination is made. Launch-type planes only."},
+    {"value": CONNECTORS_REMOVED, "label": "Removed (ignored)",
+     "help": "Every connector body is deleted before the air region is cut, so the "
+             "air fills where they were, and no termination is made. Launch-type planes only."},
+    {"value": CONNECTORS_DIELECTRIC, "label": "Non-conductive (ignored)",
+     "help": "Every connector body becomes Teflon (eps 2.1), "
+             "so nothing conducts there, and no termination is made. "
+             "Launch-type planes only."},
+]
+
 # The up axis in assembly coordinates. The SolidWorks assembly has Y
 # normal to the board (copper_geometry.Frame maps Altium's w to Y), and
 # `place_connectors` stands each connector up so its mating direction is
@@ -187,8 +210,19 @@ def place_ports(hfss, layout, analysis_settings: Dict[str, Any], log=logger.info
             f"plane (the through-line from SMP to SMP) or 'launch'."
         )
 
+    connectors = analysis_settings.get("launch_connectors", CONNECTORS_KEPT) or CONNECTORS_KEPT
+    if connectors not in {m["value"] for m in CONNECTOR_MODES}:
+        raise PortPlacementError(f"Unknown launch_connectors {connectors!r}.")
+    if connectors != CONNECTORS_KEPT and plane == REFERENCE_PLANE_CONNECTOR:
+        raise PortPlacementError(
+            "launch_connectors other than 'kept' needs a lumped plane (launch, bonds or chip): "
+            "the connector plane's port is in the connector."
+        )
     if plane != REFERENCE_PLANE_CONNECTOR and plane in {p["value"] for p in REFERENCE_PLANES}:
-        _terminate_connectors(hfss, impedance, log=log)
+        if connectors == CONNECTORS_KEPT:
+            _terminate_connectors(hfss, impedance, log=log)
+        else:
+            _neutralise_connectors(hfss, connectors, log=log)
 
     if plane == REFERENCE_PLANE_CONNECTOR:
         names = _connector_wave_ports(hfss, impedance, log=log)
@@ -218,6 +252,15 @@ def place_ports(hfss, layout, analysis_settings: Dict[str, Any], log=logger.info
 
 def _measurement_port_name(index: str) -> str:
     return f"port_{index}"
+
+
+def _neutralise_connectors(hfss, mode: str, log) -> None:
+    """Nothing to build: the connector bodies already took their material
+    when they were placed (model_builder.CONNECTOR_NEUTRAL_MATERIAL). Only
+    the termination is skipped."""
+    if mode != CONNECTORS_REMOVED and not [n for n in hfss.modeler.object_names if n.startswith("connector_")]:
+        raise PortPlacementError("No connector_* bodies in the model to ignore.")
+    log(f"Connectors ignored ({mode}); no connector termination is made.")
 
 
 def _termination_name(index: str) -> str:

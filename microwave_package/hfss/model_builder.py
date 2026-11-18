@@ -489,6 +489,13 @@ def _classify_connector_bodies(hfss, names: List[str]):
     return outer, centre, diel
 
 
+# Set by build_model for a launch-type run that ignores its connectors
+# (launch_connectors vacuum / dielectric): every connector body gets this
+# material when it is placed, so the vacuum carve sees them as ordinary
+# dielectrics and the later history replay stays sound.
+CONNECTOR_NEUTRAL_MATERIAL: Optional[str] = None
+
+
 def place_connectors(hfss, frame, board_top: float, half_length: float,
                      port_space: float, count: int, log=logger.info) -> List[str]:
     """Import the split SMP connector model once per port and set it on its launch.
@@ -606,6 +613,15 @@ def place_connectors(hfss, frame, board_top: float, half_length: float,
                     f"WARNING: {dielectric} could not be set to "
                     f"{CONNECTOR_DIELECTRIC_MATERIAL} ({exc}); it stays on the modeller default."
                 )
+
+        if CONNECTOR_NEUTRAL_MATERIAL:
+            for body in list(conductor_bodies) + ([dielectric] if dielectric else []):
+                try:
+                    hfss.modeler[body].material_name = CONNECTOR_NEUTRAL_MATERIAL
+                    hfss.modeler[body].solve_inside = True
+                except Exception as exc:
+                    log(f"WARNING: {body} could not be set to {CONNECTOR_NEUTRAL_MATERIAL} ({exc}).")
+            log(f"Connector bodies of {prefix} set to {CONNECTOR_NEUTRAL_MATERIAL} (connectors ignored).")
 
         placed.extend(bodies)
 
@@ -985,6 +1001,11 @@ def build_layout(hfss, combo_dir: str, dimensions_txt_content: str,
             thickness=stack.copper_thickness, prefix="pcb", log=log,
         )
         remember_sheets(made, stack.copper_thickness, copper)
+        _log_unclassified(hfss, 'building the copper', log)
+        for _n in [n for ns in made.values() for n in ns]:
+            _o = hfss.modeler[_n]
+            log(f"  copper {_n}: volume {_o.volume}, faces {len(_o.faces)}, "
+                f"bbox {[round(x, 3) for x in _o.bounding_box]}, solve_inside {_o.solve_inside}")
         # The bottom copper gets a hole the size of the opening, blind or through
         # (see copper_geometry.clear_cavity_area). The Altium generator cuts the same
         # hole since 2026-11-10; this cut also removes the back plane that a copper.txt
@@ -995,6 +1016,7 @@ def build_layout(hfss, combo_dir: str, dimensions_txt_content: str,
             targets=[name for names in made.values() for name in names],
             log=log,
         )
+        _log_unclassified(hfss, 'clearing the die opening', log)
         if not opening.is_empty:
             cg.mark_bottom_hole(combo_dir)
         # The vias are solid posts standing in the undrilled board -- the
@@ -1046,14 +1068,17 @@ def build_layout(hfss, combo_dir: str, dimensions_txt_content: str,
     # the launch is represented rather than left as bare copper. They
     # rest on the board's actual top surface -- the copper, not the bare
     # substrate underneath it (stack.pcb_top).
-    place_connectors(
-        hfss, frame,
-        board_top=stack.pcb_copper_top,
-        half_length=pcb_length / 2.0,
-        port_space=v.get("port_space", 1.5),
-        count=v.get("port_count", 2),
-        log=log,
-    )
+    if CONNECTOR_NEUTRAL_MATERIAL == "removed":
+        log("Connectors are not added to the model (launch_connectors = removed).")
+    else:
+        place_connectors(
+            hfss, frame,
+            board_top=stack.pcb_copper_top,
+            half_length=pcb_length / 2.0,
+            port_space=v.get("port_space", 1.5),
+            count=v.get("port_count", 2),
+            log=log,
+        )
 
     # The wires come from the same layout file Altium placed the pads
     # from, so each one lands on its pad -- on the copper, again, not the
@@ -1331,6 +1356,22 @@ def assign_materials_and_boundaries(hfss, mat_settings: dict, log=logger.info,
     return objects_dict
 
 
+def _log_unclassified(hfss, where, log=logger.info):
+    """Names the bodies that are not valid solids at this point of the build."""
+    try:
+        bad = list(hfss.modeler.oeditor.GetObjectsInGroup("Unclassified"))
+    except Exception:  # noqa: BLE001
+        return
+    log(f"After {where}: unclassified bodies: {', '.join(bad) if bad else 'none'}.")
+    for name in bad:
+        try:
+            o = hfss.modeler[name]
+            log(f"  {name}: material {o.material_name}, volume {o.volume}, faces {len(o.faces)}, "
+                f"bbox {[round(x, 3) for x in o.bounding_box]}")
+        except Exception as exc:  # noqa: BLE001
+            log(f"  {name}: could not be read ({exc})")
+
+
 def carve_vacuum(hfss, objects_dict, log=logger.info) -> None:
     """Cut the dielectrics out of the vacuum body; leave the metal to HFSS.
 
@@ -1371,7 +1412,8 @@ def carve_vacuum(hfss, objects_dict, log=logger.info) -> None:
     for obj in hfss.modeler.solid_objects:
         if obj.name.lower() == "vacuum":
             continue
-        (tools if getattr(obj, "solve_inside", True) else metal).append(obj.name)
+        ignored_connector = (CONNECTOR_NEUTRAL_MATERIAL not in (None, "removed") and obj.name.startswith("connector_"))
+        (tools if getattr(obj, "solve_inside", True) and not ignored_connector else metal).append(obj.name)
     if not tools:
         return
 
@@ -1638,6 +1680,11 @@ def build_model(
             # frame. Must happen BEFORE materials are assigned, or the new
             # bodies exist without any. lid_inside is placed and the vacuum
             # fill built in here too -- see build_layout's docstring.
+            global CONNECTOR_NEUTRAL_MATERIAL
+            _mode = analysis_settings.get("launch_connectors") or "kept"
+            if analysis_settings.get("reference_plane") == "connector":
+                _mode = "kept"
+            CONNECTOR_NEUTRAL_MATERIAL = {"vacuum": "vacuum", "dielectric": "Teflon (tm)", "removed": "removed"}.get(_mode)
             layout = build_layout(
                 hfss, combo_dir, dimensions_txt_content, lid_inside_names,
                 include_wirebonds=analysis_settings["materials"].get("include_wirebonds", True),
@@ -1648,6 +1695,18 @@ def build_model(
                 hfss, analysis_settings["materials"], log=log,
                 sheets=layout.sheets if layout else None,
             )
+            if CONNECTOR_NEUTRAL_MATERIAL == "removed":
+                pass
+            elif CONNECTOR_NEUTRAL_MATERIAL:
+                # After the material rules, which give pin and shell their metal.
+                for _name in [n for n in hfss.modeler.object_names if n.startswith("connector_")]:
+                    try:
+                        hfss.modeler[_name].material_name = CONNECTOR_NEUTRAL_MATERIAL
+                        hfss.modeler[_name].solve_inside = True
+                    except Exception as exc:
+                        log(f"WARNING: {_name} could not be set to {CONNECTOR_NEUTRAL_MATERIAL} ({exc}).")
+                log(f"All connector bodies are {CONNECTOR_NEUTRAL_MATERIAL} (connectors ignored).")
+            _log_unclassified(hfss, 'the layout and materials', log)
             carve_vacuum(hfss, objects_dict, log=log)
             object_names = {key: obj.name for key, obj in objects_dict.items()}
 
@@ -1681,6 +1740,15 @@ def build_model(
                     log(f"{combo_id}: {exc} Not saving or queueing this combination.")
                     return
 
+        # A boolean in the history can fail when the saved project is reopened (the
+        # copper then comes back as an "Unclassified" body, the air region empty).
+        # Dropping the history of the solids saves their geometry as it stands now.
+        try:
+            solids = list(hfss.modeler.oeditor.GetObjectsInGroup("Solids"))
+            hfss.modeler.oeditor.PurgeHistory(["NAME:Selections", "Selections:=", ",".join(solids)])
+            log(f"Dropped the modeling history of {len(solids)} solid bodies before saving.")
+        except Exception as exc:  # noqa: BLE001 -- the validator below still checks the reopened model
+            log(f"WARNING: could not drop the modeling history ({exc}).")
         hfss.save_project(project_path)
         closed = close_project_safely(hfss, log=log)
         hfss = None
@@ -1756,7 +1824,19 @@ def validate_saved_model(project_path: str, solution_type: str,
         if vacuum and vacuum in hfss.modeler.object_names and not hfss.modeler[vacuum].faces:
             return (f"reopened, {os.path.basename(project_path)} has an empty '{vacuum}' -- "
                     "a boolean in its history failed on replay. There is no air to solve in.")
+        try:
+            broken = list(hfss.modeler.oeditor.GetObjectsInGroup("Unclassified"))
+        except Exception:  # noqa: BLE001
+            broken = []
+        if broken:
+            return (f"reopened, {os.path.basename(project_path)} has bodies that failed on replay "
+                    f"(Unclassified): {', '.join(broken)}.")
         overlaps = dielectric_overlaps(hfss)
+        # Ignored connectors (launch_connectors vacuum/dielectric): pin and shell are
+        # left out of the vacuum carve on purpose (Parasolid cannot cut them), so they
+        # share the vacuum's volume; the override resolves it and it is reported in the run notes.
+        overlaps = [o for o in overlaps if not (
+            vacuum in (o[0], o[1]) and any(n.startswith("connector_") for n in (o[0], o[1])))]
         if overlaps:
             return ("dielectric bodies overlap, which HFSS resolves silently with material "
                     "override on: " + ", ".join(
