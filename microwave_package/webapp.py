@@ -50,7 +50,7 @@ from .hfss.driven import windows as fine_windows
 # into that solver directly rather than the registry pretending every
 # solver has a view like it.
 from .hfss.eigenmode import fields as eigenmode_fields
-from .workflow import (compare, companion, field_images, manufacturing, plotting, queue_hold, resilient_io,
+from .workflow import (compare, companion, saved_compares, field_images, manufacturing, plotting, queue_hold, resilient_io,
                        run_facets, run_manager, smith, solver_status)
 from .workflow.run_manager import Run
 
@@ -2088,7 +2088,11 @@ def _compared_runs(args):
     """The runs a comparison URL asks for, ready to compare -- and what to
     say about any that could not be."""
     notes, runs = [], []
-    for run_id in _requested_run_ids(args):
+    # oldest first unless `order=id,id,...` (the page's drag and drop) says otherwise
+    ids = _requested_run_ids(args)
+    wanted = [r for r in args.get("order", "").split(",") if r in ids]
+    ids = list(dict.fromkeys(wanted + ids))
+    for run_id in ids:
         try:
             runs.append(Run.load(run_id))
         except (OSError, ValueError):
@@ -2098,9 +2102,27 @@ def _compared_runs(args):
         notes.append(f"A comparison takes up to {compare.MAX_RUNS} runs, so the "
                      f"{len(runs) - compare.MAX_RUNS} most recent were left out.")
         runs = runs[:compare.MAX_RUNS]
+    # `n_<run id>=name`: what this comparison calls a run (see compare.compared)
+    aliases = {key[2:]: value for key, value in args.items(multi=False)
+               if key.startswith("n_") and _RUN_ID.fullmatch(key[2:])}
     entries = compare.compared(
-        runs, [_run_name(run) for run in runs], [_results_frame(run) for run in runs])
+        runs, [_run_name(run) for run in runs], [_results_frame(run) for run in runs], aliases)
     return entries, notes
+
+
+def _saved_args(args):
+    """A comparison URL's arguments -- or, for `?saved=<id>` with no runs
+    of its own, the runs and names that saved comparison holds."""
+    saved = saved_compares.get(args.get("saved", ""))
+    if saved is None or args.getlist("runs"):
+        return args, saved
+    from werkzeug.datastructures import MultiDict
+    merged = MultiDict(args)
+    merged.setlist("runs", [",".join(saved["runs"])])
+    merged["order"] = ",".join(saved["runs"])
+    for run_id, name in saved["names"].items():
+        merged["n_" + run_id] = name
+    return merged, saved
 
 
 def _compared_view(entry) -> dict:
@@ -2112,6 +2134,8 @@ def _compared_view(entry) -> dict:
         "letter": entry.letter,
         "name": entry.name,
         "title": entry.title,
+        "own_title": entry.own_title or entry.title,
+        "renamed": bool(entry.own_title),
         "slot": entry.slot,
         "url": url_for("run_status", run_id=entry.run_id),
         "started_text": _fmt_dt(_run_started(run)),
@@ -2133,7 +2157,8 @@ def compare_runs():
     settings works on the runs that have results; one that has none yet
     is still listed, and its settings still compared.
     """
-    entries, notes = _compared_runs(request.args)
+    args, saved = _saved_args(request.args)
+    entries, notes = _compared_runs(args)
     runs = [entry.run for entry in entries]
     swept = compare.swept_names(runs)
     df = compare.combined_results(entries)
@@ -2177,7 +2202,37 @@ def compare_runs():
         palette=plotting.RUN_COLOURS,
         runs_param=runs_param,
         change_url=url_for("index", compare=runs_param) + "#runs",
+        saved=saved,
+        saved_options=(saved or {}).get("options", {}),
+        saved_list=saved_compares.listing(),
     )
+
+
+@app.route("/compare/saved", methods=["POST"])
+def compare_saved_create():
+    """Save the comparison on the page (or, with an `id`, update that one)."""
+    body = request.get_json(silent=True) or {}
+    try:
+        saved = saved_compares.save(body.get("name", ""), body, body.get("id"))
+    except ValueError as error:
+        return jsonify(error=str(error)), 400
+    return jsonify(saved)
+
+
+@app.route("/compare/saved/<compare_id>/rename", methods=["POST"])
+def compare_saved_rename(compare_id):
+    body = request.get_json(silent=True) or {}
+    saved = saved_compares.rename(compare_id, body.get("name", ""))
+    if saved is None:
+        return jsonify(error="No such saved comparison, or an empty name."), 400
+    return jsonify(saved)
+
+
+@app.route("/compare/saved/<compare_id>/delete", methods=["POST"])
+def compare_saved_delete(compare_id):
+    if not saved_compares.delete(compare_id):
+        return jsonify(error="No such saved comparison."), 404
+    return jsonify(ok=True)
 
 
 @app.route("/compare/plot")

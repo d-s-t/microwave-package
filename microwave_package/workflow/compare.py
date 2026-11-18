@@ -64,6 +64,9 @@ class Compared:
     slot: int
     title: str
     results: Optional[pd.DataFrame]
+    # the run's own name when this comparison shows it under another one
+    # (`title` is then that other name); empty when it is not renamed
+    own_title: str = ""
 
     @property
     def letter(self) -> str:
@@ -88,11 +91,18 @@ class Compared:
 
 
 def compared(runs: Sequence[Run], titles: Sequence[str],
-             results: Sequence[Optional[pd.DataFrame]]) -> List[Compared]:
+             results: Sequence[Optional[pd.DataFrame]],
+             aliases: Optional[Dict[str, str]] = None) -> List[Compared]:
     """The runs to compare, in the order given -- the first is the one the
-    others are measured against until the page is told otherwise."""
+    others are measured against until the page is told otherwise.
+
+    `aliases` -- run id to the name this comparison gives it -- replaces a
+    run's name in the comparison only: in the legend, the tooltips, the
+    table and the CSV. The run itself is untouched."""
+    aliases = aliases or {}
     return [
-        Compared(run, slot, title, frame)
+        Compared(run, slot, aliases.get(run.run_id, "").strip() or title, frame,
+                 title if aliases.get(run.run_id, "").strip() else "")
         for slot, (run, title, frame) in enumerate(zip(runs, titles, results))
     ]
 

@@ -11,6 +11,9 @@ venv/
 # backed up elsewhere, not committed.
 runs/
 
+# Saved comparisons: the user's own, kept locally.
+/saved_compares/
+
 # Long sweeps: each sweep's state, results, logs and alerts stay local (see
 # SWEEPS.md). The example plans are kept.
 /sweeps/*

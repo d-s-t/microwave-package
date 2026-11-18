@@ -164,6 +164,7 @@
 { "imports": { "three": "{{ url_for('vendor_file', name='three.module.min.js') }}" } }
 </script>
 {% endif %}
+<script src="{{ url_for('static', filename='plot_zoom.js') }}"></script>
 </head>
 <body>
 {% include "_theme.html" %}
@@ -1092,6 +1093,7 @@ setInterval(poll, 4000);
   if (!x || !y) { return; }
 
   var base = "{{ url_for('run_plot', run_id=run.run_id) }}";
+  var zoom = PlotZoom(frame);
 
   // Filter state: a column is only sent when some of its values are
   // unticked, so the usual "everything on" case keeps the URL short and
@@ -1140,6 +1142,8 @@ setInterval(poll, 4000);
     x.disabled = y.disabled = !!smithPort;
     if (smithPort) { params.set("view", "smith"); params.set("port", smithPort); }
     applyFilters(params);
+    // the zoom is kept until the axes change (or the figure is reset)
+    zoom.setKey([x.value, y.value, smithPort].join("|"));
     frame.src = base + "?" + params.toString();
   }
 
