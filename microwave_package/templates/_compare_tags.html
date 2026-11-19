@@ -1,0 +1,8 @@
+{# The saved comparisons a run is part of, as chips that link to them: the
+   first two by name, the rest folded into "+N" whose tooltip names them. #}
+{% macro compare_chips(tags) -%}
+{% if tags %}<span class="compare-tags" aria-label="In saved comparisons">
+{%- for t in tags[:2] %}<a class="compare-tag" href="{{ url_for('compare_runs', saved=t.id) }}" title="Open the saved comparison “{{ t.name }}”">{{ t.name }}</a>{% endfor -%}
+{%- if tags|length > 2 %}<span class="compare-tag more" title="{% for t in tags[2:] %}{{ t.name }}{{ '; ' if not loop.last }}{% endfor %}">+{{ tags|length - 2 }}</span>{% endif -%}
+</span>{% endif %}
+{%- endmacro %}

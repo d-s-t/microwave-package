@@ -179,6 +179,7 @@
 </tr>
 {%- endmacro %}
 
+{% from "_compare_tags.html" import compare_chips %}
 {% macro run_row(r, extra=false) -%}
 {# The data-* words are what the filter bar matches (see the run list script). #}
 <tr class="run-row{% if extra %} run-extra{% endif %}" tabindex="0"
@@ -197,7 +198,7 @@
     </label>
   </td>
   <td>
-    <a class="run-name" href="{{ url_for('run_status', run_id=r.run_id) }}" title="{{ r.name }}">{{ r.name }}</a>{% if r.solver_status == "failed" %}<span class="solver-badge" title="A frequency sweep of this run did not converge: its S11 and S21 values between the solved frequencies are unreliable. Open the run for details.">Sweep did not converge</span>{% endif %}
+    <a class="run-name" href="{{ url_for('run_status', run_id=r.run_id) }}" title="{{ r.name }}">{{ r.name }}</a>{{ compare_chips(compare_tags.get(r.run_id)) }}{% if r.solver_status == "failed" %}<span class="solver-badge" title="A frequency sweep of this run did not converge: its S11 and S21 values between the solved frequencies are unreliable. Open the run for details.">Sweep did not converge</span>{% endif %}
     <span class="run-id">{% if r.label and r.date_text %}{{ r.date_text }} · {% endif %}{{ r.started_ago }}</span>
     {% if r.refined_done %}<a class="part-note" href="{{ url_for('run_status', run_id=r.run_id) }}#refine">+{{ r.refined_done }} refined solve{{ "" if r.refined_done == 1 else "s" }}</a>{% endif %}
     {% if r.field_done %}<a class="part-note field-note" href="{{ url_for('run_status', run_id=r.run_id) }}#field-images">+{{ r.field_done }} field image{{ "" if r.field_done == 1 else "s" }}</a>{% endif %}
@@ -213,6 +214,43 @@
 </tr>
 {% for part in r.open_parts %}{{ part_row(r, part, extra) }}{% endfor %}
 {%- endmacro %}
+
+<section id="saved-compares">
+<h2>Saved compares</h2>
+{% if saved_list %}
+<ul class="saved-compares">
+{% for c in saved_list %}
+  <li><a href="{{ url_for('compare_runs', saved=c.id) }}">{{ c.name }}</a>
+    <span class="muted small">{{ c.runs|length }} run{{ "" if c.runs|length == 1 else "s" }}{% if c.date_text %} · saved {{ c.date_text }}{% endif %}</span>
+    <button type="button" class="mini" data-rename="{{ c.id }}" data-name="{{ c.name }}">rename</button>
+    <button type="button" class="mini" data-delete="{{ c.id }}" data-name="{{ c.name }}">delete</button></li>
+{% endfor %}
+</ul>
+<script>
+(function () {
+  function post(url, body) {
+    return fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body || {}) })
+      .then(function (r) { return r.json().then(function (j) { if (!r.ok) { throw new Error(j.error || r.status); } return j; }); });
+  }
+  document.getElementById("saved-compares").addEventListener("click", function (event) {
+    var d = event.target.dataset || {};
+    if (d.rename) {
+      var name = prompt("New name for this saved comparison:", d.name);
+      if (name && name.trim()) {
+        post("/compare/saved/" + d.rename + "/rename", { name: name }).then(function () { location.reload(); })
+          .catch(function (e) { alert(e.message); });
+      }
+    } else if (d.delete && confirm("Delete the saved comparison “" + d.name + "”? Its runs are not touched.")) {
+      post("/compare/saved/" + d.delete + "/delete").then(function () { location.reload(); })
+        .catch(function (e) { alert(e.message); });
+    }
+  });
+})();
+</script>
+{% else %}
+<p class="muted">None yet -- tick runs below, press Compare, and save the comparison on its page.</p>
+{% endif %}
+</section>
 
 <section id="runs">
 <h2>Runs</h2>

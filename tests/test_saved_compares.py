@@ -73,6 +73,26 @@ class SavedComparesTests(RunsOnDisk):
         page = self.client.get(f"/compare?saved={saved_id}").get_data(as_text=True)
         self.assertLess(page.index(f'data-run-row="{WITHOUT_BONDS}"'), page.index(f'data-run-row="{WITH_BONDS}"'))
 
+    def test_runs_are_tagged_with_their_saved_compares_and_it_follows_rename_and_delete(self):
+        self.wire_bond_pair()
+        first = saved_compares.save("alpha cmp", {"runs": [WITH_BONDS, WITHOUT_BONDS]})
+        for name in ("beta cmp", "gamma cmp"):
+            saved_compares.save(name, {"runs": [WITH_BONDS]})
+        index = self.client.get("/").get_data(as_text=True)
+        self.assertIn(f"/compare?saved={first['id']}", index)
+        self.assertIn("alpha cmp", index)
+        self.assertIn("2 runs", index)
+        self.assertEqual([t["name"] for t in saved_compares.tags_by_run()[WITH_BONDS]],
+                         ["alpha cmp", "beta cmp", "gamma cmp"])
+        self.assertEqual([t["name"] for t in saved_compares.tags_by_run()[WITHOUT_BONDS]], ["alpha cmp"])
+        page = self.client.get(f"/runs/{WITH_BONDS}").get_data(as_text=True)
+        self.assertIn("alpha cmp", page)
+        self.assertIn(">+1<", page)  # three compares: two named, one folded
+        saved_compares.rename(first["id"], "renamed cmp")
+        self.assertIn("renamed cmp", self.client.get(f"/runs/{WITHOUT_BONDS}").get_data(as_text=True))
+        saved_compares.delete(first["id"])
+        self.assertNotIn(WITHOUT_BONDS, saved_compares.tags_by_run())
+
 
 if __name__ == "__main__":
     unittest.main()

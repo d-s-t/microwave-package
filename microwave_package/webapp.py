@@ -690,11 +690,15 @@ def index():
     content = eq.read_file(str(paths.DEFAULT_EQUATIONS_FILE))
     parameters = eq.get_numeric_parameters(content)
     runs = _runs_for_display(Run.list_runs())
+    saved_list = saved_compares.listing()
     settings, values, loaded_from = _form_starting_point(
         request.args.get("from_run"), request.args.get("combo")
     )
     return render_template(
         "index.html",
+        saved_list=[{**c, "date_text": _fmt_dt(_dt.datetime.fromtimestamp(c.get("saved_at", 0)))}
+                    for c in saved_list],
+        compare_tags=saved_compares.tags_by_run(saved_list),
         parameters=parameters,
         groups=parameter_meta.grouped(parameters),
         runs=runs,
@@ -1163,6 +1167,7 @@ def run_status(run_id):
     return render_template(
         "run_status.html",
         run=run,
+        compare_tags=saved_compares.tags_by_run().get(run.run_id, []),
         run_name=_run_name(run),
         title_chips=run_facets.title_chips(inputs, run.run_dir),
         settings=_settings_sections(run),
