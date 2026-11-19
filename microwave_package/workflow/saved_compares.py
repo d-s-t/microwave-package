@@ -18,6 +18,15 @@ from .. import paths
 
 _ID = re.compile(r"cmp_[0-9a-f]{12}")
 MAX_NAME = 120
+_last_stamp = 0.0
+
+
+def _stamp() -> float:
+    """The time, bumped so two saves are never the same instant (the clock
+    ticks in ~15 ms steps on Windows) and 'oldest first' stays well defined."""
+    global _last_stamp
+    _last_stamp = max(time.time(), _last_stamp + 1e-6)
+    return _last_stamp
 
 
 def _dir() -> str:
@@ -71,7 +80,7 @@ def save(name: str, record: dict, compare_id: Optional[str] = None) -> dict:
     if compare_id is not None and get(compare_id) is None:
         compare_id = None
     saved = {"id": compare_id or "cmp_" + uuid.uuid4().hex[:12], "name": name,
-             "saved_at": time.time(), **_clean(record)}
+             "saved_at": _stamp(), **_clean(record)}
     os.makedirs(_dir(), exist_ok=True)
     _write(saved)
     return saved
@@ -100,3 +109,13 @@ def delete(compare_id: str) -> bool:
         return True
     except (KeyError, OSError):
         return False
+
+
+def tags_by_run(records: Optional[List[dict]] = None) -> Dict[str, List[dict]]:
+    """Run id -> the saved comparisons it is part of (`id`, `name`),
+    oldest save first, for the tags on the run list and the run page."""
+    tags: Dict[str, List[dict]] = {}
+    for record in sorted(records if records is not None else listing(), key=lambda r: r.get("saved_at", 0)):
+        for run_id in record.get("runs", []):
+            tags.setdefault(run_id, []).append({"id": record["id"], "name": record["name"]})
+    return tags

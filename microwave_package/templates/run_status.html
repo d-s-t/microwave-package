@@ -180,7 +180,8 @@
 </span>
 {%- endmacro %}
 
-<h1>{{ run_name }}</h1>
+{% from "_compare_tags.html" import compare_chips %}
+<h1>{{ run_name }}{{ compare_chips(compare_tags) }}</h1>
 {% if title_chips %}
 <p class="run-chips" aria-label="What the run was built with">{% for chip in title_chips %}<span class="run-chip">{{ chip }}</span>{% endfor %}</p>
 {% endif %}
