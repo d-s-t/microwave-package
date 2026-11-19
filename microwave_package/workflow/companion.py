@@ -585,18 +585,22 @@ def settings_with_modes(run: Run, combo_id: str, analysis_settings: dict,
 
 
 def mode_markers(run: Run, combo_ids=None) -> List[Dict[str, object]]:
-    """Every eigenmode of the paired Eigenmode run as `{combo_id, freq_ghz, q}`,
-    for drawing on a driven run's S-parameter plot. `[]` for an unpaired run."""
-    other = prerequisite_of(run)
-    if other is None:
-        return []
+    """Every eigenmode of the paired Eigenmode run, and of the run's eigenmode
+    parts (terminated like its ports), as `{combo_id, freq_ghz, q, terminated}`,
+    for drawing on a driven run's S-parameter plot. `[]` for a run with neither."""
     wanted = set(combo_ids) if combo_ids is not None else None
+    sources = []
+    other = prerequisite_of(run)
+    if other is not None:
+        sources.append((other, False))
+    sources.extend((part, True) for part in eigenmode_parts(run))
     markers = []
-    for combo_id in other.state.get("combos", {}):
-        if wanted is not None and combo_id not in wanted:
-            continue
-        for f, q in modes_of(other, combo_id):
-            markers.append({"combo_id": combo_id, "freq_ghz": f, "q": q})
+    for source, terminated in sources:
+        for combo_id in source.state.get("combos", {}):
+            if wanted is not None and combo_id not in wanted:
+                continue
+            for f, q in modes_of(source, combo_id):
+                markers.append({"combo_id": combo_id, "freq_ghz": f, "q": q, "terminated": terminated})
     return markers
 
 

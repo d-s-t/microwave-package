@@ -8,6 +8,7 @@ seen in a real run.
 Run: python -m unittest discover -s tests -p test_eigenmode_part.py
 """
 import logging
+import os
 import tempfile
 import unittest
 from unittest import mock
@@ -17,7 +18,7 @@ from microwave_package.design.sweep import SweepParameter
 from microwave_package.hfss import registry
 from microwave_package.hfss.driven import ports
 from microwave_package.hfss.eigenmode import setup as eigen_setup
-from microwave_package.workflow import companion, run_manager
+from microwave_package.workflow import companion, plotting, run_manager
 from microwave_package.workflow.run_manager import Run
 
 from test_ports import FakeHfss, FakeLayout, bead_model
@@ -202,6 +203,34 @@ class TestCreatingAnEigenmodePart(RunsRoot):
         eigen = Run.create(SWEEP, {**pipeline.DEFAULT_ANALYSIS_SETTINGS, "solution_type": "Eigenmode"}, {})
         with self.assertRaisesRegex(ValueError, "Driven"):
             companion.create_eigenmode_part(eigen, list(eigen.state["combos"]))
+
+
+class TestTheModesOnThePlot(RunsRoot):
+    def setUp(self):
+        super().setUp()
+        self.parent = self.driven()
+        self.combos = list(self.parent.state["combos"])
+        self.child = companion.create_eigenmode_part(self.parent, self.combos[:1], 5, 4.0)
+        folder = self.child.combo_path(self.combos[0])
+        os.makedirs(folder, exist_ok=True)
+        with open(os.path.join(folder, "results.csv"), "w", encoding="utf-8") as handle:
+            handle.write("freq_ghz,q" + chr(10) + "6.9,250" + chr(10) + "8.1,40" + chr(10))
+
+    def test_the_parts_modes_are_markers_flagged_as_terminated(self):
+        markers = companion.mode_markers(Run.load(self.parent.run_id))
+        self.assertEqual([(m["combo_id"], m["freq_ghz"], m["q"], m["terminated"]) for m in markers],
+                         [(self.combos[0], 6.9, 250.0, True), (self.combos[0], 8.1, 40.0, True)])
+
+    def test_they_are_a_legend_entry_of_their_own_with_q_on_hover(self):
+        import pandas as pd
+        frame = pd.DataFrame([{"combo_id": self.combos[0], "freq_ghz": f, "s21_db": -f, "s11_db": -1.0}
+                              for f in (4.0, 6.0, 9.0)])
+        markers = companion.mode_markers(Run.load(self.parent.run_id))
+        html = plotting.figure_html(frame, [], x="freq_ghz", y="s21_db", solution_type="DrivenModal",
+                                    mode_markers=markers, plotlyjs_src="plotly.js")
+        self.assertIn("Eigenmodes (terminated)", html)
+        self.assertIn("terminated eigenmode 6.9000 GHz, Q 250", html)
+        self.assertIn("terminated eigenmode 8.1000 GHz, Q 40", html)
 
 
 class TestTheRoute(RunsRoot):
