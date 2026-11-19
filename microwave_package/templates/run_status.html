@@ -751,6 +751,57 @@
 </details>
 {% endif %}
 
+{% if eigen_panel %}
+{# Opens by itself while an eigenmode part is going (webapp._eigen_panel). #}
+<details class="collapsible field-section" id="eigenmodes"{% if eigen_panel.open %} open{% endif %}>
+<summary><h2 class="refine-title">Eigenmodes of this model</h2></summary>
+{% for part in eigen_panel.parts %}
+<div class="field-part">
+  <h3><span class="pill {{ part.tone }}">{{ part.word }}</span> terminated eigenmodes
+    <span class="muted">&mdash; {{ part.combos | join(', ') }}; {{ part.modes_asked }} mode(s) from {{ part.min_ghz }} GHz</span></h3>
+  {% if part.running %}
+  <form method="post" action="{{ url_for('stop_run', run_id=part.run_id) }}" style="display:inline">
+    <button type="submit" class="mini">Stop</button></form>
+  {% elif not part.complete %}
+  <form method="post" action="{{ url_for('resume_run', run_id=part.run_id) }}" style="display:inline">
+    <button type="submit" class="mini">Resume</button></form>
+  {% endif %}
+  {% if part.error %}<pre class="muted">{{ part.error }}</pre>{% endif %}
+  {% if part.modes %}
+  <table class="results"><thead><tr><th>Combination</th><th>Mode</th><th>Frequency (GHz)</th><th>Q</th></tr></thead><tbody>
+    {% for m in part.modes %}
+    <tr><td>{{ m.combo_id }}</td><td>{{ m.mode }}</td><td>{{ "%.4f"|format(m.freq_ghz) }}</td>
+      <td>{{ "%.1f"|format(m.q) if m.q is not none else "-" }}</td></tr>
+    {% endfor %}
+  </tbody></table>
+  {% elif part.complete %}<p class="muted">No modes were found.</p>{% endif %}
+</div>
+{% else %}
+<p class="muted">No eigenmode part has been made from this run yet.</p>
+{% endfor %}
+{% if eigen_panel.combos %}
+<form method="post" action="{{ url_for('eigenmodes_run', run_id=run.run_id) }}" class="field-form">
+  <h3>Eigenmodes of the same model</h3>
+  <p class="muted">Rebuilds each ticked combination with the current model builder and solves its resonances.
+    An eigenmode solve has no ports, so each port's {{ eigen_panel.impedance }} ohm is put back as a lumped RLC
+    on the same sheet (and across each connector's bore when the connectors are kept). The modes are then
+    those of the terminated model: Q includes the loss into the terminations. Nothing is solved until you press the button.</p>
+  <label>Modes (1&ndash;{{ eigen_panel.max_modes }})
+    <input type="number" name="modes" min="1" max="{{ eigen_panel.max_modes }}" value="{{ eigen_panel.max_modes }}" required></label>
+  <label>Look above (GHz)
+    <input type="number" step="any" min="0" name="min_ghz" value="{{ eigen_panel.default_min }}"></label>
+  <div class="chips" style="margin:.5rem 0">
+    <strong>Combinations</strong>
+    {% for combo in eigen_panel.combos %}
+    <label class="chip"><input type="checkbox" name="combo" value="{{ combo }}" checked>{{ combo }}</label>
+    {% endfor %}
+  </div>
+  <button type="submit" class="start-run">Solve eigenmodes</button>
+</form>
+{% endif %}
+</details>
+{% endif %}
+
 {% if heatmap_combos %}
 <h2>Chip field</h2>
 <div class="axis-picker">

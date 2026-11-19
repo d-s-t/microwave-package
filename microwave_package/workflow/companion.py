@@ -49,6 +49,12 @@ REFINED_BY = "refined_by"
 # frequency, to draw their fields (see create_field_images). Its parent lists
 # it under FIELD_PARTS; the part itself names its parent as `part_of`.
 FIELD_PARTS = "field_image_parts"
+# An eigenmode part is an Eigenmode run of a driven run's own model, with the
+# driven ports' load put back as terminations (see create_eigenmode_part). It is
+# not the hidden pair (EIGEN_LINK) that can sit beside a driven run; it names its
+# parent as `eigen_of`, and the parent lists it under EIGEN_PARTS.
+EIGEN_PARTS = "eigenmode_parts"
+EIGEN_OF = "eigen_of"
 
 # What a combination's geometry is, among the files in its folder. The
 # rest -- the AEDT project, the solved results -- belong to the solve and
@@ -81,7 +87,8 @@ def parts_of(run: Run) -> List[Run]:
     with it."""
     found = []
     for run_id in [run.config.get(EIGEN_LINK), *(run.config.get(REFINED_BY) or []),
-                   *(run.config.get(FIELD_PARTS) or [])]:
+                   *(run.config.get(FIELD_PARTS) or []),
+                   *(run.config.get(EIGEN_PARTS) or [])]:
         if not run_id:
             continue
         try:
@@ -369,6 +376,100 @@ def create_field_images(parent: Run, frequency_text: str, combo_ids: List[str],
     return child
 
 
+def eigenmode_parent(run: Run) -> Optional[Run]:
+    """The driven run an eigenmode part was made from, or None."""
+    run_id = run.config.get(EIGEN_OF)
+    if not run_id:
+        return None
+    try:
+        return Run.load(run_id)
+    except (OSError, ValueError, KeyError):
+        logger.warning("Run %s was made from %s, which cannot be loaded.", run.run_id, run_id)
+        return None
+
+
+def eigenmode_parts(run: Run) -> List[Run]:
+    """The eigenmode parts made from this run, oldest first, skipping deleted ones."""
+    found = []
+    for run_id in run.config.get(EIGEN_PARTS) or []:
+        try:
+            found.append(Run.load(run_id))
+        except (OSError, ValueError, KeyError):
+            continue
+    return found
+
+
+MAX_EIGEN_MODES = 20
+
+
+def create_eigenmode_part(parent: Run, combo_ids: List[str], modes=MAX_EIGEN_MODES,
+                          min_ghz=None) -> Run:
+    """A new Eigenmode run of `combo_ids` of the driven run `parent`, terminated like it.
+
+    The model is rebuilt with the current model builder on the parent's geometry
+    (`seed_geometry`), with the same settings and materials. An eigenmode solve
+    has no ports, so what the driven run's ports gave it is put back as loads:
+    the lumped planes' ports become lumped RLC boundaries of the port impedance
+    on the same sheets, and, when the connectors are kept, each connector bore
+    gets the same impedance across its top. The modes then come out with the
+    complex frequencies of the terminated cavity, and Q from them.
+
+    `modes` is the number of modes asked for (HFSS's own limit is MAX_EIGEN_MODES
+    in the form), `min_ghz` the floor they are looked for above; default the
+    parent's band start. Raises ValueError for anything that cannot be done.
+    """
+    settings = parent.analysis_settings
+    if registry.solution_type_of(settings) != DRIVEN_MODAL:
+        raise ValueError("Only a Driven Modal run has ports whose load an eigenmode part can reproduce.")
+    wanted = list(dict.fromkeys(combo_ids))
+    if not wanted:
+        raise ValueError("Pick at least one combination.")
+    missing = [c for c in wanted if c not in set(refinable_combos(parent))]
+    if missing:
+        raise ValueError(f"These combinations have no results yet: {', '.join(missing)}.")
+    if not settings.get("use_altium", True):
+        raise ValueError("An eigenmode part needs the layout (Altium) to put its terminations on.")
+    _refuse_unbuildable_geometry(parent, wanted)
+    try:
+        modes = int(modes)
+    except (TypeError, ValueError):
+        raise ValueError("Give the number of modes as a whole number.") from None
+    if not 1 <= modes <= MAX_EIGEN_MODES:
+        raise ValueError(f"The number of modes must be between 1 and {MAX_EIGEN_MODES}.")
+    if min_ghz in (None, ""):
+        min_ghz = settings.get("f_start_ghz") or 0.0
+    try:
+        min_ghz = float(min_ghz)
+    except (TypeError, ValueError):
+        raise ValueError("Give the lowest frequency in GHz, as a number.") from None
+    if not math.isfinite(min_ghz) or min_ghz < 0:
+        raise ValueError("The lowest frequency must be zero or more, in GHz.")
+
+    impedance = float(settings.get("port_impedance_ohm") or 50.0)
+    plane = settings.get("reference_plane")
+    kept = (settings.get("launch_connectors") or "kept") == "kept" or plane == "connector"
+    child_settings = {
+        **settings,
+        "solution_type": EIGENMODE,
+        "modes": modes,
+        "eigen_min_ghz": min_ghz,
+        "eigen_terminate_ports": True,
+        # connectors kept: their bores are loaded too, as the driven run does
+        "connector_termination_ohm": impedance if kept else 0.0,
+    }
+    sweep_params = [SweepParameter(name=p["name"], values=p["values"])
+                    for p in parent.config.get("sweep_params", [])]
+    child = Run.create(sweep_params, child_settings, parent.parameter_defaults, part_of=parent,
+                       role=f"eigenmodes{len(parent.config.get(EIGEN_PARTS) or []) + 1}")
+    keep = set(wanted)
+    child.state["combos"] = {c: v for c, v in child.state["combos"].items() if c in keep}
+    child.config[EIGEN_OF] = parent.run_id
+    child.save()
+    parent.config[EIGEN_PARTS] = [*parent.config.get(EIGEN_PARTS, []), child.run_id]
+    parent.save_config()
+    return child
+
+
 def partner_id(run: Run) -> Optional[str]:
     return run.config.get(EIGEN_LINK) or run.config.get(DRIVEN_LINK)
 
@@ -484,18 +585,22 @@ def settings_with_modes(run: Run, combo_id: str, analysis_settings: dict,
 
 
 def mode_markers(run: Run, combo_ids=None) -> List[Dict[str, object]]:
-    """Every eigenmode of the paired Eigenmode run as `{combo_id, freq_ghz, q}`,
-    for drawing on a driven run's S-parameter plot. `[]` for an unpaired run."""
-    other = prerequisite_of(run)
-    if other is None:
-        return []
+    """Every eigenmode of the paired Eigenmode run, and of the run's eigenmode
+    parts (terminated like its ports), as `{combo_id, freq_ghz, q, terminated}`,
+    for drawing on a driven run's S-parameter plot. `[]` for a run with neither."""
     wanted = set(combo_ids) if combo_ids is not None else None
+    sources = []
+    other = prerequisite_of(run)
+    if other is not None:
+        sources.append((other, False))
+    sources.extend((part, True) for part in eigenmode_parts(run))
     markers = []
-    for combo_id in other.state.get("combos", {}):
-        if wanted is not None and combo_id not in wanted:
-            continue
-        for f, q in modes_of(other, combo_id):
-            markers.append({"combo_id": combo_id, "freq_ghz": f, "q": q})
+    for source, terminated in sources:
+        for combo_id in source.state.get("combos", {}):
+            if wanted is not None and combo_id not in wanted:
+                continue
+            for f, q in modes_of(source, combo_id):
+                markers.append({"combo_id": combo_id, "freq_ghz": f, "q": q, "terminated": terminated})
     return markers
 
 

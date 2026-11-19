@@ -538,20 +538,26 @@ def _add_mode_markers(figure, df: pd.DataFrame, markers: List[Dict], dark: bool)
     """
     shown = set(df["combo_id"]) if "combo_id" in df.columns else None
     low, high = df["freq_ghz"].min(), df["freq_ghz"].max()
-    seen, xs, texts = set(), [], []
+    # The paired run's modes are those of the model as built (triangles); an eigenmode
+    # part's are those of the model terminated like the driven run's ports (diamonds).
+    groups = {False: ([], []), True: ([], [])}
+    seen = set()
     for marker in markers:
         f = marker["freq_ghz"]
+        terminated = bool(marker.get("terminated"))
         if (shown is not None and marker["combo_id"] not in shown) or not low <= f <= high:
             continue
-        key = round(f, 6)
+        key = (terminated, round(f, 6))
         if key in seen:
             continue
         seen.add(key)
         q = marker.get("q")
+        xs, texts = groups[terminated]
         xs.append(f)
-        texts.append(f"eigenmode {f:.4f} GHz" + (f", Q {q:.0f}" if isinstance(q, (int, float)) and q == q else "")
+        texts.append(("terminated " if terminated else "") + f"eigenmode {f:.4f} GHz"
+                     + (f", Q {q:.0f}" if isinstance(q, (int, float)) and q == q else "")
                      + f" ({marker['combo_id']})")
-    if not xs:
+    if not groups[False][0] and not groups[True][0]:
         return
     label = figure.layout.xaxis.title.text
     figure.update_layout(
@@ -562,12 +568,19 @@ def _add_mode_markers(figure, df: pd.DataFrame, markers: List[Dict], dark: bool)
                     showgrid=False, zeroline=False, ticks="", tickvals=[0.5],
                     ticktext=["eigenmodes"], tickfont=dict(size=10)),
     )
-    figure.add_trace(go.Scatter(
-        x=xs, y=[0.5] * len(xs), xaxis="x2", yaxis="y2", mode="markers", name="Eigenmodes",
-        text=texts, hoverinfo="text",
-        marker=dict(symbol="triangle-up", size=9, color="#e9a100" if dark else "#b47600",
-                    line=dict(width=1, color=_SURFACE["dark" if dark else "light"])),
-    ))
+    edge = _SURFACE["dark" if dark else "light"]
+    for terminated, name, symbol, colour, height in (
+        (False, "Eigenmodes", "triangle-up", "#e9a100" if dark else "#b47600", 0.5),
+        (True, "Eigenmodes (terminated)", "diamond", "#4fb3d9" if dark else "#0b6e99", 0.5),
+    ):
+        xs, texts = groups[terminated]
+        if not xs:
+            continue
+        figure.add_trace(go.Scatter(
+            x=xs, y=[height] * len(xs), xaxis="x2", yaxis="y2", mode="markers", name=name,
+            text=texts, hoverinfo="text",
+            marker=dict(symbol=symbol, size=9, color=colour, line=dict(width=1, color=edge)),
+        ))
 
 
 # The figure is embedded in an iframe, so a click on a point has to be

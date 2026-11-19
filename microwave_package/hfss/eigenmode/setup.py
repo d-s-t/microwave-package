@@ -54,9 +54,14 @@ def create_setup(hfss, dimensions_txt_content: str, analysis_settings: dict,
     runs client-side and the worker only ever runs the setup it is
     given (see ansys-analyze-worker's ARCHITECTURE.md section 8).
     """
-    min_freq_ghz = calculate_min_freq(
-        dimensions_txt_content, safety_factor=analysis_settings["min_freq_safety_factor"]
-    )
+    explicit = analysis_settings.get("eigen_min_ghz")
+    if explicit:
+        # The child of a driven run: the floor is the band's, not the PCB's estimate.
+        min_freq_ghz = float(explicit)
+    else:
+        min_freq_ghz = calculate_min_freq(
+            dimensions_txt_content, safety_factor=analysis_settings["min_freq_safety_factor"]
+        )
     setup = hfss.create_setup(name=SETUP_NAME)
     setup.props["MinimumFrequency"] = f"{min_freq_ghz}GHz"
     setup.props["NumModes"] = analysis_settings["modes"]

@@ -210,9 +210,10 @@ def _finish_prerequisite(run: Run, queue, log=logger.info, stop_event=None) -> b
     one down with it -- the driven run goes ahead with the coarse sweep,
     and says so.
     """
-    parent = companion.refined_parent(run) or companion.field_parent(run)
+    parent = (companion.refined_parent(run) or companion.field_parent(run)
+              or companion.eigenmode_parent(run))
     if parent is not None:
-        # A refinement, or a field-image part, starts from its parent's finished geometry.
+        # A refinement, a field-image part or an eigenmode part, starts from its parent's finished geometry.
         companion.seed_geometry(run, parent, log=log)
         return True
     eigen = companion.prerequisite_of(run)
