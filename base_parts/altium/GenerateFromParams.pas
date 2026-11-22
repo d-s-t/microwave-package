@@ -2142,11 +2142,17 @@ Begin
         nShieldSkip := 0;
         nStitch := 0;
         nStitchSkip := 0;
-        AddViaLattice(Board, FenceY, TraceHalfL,
-                      ViaDia, ViaMaxSpacing, ViaMinSpacing,
-                      HalfL, HalfS, CavHalfL, CavHalfS,
-                      Corridor, SmpOrigin, VoidR,
-                      nShield, nShieldSkip, nStitch, nStitchSkip);
+        { vias_off = 1: no via of any kind -- neither the shield fence nor
+          the ground-plane stitching. The counts are reported as 0 so the
+          report reads the same as a run that placed some. }
+        If ParamOf(P, 'vias_off', 0.0) > 0.5 Then
+            Say('vias_off=1')
+        Else
+            AddViaLattice(Board, FenceY, TraceHalfL,
+                          ViaDia, ViaMaxSpacing, ViaMinSpacing,
+                          HalfL, HalfS, CavHalfL, CavHalfS,
+                          Corridor, SmpOrigin, VoidR,
+                          nShield, nShieldSkip, nStitch, nStitchSkip);
         Say('package_shielding_vias=' + IntToStr(nShield));
         Say('package_shielding_skipped=' + IntToStr(nShieldSkip));
         Say('package_stitching_vias=' + IntToStr(nStitch));

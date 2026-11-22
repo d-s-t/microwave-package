@@ -86,6 +86,8 @@
 
 "chip_trace_width"= 0.2	' width of the CPW signal trace on the die, with its own gap solved for 50 ohm on the silicon; a width that suits the PCB (0.4 mm on RT/duroid 5880) is not a CPW on a 0.381 mm die, so the die's does not follow cpw_trace_width
 
+"vias_off" = 0 ' (boolean) when set to 1, the layout has no vias at all (no shield fence, no ground-plane stitching), for a study of the board without them. 0 places them as the via_* parameters say.
+
 "via_diameter"= 0.3	' finished diameter of the stitching and shielding vias
 
 "via_max_spacing"= 0.8	' step of the via lattice, along a row and between rows; the shield fence is its first row
