@@ -724,6 +724,8 @@ def index():
         has_screws_param=parameter_meta.SCREWS_PARAM in parameters,
         vents_ticked=_ticked("vents_on", values, parameters),
         has_vents_param=parameter_meta.VENTS_PARAM in parameters,
+        vias_off_ticked=_ticked("vias_off", values, parameters),
+        has_vias_off_param=parameter_meta.VIAS_OFF_PARAM in parameters,
         solution_types=registry.solution_types(),
         standalone_types=registry.standalone_types(),
         # Both types' controls are rendered and the form hides the one
@@ -801,6 +803,12 @@ def new_run():
         requested.append(SweepParameter(
             name=parameter_meta.VENTS_PARAM,
             values=[1.0 if "vents_on" in request.form else 0.0]))
+
+    # Vias off: ticked means no vias at all; unticked pins 0 so the run says so.
+    if parameter_meta.VIAS_OFF_PARAM in available:
+        requested.append(SweepParameter(
+            name=parameter_meta.VIAS_OFF_PARAM,
+            values=[1.0 if "vias_off" in request.form else 0.0]))
 
     sweep_params, parameter_defaults = split_swept_and_fixed(requested)
     if not sweep_params and not parameter_defaults:

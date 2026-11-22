@@ -350,15 +350,16 @@ def from_parameters(which: str, values: Dict[str, float], substrate_material: st
     diameter = values.get("via_diameter", 0.3)
     pitch = max(values.get("via_max_spacing", 0.8), diameter * 1.5)
     z_row = trace / 2.0 + gap + values.get("via_gnd_clearance", 0.15) + diameter / 2.0
-    if which == BOARD and z_row + diameter / 2.0 < half_width:
+    if which == BOARD and z_row + diameter / 2.0 < half_width and float(values.get("vias_off", 0.0)) <= 0.5:
         count = max(int(length // pitch), 1)
         offset = (length - (count - 1) * pitch) / 2.0
         for i in range(count):
             for side in (-1.0, 1.0):
                 section.vias.append((offset + i * pitch, side * z_row, diameter))
     section.notes.append(
-        "geometry re-derived from the parameters, not read from a layout: the via fence is the one "
-        "the equations describe"
+        "geometry re-derived from the parameters, not read from a layout: "
+        + ("vias_off is set, so there is no via fence" if float(values.get("vias_off", 0.0)) > 0.5
+           else "the via fence is the one the equations describe")
     )
     return section
 

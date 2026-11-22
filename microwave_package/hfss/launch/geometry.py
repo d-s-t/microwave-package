@@ -62,6 +62,7 @@ class Launch:
     via_pitch: float = 0.8
     via_clearance: float = 0.15
     via_min_gap: float = 0.2
+    vias_off: bool = False         # vias_off = 1: the board has no vias at all
     # The full board the lattice of vias is anchored on (pcb_length): the
     # generator anchors it on the board's centre.
     full_length: float = 50.0
@@ -150,6 +151,7 @@ def from_values(values, gap: float, trace_length: float = 8.0, half_width: float
         via_pitch=values.get("via_max_spacing", 0.8),
         via_clearance=values.get("via_gnd_clearance", 0.15),
         via_min_gap=values.get("via_min_spacing", 0.2),
+        vias_off=float(values.get("vias_off", 0.0)) > 0.5,
         full_length=values.get("pcb_length", 50.0),
     )
 
@@ -249,6 +251,8 @@ def vias(launch: Launch) -> List[cg.Via]:
     staggered, and anchored on the FULL board's centre (so the baseline lands
     on the same nodes as the real board). The centre row of vias behind the
     launch (y = 0) is the odd row, kept only past the void."""
+    if launch.vias_off:
+        return []
     H, d = launch.half_length, launch.via_diameter
     step = launch.via_pitch / 2.0
     first_row = launch.gnd_inner + launch.via_clearance + d / 2.0

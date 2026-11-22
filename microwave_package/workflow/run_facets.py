@@ -34,6 +34,7 @@ PEDESTAL_DEPTH = "pedestal_depth"
 PEDESTAL_SHAPE = "pedestal_shape"
 VENTS = parameter_meta.VENTS_PARAM
 SCREWS = parameter_meta.SCREWS_PARAM
+VIAS_OFF = parameter_meta.VIAS_OFF_PARAM
 
 # Where a setting's value came from. Shown on the run page beside the value.
 SWEPT = "swept"
@@ -123,7 +124,7 @@ def settings_of(inputs: dict, run_dir: Optional[str] = None) -> Dict[str, Settin
     own_model = registry.is_known(solution) and not registry.get(solution).needs_solid
     return {
         name: _setting(name, inputs, run_dir, own_model)
-        for name in (NO_CHIP, PEDESTAL_DEPTH, PEDESTAL_SHAPE, VENTS, SCREWS)
+        for name in (NO_CHIP, PEDESTAL_DEPTH, PEDESTAL_SHAPE, VENTS, SCREWS, VIAS_OFF)
     }
 
 
@@ -217,7 +218,8 @@ _SOURCE_TEXT = {
 }
 NOT_APPLICABLE_TEXT = "not applicable: this solver draws its own model"
 # The on/off switches, under the names the new-run form gives them.
-_FLAG_LABELS = {NO_CHIP: "Bare board (no chip)", VENTS: "Vent grooves", SCREWS: "Corner screws"}
+_FLAG_LABELS = {NO_CHIP: "Bare board (no chip)", VENTS: "Vent grooves", SCREWS: "Corner screws",
+                VIAS_OFF: "Vias off"}
 
 
 def _switch_text(setting: Setting, on: str, off: str) -> str:
@@ -286,6 +288,7 @@ def geometry_rows(inputs: dict, run_dir: Optional[str] = None) -> List[Dict[str,
         _row("Pedestal", depth, _pedestal_text(depth, settings[PEDESTAL_SHAPE])),
         _row("Vent grooves", vents, _switch_text(vents, "on", "off")),
         _row("Corner screws", screws, _switch_text(screws, "on", "off")),
+        _row("Vias off", settings[VIAS_OFF], _switch_text(settings[VIAS_OFF], "yes: no vias", "no: vias placed")),
     ]
     return rows
 

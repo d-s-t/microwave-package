@@ -426,6 +426,15 @@
     {% if vents_ticked %}checked{% endif %}> Vent grooves</label>
   {% endif %}
 
+  {% if has_vias_off_param %}
+  <h4>Vias</h4>
+  <p class="muted">Tick to place no vias at all (<code>vias_off = 1</code>): neither the CPW's shield fence
+    nor the ground-plane stitching. The via parameters above are then unused. Unticked, the vias are
+    placed as those parameters say.</p>
+  <label><input type="checkbox" name="vias_off" value="1"
+    {% if vias_off_ticked %}checked{% endif %}> Vias off (no vias at all)</label>
+  {% endif %}
+
   {% set materials = settings.materials or {} %}
   {% macro material_field(key, label, options) %}
     {% set current = materials.get(key) or options[0] %}

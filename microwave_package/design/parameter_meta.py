@@ -56,6 +56,7 @@ LABELS: Dict[str, str] = {
     # transmission line, shielding and bonds
     "cpw_trace_width": "CPW trace width",
     "chip_trace_width": "Chip CPW trace width",
+    "vias_off": "Vias off (no vias at all)",
     "via_diameter": "Via diameter",
     "via_max_spacing": "Maximum via spacing",
     "via_gnd_clearance": "Via fence setback from gap",
@@ -121,7 +122,13 @@ SCREWS_PARAM = "screws_on"
 # on/off pinned for the whole run; the groove's size is swept like any other.
 VENTS_PARAM = "vents_on"
 
-BOOLEAN_PARAMETERS = {NO_CHIP_PARAM, SCREWS_PARAM, VENTS_PARAM}
+# The vias-off flag: 1 places no vias at all -- neither the CPW's shield fence
+# nor the ground-plane stitching -- so the board's TDR or fields can be read
+# without them. A plain on/off pinned for the whole run; the via_* parameters
+# are then unused (and not checked).
+VIAS_OFF_PARAM = "vias_off"
+
+BOOLEAN_PARAMETERS = {NO_CHIP_PARAM, SCREWS_PARAM, VENTS_PARAM, VIAS_OFF_PARAM}
 
 # The value each on/off flag is pinned to on every run that does not ask for
 # it otherwise (the web form's untick, or a command line that names no
@@ -130,7 +137,7 @@ BOOLEAN_PARAMETERS = {NO_CHIP_PARAM, SCREWS_PARAM, VENTS_PARAM}
 # step_generation.check_baseline. Must equal the committed base_parts/default.txt
 # (checked by tests/test_switch_pins.py).
 # Vents are off: they are cut after the box is made (decided 2026-11-08).
-SWITCH_PINS = {NO_CHIP_PARAM: 0.0, SCREWS_PARAM: 1.0, VENTS_PARAM: 0.0}
+SWITCH_PINS = {NO_CHIP_PARAM: 0.0, SCREWS_PARAM: 1.0, VENTS_PARAM: 0.0, VIAS_OFF_PARAM: 0.0}
 
 # Parameters this project no longer has. The distortion option (no_distortion,
 # and the distortion_radius / distortion_x / distortion_y geometry under it) and the
@@ -154,6 +161,14 @@ SCREW_GEOMETRY_PARAMETERS = [
     "screw_inset", "screw_clearance_diameter", "screw_tap_diameter",
     "screw_keepout_diameter", "screw_engagement", "screw_length",
 ]
+
+
+def vias_are_off(values) -> bool:
+    """Whether this combination's values ask for a board with no vias."""
+    try:
+        return float(values.get(VIAS_OFF_PARAM, 0)) > 0.5
+    except (TypeError, ValueError):
+        return False
 
 
 def is_bare_board(values) -> bool:
