@@ -447,7 +447,8 @@ def run_local_stages(
     # committed change to default.txt reaches it, the Altium stage included.
     solver = registry.for_settings(analysis_settings)
     if solver.needs_solid:
-        original_content = step_generation.baseline_content(equations_path)
+        original_content = step_generation.baseline_for_a_run_with_solidworks(
+            equations_path, log=log)
     else:
         original_content = step_generation.baseline_for_a_run_without_solidworks(
             equations_path, log=log)
