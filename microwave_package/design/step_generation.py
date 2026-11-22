@@ -279,6 +279,44 @@ def baseline_content(equations_path: str) -> str:
     return recorded if recorded is not None else eq.read_file(equations_path)
 
 
+def baseline_for_a_run_with_solidworks(equations_path: str,
+                                       log: Callable[[str], None] = logger.info) -> str:
+    """The baseline a run that needs SolidWorks is laid over, read WITHOUT
+    the lock and without writing anything.
+
+    The recorded sidecar is the older file after a `git pull` of default.txt,
+    until a SolidWorks session opens and `check_baseline` refreshes it under
+    the lock -- which is after the run's per-combination equations have been
+    laid over it. A parameter added by the pull (a new switch the run pins) is
+    then missing from that baseline and the layering fails with KeyError. So
+    when the live file differs from the record but is the committed file, the
+    live file is returned: the same acceptance rule as `check_baseline`.
+
+    The live file may be written out by another generator at this moment (that
+    is why this does not read it unconditionally), but a file with another
+    run's values in it is not the committed one, so it is passed over and the
+    record is returned as before. Nothing is refused here and the sidecar is
+    left to `check_baseline`, which still raises PollutedBaseline under the
+    lock at build time.
+    """
+    recorded = recorded_baseline(equations_path)
+    if recorded is None:
+        return eq.read_file(equations_path)
+    try:
+        live = eq.read_file(equations_path)
+    except OSError:
+        return recorded
+    if not _value_differences(recorded, live):
+        return recorded
+    committed = committed_content(equations_path)
+    if committed is not None and not _value_differences(committed, live):
+        log(f"{equations_path} differs from its recorded baseline but matches the committed "
+            "file; this run is laid over the committed file (the record is refreshed when "
+            "SolidWorks opens).")
+        return live
+    return recorded
+
+
 def _value_differences(recorded: str, live: str) -> List[str]:
     before, after = eq.parse(recorded), eq.parse(live)
     out = []

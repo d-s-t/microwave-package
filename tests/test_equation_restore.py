@@ -454,6 +454,36 @@ class TestACommittedChangeReachesARunWithoutSolidWorks(RunsBase):
         self.assertEqual(altium.call_args[0][1], NEWER)
 
 
+class TestACommittedChangeReachesARunWithSolidWorks(TestACommittedChangeReachesARunWithoutSolidWorks):
+    """The 2026-11-22 failure (vias_off): the record lacked an equation the
+    pull added, the run pinned it, and layering it over the record raised
+    KeyError before the SolidWorks session could refresh the record."""
+
+    def test_a_run_pinning_the_new_equation_is_laid_over_the_committed_file(self):
+        run = self.make_run("Eigenmode", "launch_taper_length", 0.5, use_altium=False)
+        combo = next(iter(run.state["combos"]))
+        with mock.patch.object(stages, "_AedtStage") as aedt:
+            aedt.return_value.build.return_value = True
+            self.run_stages(run)                           # no KeyError
+        snapshot = eq.parse(eq.read_file(os.path.join(run.combo_dir(combo), "dimensions.txt")))
+        self.assertEqual(snapshot["launch_taper_length"].numeric_value, 0.5)
+        self.assertEqual(eq.read_file(sg.baseline_path(self.path)), NEWER)   # refreshed by the session
+        self.assertFalse(os.path.exists(sg.lock_path(self.path)))
+
+    def test_the_read_itself_writes_nothing_and_takes_no_lock(self):
+        before = eq.read_file(sg.baseline_path(self.path))
+        text = sg.baseline_for_a_run_with_solidworks(self.path, log=lambda _m: None)
+        self.assertEqual(text, NEWER)
+        self.assertEqual(eq.read_file(sg.baseline_path(self.path)), before)
+        self.assertFalse(os.path.exists(sg.lock_path(self.path)))
+
+    def test_a_polluted_live_file_is_passed_over_and_the_session_still_refuses_it(self):
+        eq.write_file(self.path, BARE_POLLUTED)            # not committed (HEAD is NEWER)
+        self.assertEqual(sg.baseline_for_a_run_with_solidworks(self.path, log=lambda _m: None), COMMITTED)
+        with self.assertRaises(sg.PollutedBaseline):
+            self.open()
+
+
 class TestTheSolidWorksPathIsUnchanged(RunsBase):
     """Runs that use SolidWorks are checked against the live file as they always were."""
 
