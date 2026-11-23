@@ -61,6 +61,25 @@ class SavedComparesTests(RunsOnDisk):
         self.assertEqual(self.client.post(f"/compare/saved/{saved_id}/delete").status_code, 404)
         self.assertEqual(self.client.post("/compare/saved", json={"name": ""}).status_code, 400)
 
+    def test_the_runs_of_a_saved_compare_can_be_changed_and_the_change_saved(self):
+        self.wire_bond_pair()
+        saved_id = self.client.post("/compare/saved", json={
+            "name": "pair", "runs": [WITH_BONDS, WITHOUT_BONDS], "names": {WITHOUT_BONDS: "Beta"}}).get_json()["id"]
+        # the run list comes back ticked with the saved runs, and keeps the id for the new selection
+        index = self.client.get(f"/?compare={WITH_BONDS},{WITHOUT_BONDS}&saved={saved_id}").get_data(as_text=True)
+        self.assertIn(f'name="saved" value="{saved_id}"', index)
+        self.assertIn("change runs", index)
+        # the comparison with one run taken out is still that saved comparison (so it can be updated),
+        # and the runs that stay keep the names it gave them
+        page = self.client.get(f"/compare?saved={saved_id}&runs={WITHOUT_BONDS}").get_data(as_text=True)
+        self.assertIn("update “pair”", page)
+        self.assertIn("Beta", page)
+        self.assertNotIn(f'data-run-row="{WITH_BONDS}"', page)
+        self.assertIn(f"saved={saved_id}", page.split("Change which runs")[0].rsplit("href=", 1)[1])
+        # updating stores the new set of runs under the same id
+        self.client.post("/compare/saved", json={"id": saved_id, "name": "pair", "runs": [WITHOUT_BONDS]})
+        self.assertEqual(saved_compares.get(saved_id)["runs"], [WITHOUT_BONDS])
+
     def test_the_order_sets_the_letters_and_is_saved(self):
         self.wire_bond_pair()
         with webapp.app.test_request_context(

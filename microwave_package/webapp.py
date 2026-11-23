@@ -711,6 +711,9 @@ def index():
         # Ticked on arrival: the comparison page's "change the selection"
         # comes back here with the runs it was showing.
         compare_ids=set(filter(None, request.args.get("compare", "").split(","))),
+        # The saved comparison whose runs are being changed: the run list
+        # sends its id back with the new selection, so the page can update it.
+        editing_saved=saved_compares.get(request.args.get("saved", "")),
         max_compare=compare.MAX_RUNS,
         drawings=_parameter_drawings(),
         meta=parameter_meta,
@@ -2180,9 +2183,17 @@ def _saved_args(args):
     """A comparison URL's arguments -- or, for `?saved=<id>` with no runs
     of its own, the runs and names that saved comparison holds."""
     saved = saved_compares.get(args.get("saved", ""))
-    if saved is None or args.getlist("runs"):
+    if saved is None:
         return args, saved
     from werkzeug.datastructures import MultiDict
+    if args.getlist("runs"):
+        # The saved comparison with its runs changed (added, removed): the
+        # runs asked for, and the names it gave to those of them it knew.
+        merged = MultiDict(args)
+        for run_id, name in saved["names"].items():
+            if "n_" + run_id not in merged:
+                merged["n_" + run_id] = name
+        return merged, saved
     merged = MultiDict(args)
     merged.setlist("runs", [",".join(saved["runs"])])
     merged["order"] = ",".join(saved["runs"])
@@ -2267,7 +2278,7 @@ def compare_runs():
         table_note=table_note,
         palette=plotting.RUN_COLOURS,
         runs_param=runs_param,
-        change_url=url_for("index", compare=runs_param) + "#runs",
+        change_url=url_for("index", compare=runs_param, **({"saved": saved["id"]} if saved else {})) + "#runs",
         saved=saved,
         saved_options=(saved or {}).get("options", {}),
         saved_list=saved_compares.listing(),

@@ -222,6 +222,7 @@
 {% for c in saved_list %}
   <li><a href="{{ url_for('compare_runs', saved=c.id) }}">{{ c.name }}</a>
     <span class="muted small">{{ c.runs|length }} run{{ "" if c.runs|length == 1 else "s" }}{% if c.date_text %} · saved {{ c.date_text }}{% endif %}</span>
+    <a class="mini" href="{{ url_for('index', compare=c.runs|join(','), saved=c.id) }}#runs" title="Pick other runs for this saved comparison: tick or untick runs below, press Compare, then update it">change runs</a>
     <button type="button" class="mini" data-rename="{{ c.id }}" data-name="{{ c.name }}">rename</button>
     <button type="button" class="mini" data-delete="{{ c.id }}" data-name="{{ c.name }}">delete</button></li>
 {% endfor %}
@@ -274,7 +275,9 @@
 {# Tick runs, then Compare: their settings, numbers and plots on one
    page. A GET form, so the comparison is a URL like any other page. #}
 <form id="compare-form" class="compare-bar" method="get" action="{{ url_for('compare_runs') }}">
+  {% if editing_saved %}<input type="hidden" name="saved" value="{{ editing_saved.id }}">{% endif %}
   <button type="submit" id="compare-button">Compare</button>
+  {% if editing_saved %}<span class="muted">Changing the runs of “{{ editing_saved.name }}” -- tick or untick runs, press Compare, then press “update” on its page.</span>{% endif %}
   <span class="muted" id="compare-hint">Tick two or more runs to compare their results.</span>
   <button type="button" class="link-ish" id="compare-clear" hidden>clear</button>
 </form>
