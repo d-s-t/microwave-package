@@ -120,7 +120,7 @@
   <a href="{{ change_url }}">Change which runs</a></p>
 
 <table class="key">
-<thead><tr><th>Run</th><th>Solved</th><th>Swept</th><th>Results</th></tr></thead>
+<thead><tr><th>Run</th><th>Solved</th><th>Swept</th><th>Results</th><th></th></tr></thead>
 <tbody>
 {% for e in entries %}
 <tr draggable="true" data-run-row="{{ e.run_id }}" title="Drag to reorder">
@@ -132,6 +132,7 @@
   <td>{{ e.swept_text or "—" }}</td>
   <td>{% if e.rows %}{{ e.rows }} row{{ "" if e.rows == 1 else "s" }}{% if e.combos > 1 %} from {{ e.combos }} combinations{% endif %}
       {% else %}<span class="muted">none yet</span>{% endif %}</td>
+  <td>{% if entries|length > 1 %}<button type="button" class="mini" data-remove="{{ e.run_id }}" title="Take this run out of the comparison (the run itself is not touched){% if saved %}; press update to keep that in the saved comparison{% endif %}">remove</button>{% endif %}</td>
 </tr>
 {% endfor %}
 </tbody>
@@ -572,6 +573,16 @@
     if (savedId) { params.set("saved", savedId); }
     location.href = "{{ url_for('compare_runs') }}?" + params.toString();
   }
+
+  if (keyBody) { keyBody.addEventListener("click", function (event) {
+    var gone = event.target.dataset && event.target.dataset.remove;
+    if (!gone) { return; }
+    var rest = runsParam.split(",").filter(function (id) { return id !== gone; });
+    try { sessionStorage.setItem("compare-keep", JSON.stringify(currentOptions())); } catch (e) { /* default view */ }
+    var params = aliasParams(new URLSearchParams({ runs: rest.join(","), order: rest.join(",") }));
+    if (savedId) { params.set("saved", savedId); }
+    location.href = "{{ url_for('compare_runs') }}?" + params.toString();
+  }); }
 
   var resetZoom = document.getElementById("reset-zoom");
   if (resetZoom) { resetZoom.addEventListener("click", function () { zoom.reset(); renderPlot(filterState()); }); }
