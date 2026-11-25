@@ -2238,6 +2238,7 @@ def compare_runs():
     entries, notes = _compared_runs(args)
     runs = [entry.run for entry in entries]
     swept = compare.swept_names(runs)
+    others = compare.other_names(entries, swept)
     df = compare.combined_results(entries)
 
     solution_types = list(dict.fromkeys(registry.solution_type_of(r.analysis_settings) for r in runs))
@@ -2267,13 +2268,14 @@ def compare_runs():
         shared=shared,
         unknown_values=(compare.NOT_RECORDED, compare.NOT_APPLICABLE),
         has_results=not df.empty,
-        axis_options=plotting.axis_options(df, swept) if not df.empty else [],
+        axis_options=plotting.axis_options(df, swept, others) if not df.empty else [],
         smith_options=_smith_options(df) if not df.empty else [],
         default_x=axes["x"],
         default_y=axes["y"],
         default_color=axes["color"] or "",
-        filter_options=plotting.filter_options(df, swept) if not df.empty else [],
+        filter_options=plotting.filter_options(df, swept, others) if not df.empty else [],
         run_id_column=plotting.RUN_ID_COLUMN,
+        run_column=plotting.RUN_COLUMN,
         table=table,
         table_note=table_note,
         palette=plotting.RUN_COLOURS,
@@ -2372,6 +2374,9 @@ def compare_plot():
         solution_type=solution_type,
         dark=dark,
         plotlyjs_src=url_for("plotly_js"),
+        other_param_names=compare.other_names(entries, swept),
+        # `symbol` missing: the shape follows the run; empty: one shape for all
+        symbol=request.args.get("symbol"),
         # every compared run, hidden or not, so each keeps its own colour
         run_colours=plotting.run_colours([entry.name for entry in entries], dark),
         note=(f"Nothing from {', '.join(off_axes)} on these axes -- "

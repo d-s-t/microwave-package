@@ -61,6 +61,21 @@ class SavedComparesTests(RunsOnDisk):
         self.assertEqual(self.client.post(f"/compare/saved/{saved_id}/delete").status_code, 404)
         self.assertEqual(self.client.post("/compare/saved", json={"name": ""}).status_code, 400)
 
+    def test_every_held_parameter_is_an_option_and_the_shape_can_be_chosen(self):
+        self.wire_bond_pair()
+        runs = f"{WITH_BONDS},{WITHOUT_BONDS}"
+        page = self.client.get(f"/compare?runs={runs}").get_data(as_text=True)
+        self.assertIn('id="axis-symbol"', page)
+        axes = page.split('id="axis-x"')[1].split("</select>")[0]
+        self.assertIn('value="pcb_length"', axes)        # held by both runs, never swept
+        self.assertIn('value="bonding_clearence"', axes)
+        plot = self.client.get(f"/compare/plot?runs={runs}&x=pcb_length&y=freq_ghz&color=bonding_clearence&symbol=bonding_clearence")
+        self.assertEqual(plot.status_code, 200)
+        html = plot.get_data(as_text=True)
+        self.assertIn('"itemclick":false', html.replace(" ", ""))  # a run cannot be hidden from the legend
+        for symbol in ("", "run", "nonsense"):
+            self.assertEqual(self.client.get(f"/compare/plot?runs={runs}&x=mode&y=freq_ghz&symbol={symbol}").status_code, 200)
+
     def test_the_runs_of_a_saved_compare_can_be_changed_and_the_change_saved(self):
         self.wire_bond_pair()
         saved_id = self.client.post("/compare/saved", json={
