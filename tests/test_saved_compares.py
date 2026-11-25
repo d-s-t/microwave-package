@@ -103,6 +103,18 @@ class SavedComparesTests(RunsOnDisk):
             reply = self.client.get(f"/compare/plot?runs={runs}&x=freq_ghz&y=mode&color=pcb_length&symbol={symbol}")
             self.assertEqual(reply.status_code, 200)
 
+    def test_the_plot_names_a_choice_parameter_instead_of_0_and_1(self):
+        import pandas as pd
+        from microwave_package.workflow import plotting
+        df = pd.DataFrame({"pedestal_shape": [0.0, 1.0, 0.0, 1.0], "freq_ghz": [1, 1, 2, 2],
+                           "s11_db": [-10, -12, -11, -13], "combo_id": ["a", "b", "a", "b"]})
+        html = plotting.figure_html(df, ["pedestal_shape"], x="freq_ghz", y="s11_db", color="pedestal_shape",
+                                    plotlyjs_src="/plotly.js")
+        self.assertIn("square", html)
+        self.assertIn("circle", html)
+        self.assertNotIn('"name":"0.0"', html.replace(" ", ""))
+        self.assertNotIn('"name":"1.0"', html.replace(" ", ""))
+
     def test_the_order_sets_the_letters_and_is_saved(self):
         self.wire_bond_pair()
         with webapp.app.test_request_context(
