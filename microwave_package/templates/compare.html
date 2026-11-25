@@ -285,6 +285,13 @@
     <option value="{{ option.value }}" {% if option.value == default_color %}selected{% endif %}>{{ option.label }}</option>
     {% endfor %}
   </select>
+  <label for="axis-symbol" title="What the shape of each point stands for">Shape</label>
+  <select id="axis-symbol">
+    <option value="">(one shape)</option>
+    {% for option in axis_options %}
+    <option value="{{ option.value }}" {% if option.value == (saved_options.symbol if saved_options.symbol is defined else run_column) %}selected{% endif %}>{{ option.label }}</option>
+    {% endfor %}
+  </select>
   {% if smith_options %}
   <label for="plot-kind" title="Plot the reflection coefficient on a Smith chart instead of X against Y">Plot</label>
   <select id="plot-kind">
@@ -363,6 +370,7 @@
   var y = document.getElementById("axis-y");
   var colour = document.getElementById("axis-color");
   var kind = document.getElementById("plot-kind");
+  var symbol = document.getElementById("axis-symbol");
   var base = "{{ url_for('compare_plot') }}";
 
   var zoom = PlotZoom(frame);
@@ -415,6 +423,7 @@
     // sent even when empty: "(none)" is a choice, and a missing colour
     // means "whatever the comparison opens on"
     if (colour) { params.set("color", colour.value); }
+    if (symbol) { params.set("symbol", symbol.value); }
     Object.keys(state).forEach(function (column) { params.set("f_" + column, state[column].join(",")); });
     frame.src = base + "?" + params.toString();
   }
@@ -583,6 +592,7 @@
     if (y) { options.y = y.value; }
     if (colour) { options.color = colour.value; }
     if (kind) { options.kind = kind.value; }
+    if (symbol) { options.symbol = symbol.value; }
     options.filters = filterState();
     return options;
   }
@@ -627,7 +637,7 @@
         select.value = value;
       }
     }
-    set(x, savedOptions.x); set(y, savedOptions.y); set(colour, savedOptions.color); set(kind, savedOptions.kind);
+    set(x, savedOptions.x); set(y, savedOptions.y); set(colour, savedOptions.color); set(kind, savedOptions.kind); if (savedOptions.symbol !== undefined) { set(symbol, savedOptions.symbol); }
     var filters = savedOptions.filters || {};
     Object.keys(filters).forEach(function (column) {
       boxes(column).forEach(function (b) { b.checked = filters[column].indexOf(b.value) !== -1; });
@@ -653,7 +663,7 @@
       });
     }
   }
-  [x, y, colour, kind].forEach(function (select) {
+  [x, y, colour, kind, symbol].forEach(function (select) {
     if (select) { select.addEventListener("change", function () { renderPlot(filterState()); }); }
   });
   var swap = document.getElementById("swap-axes");

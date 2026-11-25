@@ -15,7 +15,7 @@ from __future__ import annotations
 import html
 import logging
 import os
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Sequence
 
 import pandas as pd
 import plotly.express as px
@@ -239,7 +239,8 @@ def _run_letter(name: str) -> str:
     return name.split(_RUN_NAME_SEPARATOR, 1)[0]
 
 
-def axis_options(df: pd.DataFrame, sweep_param_names: List[str]) -> List[Dict[str, str]]:
+def axis_options(df: pd.DataFrame, sweep_param_names: List[str],
+                 other_param_names: Sequence[str] = ()) -> List[Dict[str, str]]:
     """Everything either axis can be set to, for this run's data:
     its swept parameters first, then the mode number when a run solved
     several, the run itself in a comparison's table, then whichever
@@ -248,7 +249,9 @@ def axis_options(df: pd.DataFrame, sweep_param_names: List[str]) -> List[Dict[st
     The run is offered even when only one compared run has results: it
     is still the colour that run is known by on the rest of the page."""
     options = []
-    for name in sweep_param_names:
+    # `other_param_names`: the parameters the runs held rather than swept
+    # (a comparison offers every parameter, not only what was swept)
+    for name in [*sweep_param_names, *(n for n in other_param_names if n not in sweep_param_names)]:
         column = parameter_meta.column_name(name)
         if column in df.columns:
             options.append({"value": column, "label": parameter_meta.axis_label(name), "kind": "parameter"})
@@ -264,8 +267,8 @@ def axis_options(df: pd.DataFrame, sweep_param_names: List[str]) -> List[Dict[st
     return options
 
 
-def label_for_column(column: str, sweep_param_names: List[str]) -> str:
-    for name in sweep_param_names:
+def label_for_column(column: str, sweep_param_names: List[str], other_param_names: Sequence[str] = ()) -> str:
+    for name in [*sweep_param_names, *other_param_names]:
         if column == parameter_meta.column_name(name):
             return parameter_meta.axis_label(name)
     fields = result_fields()
@@ -291,7 +294,8 @@ def filter_key(value) -> str:
         return str(value)
 
 
-def filter_options(df: pd.DataFrame, sweep_param_names: List[str]) -> List[Dict]:
+def filter_options(df: pd.DataFrame, sweep_param_names: List[str],
+                   other_param_names: Sequence[str] = ()) -> List[Dict]:
     """The distinct value of each swept parameter, for the filter panel.
 
     Only swept parameters -- and the mode number, when a run solved
@@ -313,7 +317,7 @@ def filter_options(df: pd.DataFrame, sweep_param_names: List[str]) -> List[Dict]
                 for run_id, name in zip(runs[RUN_ID_COLUMN], runs[RUN_COLUMN])
             ],
         })
-    for name in sweep_param_names:
+    for name in [*sweep_param_names, *(n for n in other_param_names if n not in sweep_param_names)]:
         column = parameter_meta.column_name(name)
         if column not in df.columns:
             continue
@@ -368,6 +372,8 @@ def figure_html(
     run_colours: Optional[Dict[str, str]] = None,
     note: Optional[str] = None,
     mode_markers: Optional[List[Dict]] = None,
+    other_param_names: Sequence[str] = (),
+    symbol: Optional[str] = None,
 ) -> str:
     """Render one scatter of this run's results as HTML.
 
@@ -392,7 +398,8 @@ def figure_html(
     the combinations shown, so a dip can be read against the resonance it
     belongs to.
     """
-    options = [o["value"] for o in axis_options(df, sweep_param_names)]
+    options = [o["value"] for o in axis_options(df, sweep_param_names, other_param_names)]
+    hover_options = [o["value"] for o in axis_options(df, sweep_param_names)]  # not every held parameter
     if not options:
         return "<p>No plottable columns in this run's results.</p>"
 
@@ -410,7 +417,7 @@ def figure_html(
     if color and color not in df.columns:
         color = None
 
-    labels = {column: label_for_column(column, sweep_param_names) for column in df.columns}
+    labels = {column: label_for_column(column, sweep_param_names, other_param_names) for column in df.columns}
 
     # A driven run against frequency is a curve, not a cloud: several
     # hundred points per combination drawn as markers is unreadable, and
@@ -430,8 +437,14 @@ def figure_html(
         if run_colours and color == RUN_COLUMN:
             extra["color_discrete_map"] = run_colours
         if not as_curve:
-            extra["symbol"] = RUN_COLUMN
-            extra["symbol_map"] = {name: RUN_SYMBOLS[i % len(RUN_SYMBOLS)] for i, name in enumerate(order)}
+            # The marker shape follows the run (the default), a parameter, or nothing.
+            shape_by = RUN_COLUMN if symbol is None else symbol
+            if shape_by == RUN_COLUMN:
+                extra["symbol"] = RUN_COLUMN
+                extra["symbol_map"] = {name: RUN_SYMBOLS[i % len(RUN_SYMBOLS)] for i, name in enumerate(order)}
+            elif shape_by in df.columns:
+                extra["symbol"] = shape_by
+                extra["symbol_sequence"] = RUN_SYMBOLS
         elif color != RUN_COLUMN:
             # Curves coloured by something else still need their run: two
             # runs share combination ids, and one line_group across both
@@ -442,7 +455,7 @@ def figure_html(
         df.sort_values(x) if as_curve else df,
         x=x, y=y, color=color,
         hover_data={**{c: True for c in dict.fromkeys(
-            c for c in (RUN_COLUMN, "combo_id", MODE_COLUMN, *options)
+            c for c in (RUN_COLUMN, "combo_id", MODE_COLUMN, *hover_options)
             if c in df.columns and c not in (x, y))},
             # the line a row is drawn on is bookkeeping, not data
             **({LINE_COLUMN: False} if LINE_COLUMN in df.columns else {})},
@@ -466,8 +479,10 @@ def figure_html(
         # Run names are whatever their runs were called, often a sentence:
         # a legend beside the plot would take half its width, so it goes
         # above, one row per run if need be.
+        # A comparison's runs are all shown: a click on the legend does not hide one.
         figure.update_layout(legend=dict(orientation="h", yanchor="bottom", y=1.02,
-                                         xanchor="left", x=0, title_text=""))
+                                         xanchor="left", x=0, title_text="",
+                                         itemclick=False, itemdoubleclick=False))
         # On an axis of their own, the runs go by their letters -- the
         # legend spells them out, and a sentence per tick would push the
         # plot itself off the page.

@@ -117,6 +117,19 @@ def swept_names(runs: Iterable[Run]) -> List[str]:
     return names
 
 
+def other_names(entries: Iterable["Compared"], swept: Iterable[str]) -> List[str]:
+    """Every parameter the runs held at one value (none of them swept it),
+    in the order they first appear: the comparison offers these on its
+    axes, colour and shape too."""
+    swept = set(swept)
+    names: List[str] = []
+    for entry in entries:
+        for name in entry.held:
+            if name not in swept and name not in names and not parameter_meta.is_retired(name):
+                names.append(name)
+    return names
+
+
 def held_values(run: Run) -> Dict[str, float]:
     """Every parameter this run held at a single value, in millimetres.
 
@@ -156,6 +169,7 @@ def combined_results(entries: Sequence[Compared]) -> pd.DataFrame:
     table find the same point in each.
     """
     swept = swept_names(entry.run for entry in entries)
+    shown = swept + other_names(entries, swept)
     frames = []
     for entry in entries:
         if not entry.has_results:
@@ -164,7 +178,7 @@ def combined_results(entries: Sequence[Compared]) -> pd.DataFrame:
         # Results from before the distortion option was removed still carry its columns.
         df = df.drop(columns=[c for c in df.columns if parameter_meta.is_retired(c)])
         held = entry.held
-        for name in swept:
+        for name in shown:
             column = parameter_meta.column_name(name)
             if column not in df.columns and column != name and name in df.columns:
                 # Results from before a micrometre parameter's column was
