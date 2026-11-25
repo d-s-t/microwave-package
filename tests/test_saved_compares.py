@@ -80,6 +80,19 @@ class SavedComparesTests(RunsOnDisk):
         for symbol in ("", "run", "nonsense"):
             self.assertEqual(self.client.get(f"/compare/plot?runs={runs}&x=mode&y=freq_ghz&symbol={symbol}").status_code, 200)
 
+    def test_the_shape_choice_sets_the_dash_of_a_curve(self):
+        import re
+        from tests.test_compare_runs import make_run, settings, modes
+        make_run(WITH_BONDS, analysis=settings(include_wirebonds=True), results=modes([5.8, 5.9]),
+                 dimensions={"pcb_length": 26.0}, label="a")
+        make_run(WITHOUT_BONDS, analysis=settings(include_wirebonds=True), results=modes([5.9, 6.0]),
+                 dimensions={"pcb_length": 30.0}, label="b")
+        runs = f"{WITH_BONDS},{WITHOUT_BONDS}"
+        # frequency on X is a curve for a driven run; for these (eigenmode) runs nothing breaks either way
+        for symbol in ("pcb_length", "", "run"):
+            reply = self.client.get(f"/compare/plot?runs={runs}&x=freq_ghz&y=mode&color=pcb_length&symbol={symbol}")
+            self.assertEqual(reply.status_code, 200)
+
     def test_the_order_sets_the_letters_and_is_saved(self):
         self.wire_bond_pair()
         with webapp.app.test_request_context(
