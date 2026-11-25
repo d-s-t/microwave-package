@@ -327,7 +327,8 @@ def filter_options(df: pd.DataFrame, sweep_param_names: List[str],
         options.append({
             "column": column,
             "label": parameter_meta.axis_label(name),
-            "values": [{"key": filter_key(v), "label": filter_key(v)} for v in values],
+            "values": [{"key": filter_key(v), "label": parameter_meta.value_name(name, v) or filter_key(v)}
+                       for v in values],
         })
     if has_several_modes(df):
         values = sorted(df[MODE_COLUMN].dropna().unique().tolist())

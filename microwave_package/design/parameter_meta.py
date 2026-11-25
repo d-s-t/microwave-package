@@ -355,7 +355,23 @@ def column_name(name: str) -> str:
     return f"{name}_um" if is_micron(name) else name
 
 
+# A parameter whose numbers are choices: what each number is called, so a
+# filter or a plot offers "square" and "circle", not 0 and 1.
+VALUE_NAMES = {"pedestal_shape": {0: "square", 1: "circle"}}
+_PLAIN_LABELS = {"pedestal_shape": "Pedestal recess shape"}
+
+
+def value_name(name: str, value) -> Optional[str]:
+    """What a choice parameter's value is called, or None for any other parameter."""
+    try:
+        return VALUE_NAMES.get(name, {}).get(int(round(float(value))))
+    except (TypeError, ValueError):
+        return None
+
+
 def axis_label(name: str) -> str:
+    if name in _PLAIN_LABELS:  # the numbers are named wherever they are shown
+        return _PLAIN_LABELS[name]
     unit = unit_for(name)
     return f"{label_for(name)} ({unit})" if unit else label_for(name)
 
