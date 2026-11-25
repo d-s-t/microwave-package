@@ -286,7 +286,7 @@
     <option value="{{ option.value }}" {% if option.value == default_color %}selected{% endif %}>{{ option.label }}</option>
     {% endfor %}
   </select>
-  <label for="axis-symbol" title="What the shape of each point stands for">Shape</label>
+  <label for="axis-symbol" title="What the shape of each point stands for -- the dash of each line when the plot is a curve (a frequency sweep)">Shape</label>
   <select id="axis-symbol">
     <option value="">(one shape)</option>
     {% for option in axis_options %}

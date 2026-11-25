@@ -446,11 +446,22 @@ def figure_html(
             elif shape_by in df.columns:
                 extra["symbol"] = shape_by
                 extra["symbol_sequence"] = RUN_SYMBOLS
-        elif color != RUN_COLUMN:
-            # Curves coloured by something else still need their run: two
-            # runs share combination ids, and one line_group across both
-            # would draw a single line zig-zagging between them.
-            extra["line_dash"] = RUN_COLUMN
+        else:
+            # A curve has no marker: the shape selector sets the dash instead
+            # (the run by default, as before, once the colour is not the run).
+            # Two runs share combination ids, and one line_group across both
+            # would draw a single line zig-zagging between them, so every
+            # line is its own run's.
+            df = df.copy()
+            base = df[LINE_COLUMN] if LINE_COLUMN in df.columns else df["combo_id"] if "combo_id" in df.columns else ""
+            df[LINE_COLUMN] = df[RUN_ID_COLUMN].astype(str) + "|" + base.astype(str) if hasattr(base, "astype")                 else df[RUN_ID_COLUMN].astype(str)
+            extra["line_group"] = LINE_COLUMN
+            shape_by = RUN_COLUMN if symbol is None else symbol
+            if shape_by == RUN_COLUMN:
+                if color != RUN_COLUMN:
+                    extra["line_dash"] = RUN_COLUMN
+            elif shape_by in df.columns:
+                extra["line_dash"] = shape_by
 
     figure = draw(
         df.sort_values(x) if as_curve else df,
