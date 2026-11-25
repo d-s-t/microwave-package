@@ -80,6 +80,16 @@ class SavedComparesTests(RunsOnDisk):
         for symbol in ("", "run", "nonsense"):
             self.assertEqual(self.client.get(f"/compare/plot?runs={runs}&x=mode&y=freq_ghz&symbol={symbol}").status_code, 200)
 
+    def test_a_choice_parameter_is_filtered_by_its_names_not_its_numbers(self):
+        import pandas as pd
+        from microwave_package.design import parameter_meta
+        df = pd.DataFrame({"pedestal_shape": [0.0, 1.0, 1.0], "freq_ghz": [1, 2, 3]})
+        group = [g for g in __import__("microwave_package.workflow.plotting", fromlist=["x"]).filter_options(df, ["pedestal_shape"])
+                 if g["column"] == "pedestal_shape"][0]
+        self.assertEqual(group["label"], "Pedestal recess shape")
+        self.assertEqual([(v["key"], v["label"]) for v in group["values"]], [("0", "square"), ("1", "circle")])
+        self.assertIsNone(parameter_meta.value_name("pedestal_depth", 1.0))
+
     def test_the_order_sets_the_letters_and_is_saved(self):
         self.wire_bond_pair()
         with webapp.app.test_request_context(
