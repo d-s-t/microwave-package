@@ -118,16 +118,30 @@ def swept_names(runs: Iterable[Run]) -> List[str]:
 
 
 def other_names(entries: Iterable["Compared"], swept: Iterable[str]) -> List[str]:
-    """Every parameter the runs held at one value (none of them swept it),
-    in the order they first appear: the comparison offers these on its
-    axes, colour and shape too."""
+    """The parameters that differ between the runs although none of them
+    swept them (each run held its own value), in the order they first
+    appear: the comparison offers these on its axes, colour and shape too.
+    A parameter all the runs hold at the same value tells them nothing
+    apart and is left out."""
     swept = set(swept)
+    held = [entry.held for entry in entries]
     names: List[str] = []
-    for entry in entries:
-        for name in entry.held:
+    for run_held in held:
+        for name in run_held:
             if name not in swept and name not in names and not parameter_meta.is_retired(name):
                 names.append(name)
-    return names
+    return [name for name in names if _differs([run_held.get(name) for run_held in held])]
+
+
+def _differs(values: list) -> bool:
+    """Whether the runs' values for one parameter are not all the same
+    (a run that has none counts as a value of its own)."""
+    def key(value):
+        try:
+            return round(float(value), 9)
+        except (TypeError, ValueError):
+            return value
+    return len({key(v) for v in values}) > 1
 
 
 def held_values(run: Run) -> Dict[str, float]:

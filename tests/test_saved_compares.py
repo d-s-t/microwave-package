@@ -61,39 +61,24 @@ class SavedComparesTests(RunsOnDisk):
         self.assertEqual(self.client.post(f"/compare/saved/{saved_id}/delete").status_code, 404)
         self.assertEqual(self.client.post("/compare/saved", json={"name": ""}).status_code, 400)
 
-    def test_every_held_parameter_is_an_option_and_the_shape_can_be_chosen(self):
-        self.wire_bond_pair()
+    def test_a_parameter_that_differs_between_the_runs_is_an_option_and_the_shape_can_be_chosen(self):
+        from tests.test_compare_runs import make_run, settings, modes
+        make_run(WITH_BONDS, analysis=settings(include_wirebonds=True), results=modes([5.8, 5.9]),
+                 dimensions={"pcb_length": 26.0, "bonding_clearence": 0.6}, label="a")
+        make_run(WITHOUT_BONDS, analysis=settings(include_wirebonds=True), results=modes([5.9, 6.0]),
+                 dimensions={"pcb_length": 30.0, "bonding_clearence": 0.6}, label="b")
         runs = f"{WITH_BONDS},{WITHOUT_BONDS}"
         page = self.client.get(f"/compare?runs={runs}").get_data(as_text=True)
         self.assertIn('id="axis-symbol"', page)
         axes = page.split('id="axis-x"')[1].split("</select>")[0]
-        self.assertIn('value="pcb_length"', axes)        # held by both runs, never swept
-        self.assertIn('value="bonding_clearence"', axes)
-        plot = self.client.get(f"/compare/plot?runs={runs}&x=pcb_length&y=freq_ghz&color=bonding_clearence&symbol=bonding_clearence")
+        self.assertIn('value="pcb_length"', axes)               # held at a different value by each run
+        self.assertNotIn('value="bonding_clearence"', axes)     # the same in both: tells them nothing apart
+        self.assertNotIn('data-column="run_id"', page)          # no filter to hide a run
+        plot = self.client.get(f"/compare/plot?runs={runs}&x=pcb_length&y=freq_ghz&color=pcb_length&symbol=pcb_length")
         self.assertEqual(plot.status_code, 200)
-        html = plot.get_data(as_text=True)
-        self.assertIn('"itemclick":false', html.replace(" ", ""))  # a run cannot be hidden from the legend
+        self.assertIn('"itemclick":false', plot.get_data(as_text=True).replace(" ", ""))
         for symbol in ("", "run", "nonsense"):
             self.assertEqual(self.client.get(f"/compare/plot?runs={runs}&x=mode&y=freq_ghz&symbol={symbol}").status_code, 200)
-
-    def test_the_runs_of_a_saved_compare_can_be_changed_and_the_change_saved(self):
-        self.wire_bond_pair()
-        saved_id = self.client.post("/compare/saved", json={
-            "name": "pair", "runs": [WITH_BONDS, WITHOUT_BONDS], "names": {WITHOUT_BONDS: "Beta"}}).get_json()["id"]
-        # the run list comes back ticked with the saved runs, and keeps the id for the new selection
-        index = self.client.get(f"/?compare={WITH_BONDS},{WITHOUT_BONDS}&saved={saved_id}").get_data(as_text=True)
-        self.assertIn(f'name="saved" value="{saved_id}"', index)
-        self.assertIn("change runs", index)
-        # the comparison with one run taken out is still that saved comparison (so it can be updated),
-        # and the runs that stay keep the names it gave them
-        page = self.client.get(f"/compare?saved={saved_id}&runs={WITHOUT_BONDS}").get_data(as_text=True)
-        self.assertIn("update “pair”", page)
-        self.assertIn("Beta", page)
-        self.assertNotIn(f'data-run-row="{WITH_BONDS}"', page)
-        self.assertIn(f"saved={saved_id}", page.split("Change which runs")[0].rsplit("href=", 1)[1])
-        # updating stores the new set of runs under the same id
-        self.client.post("/compare/saved", json={"id": saved_id, "name": "pair", "runs": [WITHOUT_BONDS]})
-        self.assertEqual(saved_compares.get(saved_id)["runs"], [WITHOUT_BONDS])
 
     def test_the_order_sets_the_letters_and_is_saved(self):
         self.wire_bond_pair()

@@ -295,7 +295,7 @@ def filter_key(value) -> str:
 
 
 def filter_options(df: pd.DataFrame, sweep_param_names: List[str],
-                   other_param_names: Sequence[str] = ()) -> List[Dict]:
+                   other_param_names: Sequence[str] = (), with_runs: bool = True) -> List[Dict]:
     """The distinct value of each swept parameter, for the filter panel.
 
     Only swept parameters -- and the mode number, when a run solved
@@ -305,7 +305,7 @@ def filter_options(df: pd.DataFrame, sweep_param_names: List[str],
     filter matches on alongside the label the form shows.
     """
     options = []
-    if _has_several_runs(df):
+    if with_runs and _has_several_runs(df):
         # In the order the table holds them -- the comparison's own order
         # -- and matched on the id, while the chip shows the name.
         runs = df.drop_duplicates(RUN_ID_COLUMN)
