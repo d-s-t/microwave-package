@@ -2273,7 +2273,7 @@ def compare_runs():
         default_x=axes["x"],
         default_y=axes["y"],
         default_color=axes["color"] or "",
-        filter_options=plotting.filter_options(df, swept, others) if not df.empty else [],
+        filter_options=plotting.filter_options(df, swept, others, with_runs=False) if not df.empty else [],
         run_id_column=plotting.RUN_ID_COLUMN,
         run_column=plotting.RUN_COLUMN,
         table=table,
