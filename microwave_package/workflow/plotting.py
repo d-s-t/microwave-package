@@ -420,6 +420,17 @@ def figure_html(
 
     labels = {column: label_for_column(column, sweep_param_names, other_param_names) for column in df.columns}
 
+    # A choice parameter (the pedestal recess shape) is shown by its names,
+    # "square" and "circle", not by 0.0 and 1.0: in the legend, the hover and on an axis.
+    named = {}
+    for name, names in parameter_meta.VALUE_NAMES.items():
+        column = parameter_meta.column_name(name)
+        if column in df.columns:
+            if not named:
+                df = df.copy()
+            df[column] = df[column].map(lambda v, n=name: parameter_meta.value_name(n, v) or (filter_key(v) if pd.notna(v) else v))
+            named[column] = list(names.values())
+
     # A driven run against frequency is a curve, not a cloud: several
     # hundred points per combination drawn as markers is unreadable, and
     # the shape between the points is the whole result. Anything else --
@@ -432,9 +443,11 @@ def figure_html(
         if as_curve and ("combo_id" in df.columns or LINE_COLUMN in df.columns) else {}
 
     compared = RUN_COLUMN in df.columns
+    if named:
+        extra["category_orders"] = dict(named)
     if compared:
         order = list(run_colours) if run_colours else list(dict.fromkeys(df[RUN_COLUMN]))
-        extra["category_orders"] = {RUN_COLUMN: order}
+        extra.setdefault("category_orders", {})[RUN_COLUMN] = order
         if run_colours and color == RUN_COLUMN:
             extra["color_discrete_map"] = run_colours
         if not as_curve:
